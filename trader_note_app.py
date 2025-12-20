@@ -1,39 +1,14 @@
-
 """
-이미지에, 그냥 원본을 그대로 두고,, 그냥 선을 그릴 수 있고, clear하면 다시 그린 선 삭제되는게 되었으면 좋겠어. 
-이런 기능이 있으면 차트에서 어떤 포인트나 설명을 하기가 더 쉬워서
-23s 동안 생각함
+원하시면 다음으로는 보통 이 2개를 많이 추가합니다.
 
--------------------------
-가능합니다. 핵심은 원본 이미지는 QGraphicsPixmapItem으로 그대로 두고, 그 위에 **선(주석)을 QGraphicsPathItem으로 “오버레이”**로 얹는 방식입니다. 그러면 원본 파일은 절대 변경되지 않고, Clear 하면 오버레이만 삭제됩니다.
+“직선 모드” (Shift 누르면 직선, 기본은 자유선)
+선 색/두께 선택 (예: 빨강/노랑 + 2px/4px)
 
-아래는 기존 v0.1.2 코드에 기능을 반영한 v0.1.3 전체 코드입니다.
+--------------
 
-이미지 영역 툴바에 Draw(토글), Clear Lines 버튼 추가
+1번, 2번 모두 적용해줘.
 
-Draw 모드일 때: 마우스 좌클릭 드래그로 자유선(스트로크) 그리기
-
-Pan 모드일 때: 기존처럼 좌클릭 드래그로 이동
-
-Wheel 줌은 항상 동작
-
-선은 JSON에 페이지별로 저장됩니다(원본 이미지는 그대로, 오버레이 좌표만 저장).
-즉, 페이지 이동해도 선이 유지됩니다. Clear Lines는 저장된 선까지 삭제합니다.
------------------
-사용 방법
-
-Pan(이동): Draw 버튼 OFF 상태에서 좌클릭 드래그
-
-Draw(선 그리기): Draw 버튼 ON → 좌클릭 드래그로 자유선
-
-줌: 마우스 휠
-
-Reset View: 화면 맞춤
-
-Clear Lines: 그려진 선만 삭제(원본 이미지 파일은 그대로)
-
-
-
+그리고, 노트 이미지 상단  종목명 입력박스가 너무 길으니 반으로 줄여서, ticker부분을 더 옆으로 옮겨줘
 """
 
 
@@ -42,22 +17,22 @@ Clear Lines: 그려진 선만 삭제(원본 이미지 파일은 그대로)
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.1.3  (2025-12-20)
+Version: 0.1.4  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.1.3):
+Release Notes (v0.1.4):
 - Image annotation overlay (non-destructive):
-  - Original image stays unchanged
-  - Draw lines on top (overlay) in Draw mode
-  - Clear Lines removes only drawn strokes (overlay)
-  - Annotations are persisted in JSON per page (no image modification)
-- Image Zoom/Pan kept:
-  - Mouse wheel zoom
-  - Pan in Pan mode (hand drag)
-  - Reset View to fit
-- Per-page instrument metadata:
-  - Stock Name + Ticker editable
-  - Copy Ticker button
+  - Draw mode: draw on top of the chart (original image unchanged)
+  - Clear Lines: deletes only drawn overlays
+  - Persist annotations in JSON per page
+- Drawing enhancements:
+  1) Shift-straight-line mode:
+     - While drawing, hold SHIFT to constrain to a straight line from start point
+  2) Pen customization:
+     - Select line color + thickness for new strokes
+     - Each stroke stores its own color/width and is restored on reload
+- Meta bar layout tweak:
+  - Stock Name input width reduced (fixed), so Ticker section is positioned further to the right
 
 Run:
   python trader_note_app.py
@@ -73,7 +48,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF
 from PyQt5.QtGui import QImage, QKeySequence, QPixmap, QPainterPath, QPen, QColor
@@ -99,10 +74,11 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QInputDialog,
+    QComboBox,
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.1.3)"
+APP_TITLE = "Trader Chart Note (v0.1.4)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -128,7 +104,6 @@ def _safe_write_json(path: str, data: Dict[str, Any]) -> None:
 
 
 def _relpath_norm(path: str) -> str:
-    # store relative paths with forward slashes for portability
     return path.replace("\\", "/")
 
 
@@ -141,18 +116,58 @@ def _sanitize_for_folder(name: str, fallback: str) -> str:
     return safe or fallback
 
 
-# annotations: list of strokes, each stroke is list of [x, y] points in scene coordinates
-Annotations = List[List[List[float]]]
+# Annotation model:
+# strokes = [
+#   { "color": "#FF0000", "width": 3.0, "points": [[x,y], [x,y], ...] },
+#   ...
+# ]
+Strokes = List[Dict[str, Any]]
+
+
+def _normalize_strokes(raw: Any) -> Strokes:
+    """
+    Backward compatible normalization:
+    - v0.1.3 stored: List[List[List[float]]]  (points only)
+    - v0.1.4 stores: List[{"color","width","points"}]
+    """
+    if not raw:
+        return []
+
+    # New format
+    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+        out: Strokes = []
+        for s in raw:
+            try:
+                color = str(s.get("color", "#FF3C3C"))
+                width = float(s.get("width", 3.0))
+                pts = s.get("points", [])
+                if not isinstance(pts, list):
+                    pts = []
+                out.append({"color": color, "width": width, "points": pts})
+            except Exception:
+                continue
+        return out
+
+    # Old format: list of strokes, each stroke is list of [x,y]
+    if isinstance(raw, list) and (len(raw) == 0 or isinstance(raw[0], list)):
+        out2: Strokes = []
+        for stroke in raw:
+            if not isinstance(stroke, list):
+                continue
+            out2.append({"color": "#FF3C3C", "width": 3.0, "points": stroke})
+        return out2
+
+    return []
 
 
 @dataclass
 class Page:
     id: str
-    image_path: str  # relative path under project
+    image_path: str
     note_text: str
     stock_name: str
     ticker: str
-    annotations: Annotations
+    strokes: Strokes
     created_at: int
     updated_at: int
 
@@ -166,8 +181,6 @@ class Step:
 
 
 class NoteDB:
-    """JSON persistence layer for steps/pages."""
-
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
         self.db_path = db_path
         self.data: Dict[str, Any] = {}
@@ -197,7 +210,7 @@ class NoteDB:
                 st.pages.append(self.new_page())
 
     def save(self) -> None:
-        self.data["version"] = "0.1.3"
+        self.data["version"] = "0.1.4"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -220,7 +233,7 @@ class NoteDB:
                             "note_text": "",
                             "stock_name": "",
                             "ticker": "",
-                            "annotations": [],
+                            "strokes": [],
                             "created_at": _now_epoch(),
                             "updated_at": _now_epoch(),
                         }
@@ -228,7 +241,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.1.3",
+            "version": "0.1.4",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -242,9 +255,12 @@ class NoteDB:
             pages_raw = s.get("pages", [])
             pages: List[Page] = []
             for p in pages_raw:
-                anns = p.get("annotations", [])
-                if not isinstance(anns, list):
-                    anns = []
+                # backward compatible: p["annotations"] -> p["strokes"]
+                raw_strokes = p.get("strokes", None)
+                if raw_strokes is None:
+                    raw_strokes = p.get("annotations", [])
+                strokes = _normalize_strokes(raw_strokes)
+
                 pages.append(
                     Page(
                         id=str(p.get("id", _uuid())),
@@ -252,7 +268,7 @@ class NoteDB:
                         note_text=str(p.get("note_text", "")),
                         stock_name=str(p.get("stock_name", "")),
                         ticker=str(p.get("ticker", "")),
-                        annotations=anns,  # type: ignore
+                        strokes=strokes,
                         created_at=int(p.get("created_at", _now_epoch())),
                         updated_at=int(p.get("updated_at", _now_epoch())),
                     )
@@ -283,7 +299,7 @@ class NoteDB:
                             "note_text": pg.note_text,
                             "stock_name": pg.stock_name,
                             "ticker": pg.ticker,
-                            "annotations": pg.annotations,
+                            "strokes": pg.strokes,
                             "created_at": pg.created_at,
                             "updated_at": pg.updated_at,
                         }
@@ -302,7 +318,7 @@ class NoteDB:
             note_text="",
             stock_name="",
             ticker="",
-            annotations=[],
+            strokes=[],
             created_at=now,
             updated_at=now,
         )
@@ -326,15 +342,8 @@ class NoteDB:
 
 
 class ZoomPanAnnotateView(QGraphicsView):
-    """
-    QGraphicsView 기반 이미지 뷰어
-    - Wheel: Zoom
-    - Pan mode: 좌클릭 드래그로 이동(ScrollHandDrag)
-    - Draw mode: 좌클릭 드래그로 선(자유선) 그리기 (원본 이미지 비파괴)
-    - annotations는 scene 좌표로 저장/복원
-    """
     imageDropped = pyqtSignal(str)
-    annotationsChanged = pyqtSignal()
+    strokesChanged = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -358,21 +367,43 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._draw_mode: bool = False
         self._is_drawing: bool = False
 
-        # Current stroke
+        # Pen config for NEW strokes
+        self._pen_color = QColor("#FF3C3C")
+        self._pen_width = 3.0
+
+        # Current stroke data
         self._current_path: Optional[QPainterPath] = None
         self._current_item: Optional[QGraphicsPathItem] = None
         self._current_points: List[List[float]] = []
+        self._stroke_start: Optional[QPointF] = None
+        self._stroke_color_hex: str = "#FF3C3C"
+        self._stroke_width: float = 3.0
 
-        # All strokes
-        self._strokes: Annotations = []
+        # All strokes (data + items)
+        self._strokes: Strokes = []
         self._stroke_items: List[QGraphicsPathItem] = []
 
-        # Pen (overlay only)
-        self._pen = QPen(QColor(255, 60, 60), 3.0)  # red, 3px
-        self._pen.setCapStyle(Qt.RoundCap)
-        self._pen.setJoinStyle(Qt.RoundJoin)
-
         self.set_mode_pan()
+
+    # ----- Pen config -----
+    def set_pen(self, color_hex: str, width: float) -> None:
+        try:
+            c = QColor(color_hex)
+            if not c.isValid():
+                c = QColor("#FF3C3C")
+        except Exception:
+            c = QColor("#FF3C3C")
+        self._pen_color = c
+        self._pen_width = float(width)
+
+    def _make_pen(self, color_hex: str, width: float) -> QPen:
+        c = QColor(color_hex)
+        if not c.isValid():
+            c = QColor("#FF3C3C")
+        pen = QPen(c, float(width))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        return pen
 
     # ----- Mode control -----
     def is_draw_mode(self) -> bool:
@@ -389,15 +420,12 @@ class ZoomPanAnnotateView(QGraphicsView):
         self.viewport().setCursor(Qt.OpenHandCursor)
 
     # ----- Image control -----
-    def has_image(self) -> bool:
-        return self._has_image
-
     def clear_image(self) -> None:
         self._scene.clear()
         self._pixmap_item = None
         self._has_image = False
         self.resetTransform()
-        self._clear_annotations_internal(emit_signal=False)
+        self._clear_strokes_internal(emit_signal=False)
 
     def set_image_path(self, abs_path: str) -> None:
         pm = QPixmap(abs_path)
@@ -406,18 +434,8 @@ class ZoomPanAnnotateView(QGraphicsView):
             return
         self._set_pixmap(pm)
 
-    def set_qimage(self, img: QImage) -> bool:
-        if img.isNull():
-            return False
-        pm = QPixmap.fromImage(img)
-        if pm.isNull():
-            return False
-        self._set_pixmap(pm)
-        return True
-
     def _set_pixmap(self, pm: QPixmap) -> None:
-        # Keep annotations? Generally, changing image means coords mismatch.
-        # Policy: clear annotations on image set.
+        # Policy: new image => clear strokes (coords mismatch)
         self._scene.clear()
         self._pixmap_item = self._scene.addPixmap(pm)
         self._pixmap_item.setTransformationMode(Qt.SmoothTransformation)
@@ -428,7 +446,7 @@ class ZoomPanAnnotateView(QGraphicsView):
         self.resetTransform()
         self.fit_to_view()
 
-        self._clear_annotations_internal(emit_signal=False)
+        self._clear_strokes_internal(emit_signal=False)
 
     def fit_to_view(self) -> None:
         if not self._pixmap_item:
@@ -475,46 +493,52 @@ class ZoomPanAnnotateView(QGraphicsView):
         if local_path and os.path.isfile(local_path):
             self.imageDropped.emit(local_path)
 
-    # ----- Annotation persistence -----
-    def get_annotations(self) -> Annotations:
+    # ----- Stroke persistence -----
+    def get_strokes(self) -> Strokes:
         return self._strokes
 
-    def set_annotations(self, strokes: Annotations) -> None:
-        # rebuild overlay items from strokes
-        self._clear_annotations_internal(emit_signal=False)
+    def set_strokes(self, strokes: Strokes) -> None:
+        self._clear_strokes_internal(emit_signal=False)
+        self._strokes = strokes or []
+
         if not self._has_image:
-            # still store strokes (optional), but no visual until image exists
-            self._strokes = strokes or []
             return
 
-        self._strokes = strokes or []
-        for stroke in self._strokes:
-            if len(stroke) < 2:
+        # Rebuild items
+        for s in self._strokes:
+            pts = s.get("points", [])
+            if not isinstance(pts, list) or len(pts) < 2:
                 continue
-            path = QPainterPath(QPointF(stroke[0][0], stroke[0][1]))
-            for pt in stroke[1:]:
+            color = str(s.get("color", "#FF3C3C"))
+            width = float(s.get("width", 3.0))
+
+            path = QPainterPath(QPointF(pts[0][0], pts[0][1]))
+            for pt in pts[1:]:
                 path.lineTo(QPointF(pt[0], pt[1]))
+
             item = QGraphicsPathItem(path)
-            item.setPen(self._pen)
+            item.setPen(self._make_pen(color, width))
             item.setZValue(10)
             self._scene.addItem(item)
             self._stroke_items.append(item)
 
-    def clear_annotations(self) -> None:
-        self._clear_annotations_internal(emit_signal=True)
+    def clear_strokes(self) -> None:
+        self._clear_strokes_internal(emit_signal=True)
 
-    def _clear_annotations_internal(self, emit_signal: bool) -> None:
-        # remove drawn items only
+    def _clear_strokes_internal(self, emit_signal: bool) -> None:
         for it in self._stroke_items:
             self._scene.removeItem(it)
         self._stroke_items = []
         self._strokes = []
+
         self._is_drawing = False
         self._current_item = None
         self._current_path = None
         self._current_points = []
+        self._stroke_start = None
+
         if emit_signal:
-            self.annotationsChanged.emit()
+            self.strokesChanged.emit()
 
     # ----- Drawing interactions -----
     def mousePressEvent(self, event) -> None:
@@ -532,9 +556,9 @@ class ZoomPanAnnotateView(QGraphicsView):
         if self._draw_mode and self._is_drawing and self._has_image:
             scene_pos = self.mapToScene(event.pos())
             if not self._point_inside_pixmap(scene_pos):
-                # allow drawing to edge; clamp is optional. We'll just ignore moves outside.
                 return
-            self._append_stroke(scene_pos)
+            shift = bool(event.modifiers() & Qt.ShiftModifier)
+            self._append_stroke(scene_pos, shift=shift)
             event.accept()
             return
 
@@ -555,21 +579,39 @@ class ZoomPanAnnotateView(QGraphicsView):
 
     def _start_stroke(self, pt: QPointF) -> None:
         self._is_drawing = True
+        self._stroke_start = pt
+
+        self._stroke_color_hex = self._pen_color.name().upper()
+        self._stroke_width = float(self._pen_width)
+
         self._current_path = QPainterPath(pt)
         self._current_points = [[float(pt.x()), float(pt.y())]]
 
         item = QGraphicsPathItem(self._current_path)
-        item.setPen(self._pen)
+        item.setPen(self._make_pen(self._stroke_color_hex, self._stroke_width))
         item.setZValue(10)
         self._scene.addItem(item)
 
         self._current_item = item
 
-    def _append_stroke(self, pt: QPointF) -> None:
-        if not self._current_path or not self._current_item:
+    def _append_stroke(self, pt: QPointF, shift: bool) -> None:
+        if not self._current_item or not self._stroke_start:
             return
 
-        # simple smoothing: ignore very small moves
+        if shift:
+            # Straight line: only keep start and current
+            start = self._stroke_start
+            path = QPainterPath(start)
+            path.lineTo(pt)
+            self._current_item.setPath(path)
+            self._current_points = [[float(start.x()), float(start.y())], [float(pt.x()), float(pt.y())]]
+            return
+
+        # Freehand
+        if not self._current_path:
+            self._current_path = QPainterPath(self._stroke_start)
+
+        # ignore tiny moves
         last = self._current_points[-1]
         dx = pt.x() - last[0]
         dy = pt.y() - last[1]
@@ -582,33 +624,37 @@ class ZoomPanAnnotateView(QGraphicsView):
 
     def _finish_stroke(self) -> None:
         if not self._current_item or len(self._current_points) < 2:
-            # discard
             if self._current_item:
                 self._scene.removeItem(self._current_item)
-            self._is_drawing = False
-            self._current_item = None
-            self._current_path = None
-            self._current_points = []
+            self._reset_current()
             return
 
-        # commit stroke
+        # Commit data
         self._stroke_items.append(self._current_item)
-        self._strokes.append(self._current_points)
+        self._strokes.append(
+            {
+                "color": self._stroke_color_hex,
+                "width": self._stroke_width,
+                "points": self._current_points,
+            }
+        )
 
-        # reset current
+        self._reset_current()
+        self.strokesChanged.emit()
+
+    def _reset_current(self) -> None:
         self._is_drawing = False
         self._current_item = None
         self._current_path = None
         self._current_points = []
-
-        self.annotationsChanged.emit()
+        self._stroke_start = None
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1320, 860)
+        self.resize(1350, 880)
 
         self.db = NoteDB(DEFAULT_DB_PATH)
 
@@ -616,7 +662,6 @@ class MainWindow(QMainWindow):
         self.current_page_index: int = 0
         self._loading_ui: bool = False
 
-        # Debounced autosave for page fields
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._flush_page_fields_to_model_and_save)
@@ -626,13 +671,12 @@ class MainWindow(QMainWindow):
         self._refresh_steps_list(select_current=True)
         self._load_current_page_to_ui()
 
-        # Shortcuts
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.go_prev_page)
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_page)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.force_save)
 
-        # Ctrl+V for clipboard image paste ONLY when image area is focused (avoid breaking text paste)
+        # Ctrl+V for clipboard image paste ONLY when image area is focused
         QShortcut(QKeySequence("Ctrl+V"), self.image_viewer, activated=self.paste_image_from_clipboard)
 
     def closeEvent(self, event) -> None:
@@ -684,28 +728,29 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(8, 8, 8, 8)
         right_layout.setSpacing(8)
 
-        # Meta bar (per page): Stock Name + Ticker + Copy
+        # Meta bar (per page): Stock Name + Ticker + Copy (layout tweak)
         meta_bar = QHBoxLayout()
         meta_bar.setContentsMargins(0, 0, 0, 0)
 
         meta_bar.addWidget(QLabel("Name:"))
         self.edit_stock_name = QLineEdit()
         self.edit_stock_name.setPlaceholderText("e.g., Apple Inc.")
+        self.edit_stock_name.setFixedWidth(320)  # reduced width
         self.edit_stock_name.textChanged.connect(self._on_page_field_changed)
-        meta_bar.addWidget(self.edit_stock_name, 3)
+        meta_bar.addWidget(self.edit_stock_name)
 
-        meta_bar.addSpacing(12)
+        meta_bar.addStretch(1)  # push ticker section to the right
+
         meta_bar.addWidget(QLabel("Ticker:"))
         self.edit_ticker = QLineEdit()
         self.edit_ticker.setPlaceholderText("e.g., AAPL")
+        self.edit_ticker.setFixedWidth(200)
         self.edit_ticker.textChanged.connect(self._on_page_field_changed)
-        meta_bar.addWidget(self.edit_ticker, 1)
+        meta_bar.addWidget(self.edit_ticker)
 
         self.btn_copy_ticker = QPushButton("Copy Ticker")
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
         meta_bar.addWidget(self.btn_copy_ticker)
-
-        meta_bar.addStretch(1)
 
         # Page split (image | text)
         self.page_splitter = QSplitter(Qt.Horizontal)
@@ -717,6 +762,7 @@ class MainWindow(QMainWindow):
         img_layout.setSpacing(6)
 
         img_toolbar = QHBoxLayout()
+
         self.btn_set_image = QPushButton("Set Image...")
         self.btn_paste_image = QPushButton("Paste Image (Ctrl+V)")
         self.btn_clear_image = QPushButton("Clear Image")
@@ -725,7 +771,22 @@ class MainWindow(QMainWindow):
         self.btn_draw_mode = QToolButton()
         self.btn_draw_mode.setText("Draw")
         self.btn_draw_mode.setCheckable(True)
-        self.btn_draw_mode.setToolTip("Toggle draw mode (draw lines on top of image)")
+        self.btn_draw_mode.setToolTip("Draw mode: drag to draw. Hold SHIFT for straight line.")
+
+        self.combo_color = QComboBox()
+        # label, value(hex)
+        self.combo_color.addItem("Red", "#FF3C3C")
+        self.combo_color.addItem("Yellow", "#FFD400")
+        self.combo_color.addItem("Cyan", "#00D5FF")
+        self.combo_color.addItem("White", "#FFFFFF")
+        self.combo_color.currentIndexChanged.connect(self._on_pen_changed)
+
+        self.combo_width = QComboBox()
+        for w in ["2", "3", "4", "6", "8"]:
+            self.combo_width.addItem(f"{w}px", float(w))
+        self.combo_width.setCurrentIndex(1)  # 3px default
+        self.combo_width.currentIndexChanged.connect(self._on_pen_changed)
+
         self.btn_clear_lines = QPushButton("Clear Lines")
 
         self.btn_set_image.clicked.connect(self.set_image_via_dialog)
@@ -740,14 +801,21 @@ class MainWindow(QMainWindow):
         img_toolbar.addWidget(self.btn_paste_image)
         img_toolbar.addWidget(self.btn_clear_image)
         img_toolbar.addWidget(self.btn_reset_view)
-        img_toolbar.addSpacing(10)
+        img_toolbar.addSpacing(12)
         img_toolbar.addWidget(self.btn_draw_mode)
+        img_toolbar.addWidget(QLabel("Color:"))
+        img_toolbar.addWidget(self.combo_color)
+        img_toolbar.addWidget(QLabel("Width:"))
+        img_toolbar.addWidget(self.combo_width)
         img_toolbar.addWidget(self.btn_clear_lines)
         img_toolbar.addStretch(1)
 
         self.image_viewer = ZoomPanAnnotateView()
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
-        self.image_viewer.annotationsChanged.connect(self._on_page_field_changed)
+        self.image_viewer.strokesChanged.connect(self._on_page_field_changed)
+
+        # initialize pen from UI
+        self._apply_pen_from_ui()
 
         img_layout.addLayout(img_toolbar)
         img_layout.addWidget(self.image_viewer, 1)
@@ -822,11 +890,21 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_panel)
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([270, 1050])
+        main_splitter.setSizes([270, 1080])
 
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(main_splitter)
+
+    # ---------------- Pen UI ----------------
+    def _apply_pen_from_ui(self) -> None:
+        color_hex = str(self.combo_color.currentData())
+        width = float(self.combo_width.currentData())
+        self.image_viewer.set_pen(color_hex, width)
+
+    def _on_pen_changed(self) -> None:
+        self._apply_pen_from_ui()
+        # no save needed; affects only future strokes
 
     # ---------------- State helpers ----------------
     def _load_ui_state_or_defaults(self) -> None:
@@ -919,11 +997,9 @@ class MainWindow(QMainWindow):
 
         self._loading_ui = True
         try:
-            # Meta
             self.edit_stock_name.setText(pg.stock_name or "")
             self.edit_ticker.setText(pg.ticker or "")
 
-            # Image
             if pg.image_path:
                 abs_path = _abspath_from_rel(pg.image_path)
                 if os.path.exists(abs_path):
@@ -933,13 +1009,11 @@ class MainWindow(QMainWindow):
             else:
                 self.image_viewer.clear_image()
 
-            # Load annotations after image load (scene exists)
-            self.image_viewer.set_annotations(pg.annotations or [])
+            self.image_viewer.set_strokes(pg.strokes or [])
 
-            # Text
             self.text_edit.setPlainText(pg.note_text or "")
 
-            # Default mode: Pan
+            # Default to Pan
             self.btn_draw_mode.setChecked(False)
             self.image_viewer.set_mode_pan()
 
@@ -962,13 +1036,11 @@ class MainWindow(QMainWindow):
 
         changed = False
 
-        # Text
         new_text = self.text_edit.toPlainText()
         if pg.note_text != new_text:
             pg.note_text = new_text
             changed = True
 
-        # Meta
         new_name = self.edit_stock_name.text()
         if pg.stock_name != new_name:
             pg.stock_name = new_name
@@ -979,13 +1051,11 @@ class MainWindow(QMainWindow):
             pg.ticker = new_ticker
             changed = True
 
-        # Annotations
-        new_anns = self.image_viewer.get_annotations()
-        if pg.annotations != new_anns:
-            pg.annotations = new_anns
+        new_strokes = self.image_viewer.get_strokes()
+        if pg.strokes != new_strokes:
+            pg.strokes = new_strokes
             changed = True
 
-        # Track last visited page for this step
         st.last_page_index = self.current_page_index
         self._save_ui_state()
 
@@ -1034,7 +1104,7 @@ class MainWindow(QMainWindow):
             return
         self._flush_page_fields_to_model_and_save()
 
-        insert_at = self.current_page_index + 1  # policy: insert after current page
+        insert_at = self.current_page_index + 1
         st.pages.insert(insert_at, self.db.new_page())
         self.current_page_index = insert_at
         st.last_page_index = self.current_page_index
@@ -1080,8 +1150,7 @@ class MainWindow(QMainWindow):
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     def clear_lines(self) -> None:
-        self.image_viewer.clear_annotations()
-        # autosave debounced via annotationsChanged, but keep immediate save safer
+        self.image_viewer.clear_strokes()
         self._flush_page_fields_to_model_and_save()
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
@@ -1106,16 +1175,12 @@ class MainWindow(QMainWindow):
             return
         self._flush_page_fields_to_model_and_save()
         pg.image_path = ""
-        pg.annotations = []
+        pg.strokes = []
         pg.updated_at = _now_epoch()
         self.db.save()
         self.image_viewer.clear_image()
 
     def paste_image_from_clipboard(self) -> None:
-        """
-        Paste image from clipboard and save it into ./assets, then set to current page.
-        Shortcut Ctrl+V is bound to the image view only to avoid breaking text paste behavior.
-        """
         st = self.current_step()
         pg = self.current_page()
         if not st or not pg:
@@ -1143,14 +1208,14 @@ class MainWindow(QMainWindow):
             return
 
         pg.image_path = dst_rel
-        pg.annotations = []  # new image => clear annotations (coords mismatch)
+        pg.strokes = []  # new image => clear strokes
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self.db.save()
 
         self.image_viewer.set_image_path(dst_abs)
-        self.image_viewer.set_annotations([])
+        self.image_viewer.set_strokes([])
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     def _set_image_from_file(self, src_path: str) -> None:
@@ -1183,14 +1248,14 @@ class MainWindow(QMainWindow):
             return
 
         pg.image_path = dst_rel
-        pg.annotations = []  # new image => clear annotations (coords mismatch)
+        pg.strokes = []  # new image => clear strokes
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self.db.save()
 
         self.image_viewer.set_image_path(dst_abs)
-        self.image_viewer.set_annotations([])
+        self.image_viewer.set_strokes([])
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     # ---------------- Text/meta utilities ----------------
