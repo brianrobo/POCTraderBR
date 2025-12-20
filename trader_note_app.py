@@ -2,32 +2,30 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.3.4  (2025-12-20)
+Version: 0.3.5  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.3.4):
-- (UI/UX) 이미지 상단 "간단 설명" overlay를 멀티라인(자동 줄바꿈) 입력으로 확장
-- (UI/UX) 기본은 1줄 높이로 표시되며, hover 또는 클릭/포커스 시 2~3줄로 확장
-  - 포커스가 빠지고 마우스가 떠나면 자동 축소
+Release Notes (v0.3.5):
+- (Stability) JSON 저장 시 PermissionError(WinError 5: Access denied)로 앱이 종료되는 문제 해결
+  - os.replace() 실패 시 재시도(backoff) 수행
+  - 계속 실패하면 notes_db.json.autosave.<timestamp>.json 로 자동 저장(데이터 유실 방지)
+  - 저장 실패는 경고만 표시(10초 쿨다운)하고 앱은 계속 동작
 
-v0.3.3 기능 유지:
-- (Feature) 이미지 상단(Annotation 버튼과 같은 영역)에 "간단 설명" 입력창(overlay)
-  - 페이지(Page)별 저장/로드
-- (Bugfix) QGraphicsPathItem deleted 크래시 방지
-- Annotate 오버레이 패널(✎ 버튼 → 패널)
-- Category → Step Tree + Category 우클릭 메뉴
-- Category 순서 Up/Down 이동 및 JSON(category_order) 저장
-- 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines(confirm)
-- Checklist(4문항) + Description
-- 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단
-- Del Page confirm
-- Clipboard 이미지 붙여넣기 저장 (Ctrl+V: image_viewer 포커스일 때)
-
-Run:
-  python trader_note_app.py
+Existing features:
+- Category → Step Tree(좌측), Category 우클릭 메뉴(카테고리 rename/delete/move up/down, 해당 카테고리에 step 추가)
+- Category order JSON 저장(category_order)
+- Step: add/rename/set category/delete
+- Page: add/delete(confirm)/prev/next, step별 last_page_index 유지
+- Image: Open / Paste(Clipboard) / Clear Image / Fit
+- Viewer: Zoom wheel, Pan drag, Draw mode(shift 직선), pen color/width, Clear Lines(confirm)
+- Page fields: stock name, ticker(복사 버튼), image caption overlay(멀티라인, hover/click 확장/축소)
+- Description: checklist 4문항 + note, free text
 
 Dependencies:
   pip install PyQt5
+
+Run:
+  python trader_note_app.py
 """
 
 import json
@@ -89,14 +87,12 @@ from PyQt5.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QMenu,
-    QPlainTextEdit,  # v0.3.4
+    QPlainTextEdit,
 )
 
-
-APP_TITLE = "Trader Chart Note (v0.3.4)"
+APP_TITLE = "Trader Chart Note (v0.3.5)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
-
 
 DEFAULT_CHECK_QUESTIONS = [
     "Q. 매집구간이 보이는가?",
@@ -118,12 +114,52 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def _safe_write_json(path: str, data: Dict[str, Any]) -> None:
+def _safe_write_json(path: str, data: Dict[str, Any], retries: int = 12, base_delay: float = 0.08) -> bool:
+    """
+    Atomic-ish JSON save for Windows.
+    - Writes to .tmp then os.replace(tmp, path)
+    - If destination is locked (PermissionError), retry with backoff
+    - If still failing, writes autosave file and returns False (no crash)
+    """
     _ensure_dir(os.path.dirname(path) or ".")
     tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+
+    # 1) write tmp
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        return False
+
+    # 2) try replace with retry/backoff
+    for i in range(max(1, retries)):
+        try:
+            os.replace(tmp_path, path)
+            return True
+        except PermissionError:
+            time.sleep(base_delay * (1.6 ** i))
+        except OSError:
+            time.sleep(base_delay * (1.6 ** i))
+
+    # 3) fallback: autosave
+    try:
+        autosave_path = f"{path}.autosave.{_now_epoch()}.json"
+        try:
+            os.replace(tmp_path, autosave_path)
+        except Exception:
+            with open(autosave_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        return False
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
 
 
 def _relpath_norm(path: str) -> str:
@@ -252,7 +288,7 @@ class FlowLayout(QLayout):
 
 
 # ---------------------------
-# v0.3.4: Collapsible caption overlay (1-line collapsed, expands on hover/focus)
+# Collapsible caption overlay (1-line collapsed, expands on hover/focus)
 # ---------------------------
 class CollapsibleCaptionEdit(QPlainTextEdit):
     expandedChanged = pyqtSignal(bool)
@@ -283,21 +319,16 @@ class CollapsibleCaptionEdit(QPlainTextEdit):
         """)
 
     def setPlaceholderTextCompat(self, text: str) -> None:
-        # QPlainTextEdit는 placeholder 지원(버전에 따라 다름) -> Qt5.11+ 대부분 OK
         try:
             self.setPlaceholderText(text)
         except Exception:
             pass
-
-    def isExpanded(self) -> bool:
-        return self._expanded
 
     def expand(self) -> None:
         if self._expanded:
             return
         self._expanded = True
         self.setFixedHeight(self._expanded_h)
-        # 3줄을 넘어가면 스크롤이 필요할 수 있으나, 기본은 OFF 유지
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.expandedChanged.emit(True)
 
@@ -314,13 +345,11 @@ class CollapsibleCaptionEdit(QPlainTextEdit):
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        # 마우스가 떠나도, 포커스 유지 중이면 유지
         if not self.hasFocus():
             self.collapse()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
-        # 클릭하면 확장 + 편집 모드
         self.expand()
         super().mousePressEvent(event)
 
@@ -330,13 +359,11 @@ class CollapsibleCaptionEdit(QPlainTextEdit):
 
     def focusOutEvent(self, event) -> None:
         super().focusOutEvent(event)
-        # 포커스가 빠진 직후, 마우스가 위에 없으면 축소
         QTimer.singleShot(0, self._collapse_if_not_hovered)
 
     def _collapse_if_not_hovered(self) -> None:
         if self.hasFocus():
             return
-        # underMouse()가 False면 축소
         if not self.underMouse():
             self.collapse()
 
@@ -397,7 +424,7 @@ def _normalize_checklist(raw: Any) -> Checklist:
 class Page:
     id: str
     image_path: str
-    image_caption: str  # multi-line supported
+    image_caption: str
     note_text: str
     stock_name: str
     ticker: str
@@ -454,13 +481,18 @@ class NoteDB:
 
         self._ensure_category_order_consistency()
 
-    def save(self) -> None:
-        self.data["version"] = "0.3.4"
+    def save(self) -> bool:
+        self.data["version"] = "0.3.5"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
         self.data["category_order"] = self.category_order
-        _safe_write_json(self.db_path, self.data)
+
+        ok = _safe_write_json(self.db_path, self.data)
+        self.data["_last_save_ok"] = bool(ok)
+        if not ok:
+            self.data["_last_save_failed_at"] = _now_epoch()
+        return ok
 
     @staticmethod
     def _default_data() -> Dict[str, Any]:
@@ -490,7 +522,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.3.4",
+            "version": "0.3.5",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -848,6 +880,7 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._clear_strokes_internal(emit_signal=True)
 
     def _clear_strokes_internal(self, emit_signal: bool) -> None:
+        # v0.3.3+ bugfix: handle already-deleted QGraphicsPathItem
         for it in list(self._stroke_items):
             try:
                 self._scene.removeItem(it)
@@ -991,6 +1024,10 @@ class MainWindow(QMainWindow):
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._flush_page_fields_to_model_and_save)
 
+        # 저장 실패 경고 스팸 방지
+        self._last_save_warn_ts: float = 0.0
+        self._save_warn_cooldown_sec: float = 10.0
+
         self._build_ui()
         self._build_annotate_overlay()
 
@@ -1007,7 +1044,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         try:
             self._flush_page_fields_to_model_and_save()
-            self.db.save()
         except Exception:
             pass
         super().closeEvent(event)
@@ -1273,7 +1309,7 @@ class MainWindow(QMainWindow):
         self.current_step_id = st.id
         self.current_page_index = 0
         self._save_ui_state()
-        self.db.save()
+        self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
@@ -1287,7 +1323,7 @@ class MainWindow(QMainWindow):
 
         self._flush_page_fields_to_model_and_save()
         self.db.rename_category(old_cat, new_cat)
-        self.db.save()
+        self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
 
     def _ctx_delete_category(self, cat: str) -> None:
@@ -1325,7 +1361,7 @@ class MainWindow(QMainWindow):
                 self.current_page_index = 0
 
             self._save_ui_state()
-            self.db.save()
+            self._save_db_with_warning()
             self._refresh_steps_tree(select_current=True)
             self._load_current_page_to_ui()
             return
@@ -1343,21 +1379,20 @@ class MainWindow(QMainWindow):
                 )
 
             self._save_ui_state()
-            self.db.save()
+            self._save_db_with_warning()
             self._refresh_steps_tree(select_current=True)
             self._load_current_page_to_ui()
             return
 
     def _ctx_move_category(self, cat: str, direction: int) -> None:
         self.db.move_category(cat, direction)
-        self.db.save()
+        self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
 
     # ---------------- Annotate Overlay + Caption Overlay ----------------
     def _build_annotate_overlay(self) -> None:
         vp = self.image_viewer.viewport()
 
-        # v0.3.4: collapsible multi-line caption overlay
         self.edit_img_caption = CollapsibleCaptionEdit(vp, collapsed_h=28, expanded_h=84)
         self.edit_img_caption.setPlaceholderTextCompat("이미지 간단 설명 (hover/클릭 시 2~3줄 확장)")
         self.edit_img_caption.textChanged.connect(self._on_page_field_changed)
@@ -1482,16 +1517,11 @@ class MainWindow(QMainWindow):
         w = vp.width()
         margin = 10
 
-        # annotation button
         self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
 
-        # caption placement: left to annotation button or left to panel when panel is open
-        btn_w = self.btn_anno_toggle.width()
         cap_min = 260
         cap_max = 720
-
-        # caption height is managed by CollapsibleCaptionEdit (fixedHeight)
-        cap_h = self.edit_img_caption.height()
+        btn_w = self.btn_anno_toggle.width()
 
         if self.anno_panel.isVisible():
             panel_x = max(margin, w - self.anno_panel.width() - margin)
@@ -1511,7 +1541,6 @@ class MainWindow(QMainWindow):
             self._reposition_overlay()
         return super().eventFilter(obj, event)
 
-    # ---------------- Pen UI ----------------
     def _apply_pen_from_ui(self) -> None:
         color_hex = str(self.combo_color.currentData())
         width = float(self.combo_width.currentData())
@@ -1623,6 +1652,29 @@ class MainWindow(QMainWindow):
         self._save_ui_state()
         self._load_current_page_to_ui()
 
+    # ---------------- Safe save wrapper ----------------
+    def _save_db_with_warning(self) -> bool:
+        ok = self.db.save()
+        if ok:
+            return True
+
+        # cooldown
+        now = time.time()
+        if (now - self._last_save_warn_ts) >= self._save_warn_cooldown_sec:
+            self._last_save_warn_ts = now
+            QMessageBox.warning(
+                self,
+                "Save warning",
+                "JSON 저장에 실패했습니다(파일이 다른 프로그램에 의해 잠겼을 수 있습니다).\n\n"
+                "조치:\n"
+                "- VS Code에서 data/notes_db.json 탭을 닫거나 JSON Viewer/Preview 확장이 파일을 잡고 있지 않은지 확인\n"
+                "- 앱이 2개 실행 중인지 확인\n"
+                "- OneDrive/백신 실시간 감시가 잠깐 락을 거는 경우 잠시 후 자동 저장 재시도\n\n"
+                "데이터 보호:\n"
+                "- data 폴더에 notes_db.json.autosave.<timestamp>.json 파일이 생성되었을 수 있습니다."
+            )
+        return False
+
     # ---------------- Page load/save ----------------
     def _load_current_page_to_ui(self) -> None:
         st = self.current_step()
@@ -1679,6 +1731,7 @@ class MainWindow(QMainWindow):
     def _on_page_field_changed(self) -> None:
         if self._loading_ui:
             return
+        # 저장 빈도를 너무 높이면 락 경합 확률이 늘 수 있음(기본 450ms 유지)
         self._save_timer.start(450)
 
     def _collect_checklist_from_ui(self) -> Checklist:
@@ -1730,11 +1783,12 @@ class MainWindow(QMainWindow):
 
         if changed:
             pg.updated_at = _now_epoch()
-        self.db.save()
+
+        self._save_db_with_warning()
 
     def force_save(self) -> None:
         self._flush_page_fields_to_model_and_save()
-        QMessageBox.information(self, "Saved", "Saved to JSON.")
+        QMessageBox.information(self, "Saved", "Save requested (check warnings if file is locked).")
 
     def _update_nav(self) -> None:
         st = self.current_step()
@@ -1779,7 +1833,7 @@ class MainWindow(QMainWindow):
         st.last_page_index = self.current_page_index
 
         self._save_ui_state()
-        self.db.save()
+        self._save_db_with_warning()
         self._load_current_page_to_ui()
 
     def delete_page(self) -> None:
@@ -1803,7 +1857,7 @@ class MainWindow(QMainWindow):
         st.last_page_index = self.current_page_index
 
         self._save_ui_state()
-        self.db.save()
+        self._save_db_with_warning()
         self._load_current_page_to_ui()
 
     # ---------------- Image handling ----------------
@@ -1862,7 +1916,7 @@ class MainWindow(QMainWindow):
         pg.image_path = ""
         pg.strokes = []
         pg.updated_at = _now_epoch()
-        self.db.save()
+        self._save_db_with_warning()
         self.image_viewer.clear_image()
 
     def paste_image_from_clipboard(self) -> None:
@@ -1897,7 +1951,7 @@ class MainWindow(QMainWindow):
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
-        self.db.save()
+        self._save_db_with_warning()
 
         self.image_viewer.set_image_path(dst_abs)
         self.image_viewer.set_strokes([])
@@ -1937,7 +1991,7 @@ class MainWindow(QMainWindow):
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
-        self.db.save()
+        self._save_db_with_warning()
 
         self.image_viewer.set_image_path(dst_abs)
         self.image_viewer.set_strokes([])
@@ -1974,7 +2028,7 @@ class MainWindow(QMainWindow):
         self.current_page_index = 0
 
         self._save_ui_state()
-        self.db.save()
+        self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
@@ -1988,7 +2042,7 @@ class MainWindow(QMainWindow):
             return
 
         st.name = new_name.strip()
-        self.db.save()
+        self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
 
     def set_step_category(self) -> None:
@@ -2010,7 +2064,7 @@ class MainWindow(QMainWindow):
         st.category = (new_cat or "").strip() or "General"
         if st.category not in self.db.category_order:
             self.db.category_order.append(st.category)
-        self.db.save()
+        self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
 
     def delete_step(self) -> None:
@@ -2040,7 +2094,7 @@ class MainWindow(QMainWindow):
         first = self.db.steps[0]
         self.current_page_index = max(0, min(first.last_page_index, len(first.pages) - 1))
         self._save_ui_state()
-        self.db.save()
+        self._save_db_with_warning()
 
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
