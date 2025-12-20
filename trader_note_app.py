@@ -2,27 +2,18 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.1.1  (2025-12-20)
+Version: 0.1.2  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.1.1):
-- Added "Paste Image" feature:
-  - Paste chart image from clipboard and automatically save to ./assets
-  - Button: "Paste Image"
-  - Shortcut: Ctrl+V (when Image area is focused) to avoid interfering with text paste
-
-v0.1.0 Features:
-- Left panel: Step selection (OneNote-like navigation)
-- Right panel: Page viewer/editor
-  - Page split into two sections:
-    - Left: Large chart image viewer (supports drag & drop + file select)
-    - Right: Multi-line text editor for description
-- Bottom navigator:
-  - Shows current/total pages (e.g., "3 / 12")
-  - Prev/Next arrows for page navigation
-  - Add page (+) and Delete page
-- JSON-based persistence (no DB yet)
-  - Saves: steps, pages, image paths (stored under ./assets), and page text
+Release Notes (v0.1.2):
+- Image Zoom/Pan:
+  - Mouse wheel zoom in/out
+  - Left-drag pan (hand-drag)
+  - "Reset View" button to fit image to view
+- Per-page instrument metadata:
+  - Stock Name + Ticker editable per page
+  - "Copy Ticker" button (copies ticker text to clipboard)
+- JSON persistence extended to store name/ticker per page
 
 Run:
   python trader_note_app.py
@@ -40,19 +31,22 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF
 from PyQt5.QtGui import QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+    QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QShortcut,
     QSplitter,
     QTextEdit,
@@ -63,7 +57,7 @@ from PyQt5.QtWidgets import (
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.1.1)"
+APP_TITLE = "Trader Chart Note (v0.1.2)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -107,6 +101,8 @@ class Page:
     id: str
     image_path: str  # relative path under project
     note_text: str
+    stock_name: str
+    ticker: str
     created_at: int
     updated_at: int
 
@@ -136,6 +132,7 @@ class NoteDB:
                     self.data = json.load(f)
             except Exception:
                 self.data = {}
+
         if not self.data:
             self.data = self._default_data()
 
@@ -150,7 +147,7 @@ class NoteDB:
                 st.pages.append(self.new_page())
 
     def save(self) -> None:
-        self.data["version"] = "0.1.1"
+        self.data["version"] = "0.1.2"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -171,6 +168,8 @@ class NoteDB:
                             "id": _uuid(),
                             "image_path": "",
                             "note_text": "",
+                            "stock_name": "",
+                            "ticker": "",
                             "created_at": _now_epoch(),
                             "updated_at": _now_epoch(),
                         }
@@ -178,7 +177,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.1.1",
+            "version": "0.1.2",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -197,6 +196,8 @@ class NoteDB:
                         id=str(p.get("id", _uuid())),
                         image_path=str(p.get("image_path", "")),
                         note_text=str(p.get("note_text", "")),
+                        stock_name=str(p.get("stock_name", "")),
+                        ticker=str(p.get("ticker", "")),
                         created_at=int(p.get("created_at", _now_epoch())),
                         updated_at=int(p.get("updated_at", _now_epoch())),
                     )
@@ -225,6 +226,8 @@ class NoteDB:
                             "id": pg.id,
                             "image_path": pg.image_path,
                             "note_text": pg.note_text,
+                            "stock_name": pg.stock_name,
+                            "ticker": pg.ticker,
                             "created_at": pg.created_at,
                             "updated_at": pg.updated_at,
                         }
@@ -237,7 +240,15 @@ class NoteDB:
     @staticmethod
     def new_page() -> Page:
         now = _now_epoch()
-        return Page(id=_uuid(), image_path="", note_text="", created_at=now, updated_at=now)
+        return Page(
+            id=_uuid(),
+            image_path="",
+            note_text="",
+            stock_name="",
+            ticker="",
+            created_at=now,
+            updated_at=now,
+        )
 
     def get_step_by_id(self, step_id: str) -> Optional[Step]:
         for st in self.steps:
@@ -257,54 +268,99 @@ class NoteDB:
         return True
 
 
-class ImageViewer(QWidget):
+class ZoomPanImageView(QGraphicsView):
+    """Zoom with mouse wheel, pan with left-drag (hand drag). Supports drag & drop for image files."""
     imageDropped = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
         self.setAcceptDrops(True)
-        self.setFocusPolicy(Qt.StrongFocus)  # allow focus for Ctrl+V shortcut
+        self.setFocusPolicy(Qt.StrongFocus)
 
-        self._pixmap: Optional[QPixmap] = None
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
 
-        self._label = QLabel("Drop an image here\nor use buttons above", self)
-        self._label.setAlignment(Qt.AlignCenter)
-        self._label.setMinimumSize(200, 200)
+        self._pixmap_item: Optional[QGraphicsPixmapItem] = None
+        self._has_image: bool = False
 
-        self._scroll = QScrollArea(self)
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setWidget(self._label)
+        # Pan behavior
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._scroll)
+        # Zoom limits
+        self._zoom_factor_step = 1.25
+        self._min_scale = 0.05
+        self._max_scale = 20.0
 
-    def clear(self) -> None:
-        self._pixmap = None
-        self._label.setText("Drop an image here\nor use buttons above")
-        self._label.setPixmap(QPixmap())
+        self._placeholder = QLabel("Drop an image here\nor use buttons above")
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._placeholder.setStyleSheet("color: #666;")
+        self.setStyleSheet("background: #111;")  # just for contrast; safe for default
 
-    def set_image(self, image_abs_path: str) -> None:
-        pm = QPixmap(image_abs_path)
+    def has_image(self) -> bool:
+        return self._has_image
+
+    def clear_image(self) -> None:
+        self._scene.clear()
+        self._pixmap_item = None
+        self._has_image = False
+        self.resetTransform()
+        self.viewport().update()
+
+    def set_image_path(self, abs_path: str) -> None:
+        pm = QPixmap(abs_path)
         if pm.isNull():
-            self.clear()
+            self.clear_image()
             return
-        self._pixmap = pm
-        self._update_scaled()
+        self._set_pixmap(pm)
 
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._update_scaled()
+    def set_qimage(self, img: QImage) -> bool:
+        if img.isNull():
+            return False
+        pm = QPixmap.fromImage(img)
+        if pm.isNull():
+            return False
+        self._set_pixmap(pm)
+        return True
 
-    def _update_scaled(self) -> None:
-        if not self._pixmap or self._pixmap.isNull():
+    def _set_pixmap(self, pm: QPixmap) -> None:
+        self._scene.clear()
+        self._pixmap_item = self._scene.addPixmap(pm)
+        self._pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        self._has_image = True
+        self._scene.setSceneRect(QRectF(pm.rect()))
+        self.fit_to_view()
+
+    def fit_to_view(self) -> None:
+        if not self._pixmap_item:
+            self.resetTransform()
             return
-        vp = self._scroll.viewport().size()
-        target_w = max(1, vp.width() - 10)
-        scaled = self._pixmap.scaledToWidth(target_w, Qt.SmoothTransformation)
-        self._label.setPixmap(scaled)
-        self._label.setAlignment(Qt.AlignCenter)
-        self._label.setText("")
+        self.resetTransform()
+        rect = self._pixmap_item.boundingRect()
+        if rect.isNull():
+            return
+        self.fitInView(rect, Qt.KeepAspectRatio)
+
+    def wheelEvent(self, event) -> None:
+        if not self._has_image:
+            return
+
+        # Current scale from transform matrix (m11 ~ x scale)
+        current_scale = self.transform().m11()
+        if event.angleDelta().y() > 0:
+            target = current_scale * self._zoom_factor_step
+        else:
+            target = current_scale / self._zoom_factor_step
+
+        if target < self._min_scale or target > self._max_scale:
+            return
+
+        if event.angleDelta().y() > 0:
+            self.scale(self._zoom_factor_step, self._zoom_factor_step)
+        else:
+            inv = 1.0 / self._zoom_factor_step
+            self.scale(inv, inv)
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
@@ -325,7 +381,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1200, 800)
+        self.resize(1280, 820)
 
         self.db = NoteDB(DEFAULT_DB_PATH)
 
@@ -333,39 +389,41 @@ class MainWindow(QMainWindow):
         self.current_page_index: int = 0
         self._loading_ui: bool = False
 
+        # Debounced autosave for page fields
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
-        self._save_timer.timeout.connect(self._flush_text_to_model_and_save)
+        self._save_timer.timeout.connect(self._flush_page_fields_to_model_and_save)
 
         self._build_ui()
         self._load_ui_state_or_defaults()
         self._refresh_steps_list(select_current=True)
         self._load_current_page_to_ui()
 
-        # Shortcuts (safe ones)
+        # Shortcuts
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.go_prev_page)
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_page)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.force_save)
 
-        # Ctrl+V for clipboard image paste ONLY when image area is focused
+        # Ctrl+V for clipboard image paste ONLY when image area is focused (avoid breaking text paste)
         QShortcut(QKeySequence("Ctrl+V"), self.image_viewer, activated=self.paste_image_from_clipboard)
 
     def closeEvent(self, event) -> None:
         try:
-            self._flush_text_to_model_and_save()
+            self._flush_page_fields_to_model_and_save()
             self.db.save()
         except Exception:
             pass
         super().closeEvent(event)
 
+    # ---------------- UI ----------------
     def _build_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
 
         main_splitter = QSplitter(Qt.Horizontal, root)
 
-        # Left panel
+        # Left: steps list
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
@@ -393,12 +451,36 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(left_controls)
         left_layout.addWidget(self.steps_list, 1)
 
-        # Right panel
+        # Right: page meta + content + navigator
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 8, 8, 8)
         right_layout.setSpacing(8)
 
+        # Meta bar (per page): Stock Name + Ticker + Copy
+        meta_bar = QHBoxLayout()
+        meta_bar.setContentsMargins(0, 0, 0, 0)
+
+        meta_bar.addWidget(QLabel("Name:"))
+        self.edit_stock_name = QLineEdit()
+        self.edit_stock_name.setPlaceholderText("e.g., Apple Inc.")
+        self.edit_stock_name.textChanged.connect(self._on_page_field_changed)
+        meta_bar.addWidget(self.edit_stock_name, 3)
+
+        meta_bar.addSpacing(12)
+        meta_bar.addWidget(QLabel("Ticker:"))
+        self.edit_ticker = QLineEdit()
+        self.edit_ticker.setPlaceholderText("e.g., AAPL")
+        self.edit_ticker.textChanged.connect(self._on_page_field_changed)
+        meta_bar.addWidget(self.edit_ticker, 1)
+
+        self.btn_copy_ticker = QPushButton("Copy Ticker")
+        self.btn_copy_ticker.clicked.connect(self.copy_ticker)
+        meta_bar.addWidget(self.btn_copy_ticker)
+
+        meta_bar.addStretch(1)
+
+        # Page split (image | text)
         self.page_splitter = QSplitter(Qt.Horizontal)
 
         # Image section
@@ -411,17 +493,20 @@ class MainWindow(QMainWindow):
         self.btn_set_image = QPushButton("Set Image...")
         self.btn_paste_image = QPushButton("Paste Image (Ctrl+V)")
         self.btn_clear_image = QPushButton("Clear Image")
+        self.btn_reset_view = QPushButton("Reset View")
 
         self.btn_set_image.clicked.connect(self.set_image_via_dialog)
         self.btn_paste_image.clicked.connect(self.paste_image_from_clipboard)
         self.btn_clear_image.clicked.connect(self.clear_image)
+        self.btn_reset_view.clicked.connect(self.reset_image_view)
 
         img_toolbar.addWidget(self.btn_set_image)
         img_toolbar.addWidget(self.btn_paste_image)
         img_toolbar.addWidget(self.btn_clear_image)
+        img_toolbar.addWidget(self.btn_reset_view)
         img_toolbar.addStretch(1)
 
-        self.image_viewer = ImageViewer()
+        self.image_viewer = ZoomPanImageView()
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
 
         img_layout.addLayout(img_toolbar)
@@ -446,7 +531,7 @@ class MainWindow(QMainWindow):
 
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText("Write your analysis / explanation here...")
-        self.text_edit.textChanged.connect(self._on_text_changed)
+        self.text_edit.textChanged.connect(self._on_page_field_changed)
 
         text_layout.addLayout(text_header)
         text_layout.addWidget(self.text_edit, 1)
@@ -487,19 +572,23 @@ class MainWindow(QMainWindow):
         nav.addWidget(self.btn_add_page)
         nav.addWidget(self.btn_del_page)
 
+        # Assemble right layout
+        right_layout.addLayout(meta_bar)
         right_layout.addWidget(self.page_splitter, 1)
         right_layout.addLayout(nav)
 
+        # Main splitter
         main_splitter.addWidget(left_panel)
         main_splitter.addWidget(right_panel)
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([260, 940])
+        main_splitter.setSizes([270, 1010])
 
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(main_splitter)
 
+    # ---------------- State helpers ----------------
     def _load_ui_state_or_defaults(self) -> None:
         step_id = self.db.ui_state.get("selected_step_id")
         page_idx = self.db.ui_state.get("current_page_index", 0)
@@ -529,6 +618,11 @@ class MainWindow(QMainWindow):
         idx = max(0, min(self.current_page_index, len(st.pages) - 1))
         return st.pages[idx]
 
+    def _save_ui_state(self) -> None:
+        self.db.ui_state["selected_step_id"] = self.current_step_id
+        self.db.ui_state["current_page_index"] = self.current_page_index
+
+    # ---------------- Steps list ----------------
     def _refresh_steps_list(self, select_current: bool = False) -> None:
         self.steps_list.blockSignals(True)
         self.steps_list.clear()
@@ -551,7 +645,7 @@ class MainWindow(QMainWindow):
         if not item:
             return
 
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
 
         step_id = item.data(Qt.UserRole)
         if not step_id:
@@ -566,34 +660,88 @@ class MainWindow(QMainWindow):
         self._save_ui_state()
         self._load_current_page_to_ui()
 
-    def _save_ui_state(self) -> None:
-        self.db.ui_state["selected_step_id"] = self.current_step_id
-        self.db.ui_state["current_page_index"] = self.current_page_index
-
+    # ---------------- Page load/save ----------------
     def _load_current_page_to_ui(self) -> None:
         st = self.current_step()
         pg = self.current_page()
         if not st or not pg:
-            self.image_viewer.clear()
-            self.text_edit.clear()
-            self._update_nav()
+            self._loading_ui = True
+            try:
+                self.edit_stock_name.clear()
+                self.edit_ticker.clear()
+                self.text_edit.clear()
+                self.image_viewer.clear_image()
+                self._update_nav()
+            finally:
+                self._loading_ui = False
             return
 
         self._loading_ui = True
         try:
+            # Meta
+            self.edit_stock_name.setText(pg.stock_name or "")
+            self.edit_ticker.setText(pg.ticker or "")
+
+            # Image
             if pg.image_path:
                 abs_path = _abspath_from_rel(pg.image_path)
                 if os.path.exists(abs_path):
-                    self.image_viewer.set_image(abs_path)
+                    self.image_viewer.set_image_path(abs_path)
                 else:
-                    self.image_viewer.clear()
+                    self.image_viewer.clear_image()
             else:
-                self.image_viewer.clear()
+                self.image_viewer.clear_image()
 
+            # Text
             self.text_edit.setPlainText(pg.note_text or "")
+
             self._update_nav()
         finally:
             self._loading_ui = False
+
+    def _on_page_field_changed(self) -> None:
+        if self._loading_ui:
+            return
+        self._save_timer.start(450)
+
+    def _flush_page_fields_to_model_and_save(self) -> None:
+        st = self.current_step()
+        pg = self.current_page()
+        if not st or not pg:
+            return
+        if self._loading_ui:
+            return
+
+        changed = False
+
+        # Text
+        new_text = self.text_edit.toPlainText()
+        if pg.note_text != new_text:
+            pg.note_text = new_text
+            changed = True
+
+        # Meta
+        new_name = self.edit_stock_name.text()
+        if pg.stock_name != new_name:
+            pg.stock_name = new_name
+            changed = True
+
+        new_ticker = self.edit_ticker.text()
+        if pg.ticker != new_ticker:
+            pg.ticker = new_ticker
+            changed = True
+
+        # Track last visited page for this step
+        st.last_page_index = self.current_page_index
+        self._save_ui_state()
+
+        if changed:
+            pg.updated_at = _now_epoch()
+        self.db.save()
+
+    def force_save(self) -> None:
+        self._flush_page_fields_to_model_and_save()
+        QMessageBox.information(self, "Saved", "Saved to JSON.")
 
     def _update_nav(self) -> None:
         st = self.current_step()
@@ -605,38 +753,12 @@ class MainWindow(QMainWindow):
         self.btn_next.setEnabled(total > 0 and self.current_page_index < total - 1)
         self.btn_del_page.setEnabled(total > 1)
 
-    def _on_text_changed(self) -> None:
-        if self._loading_ui:
-            return
-        self._save_timer.start(450)
-
-    def _flush_text_to_model_and_save(self) -> None:
-        st = self.current_step()
-        pg = self.current_page()
-        if not st or not pg:
-            return
-        if self._loading_ui:
-            return
-
-        new_text = self.text_edit.toPlainText()
-        if pg.note_text != new_text:
-            pg.note_text = new_text
-            pg.updated_at = _now_epoch()
-
-        st.last_page_index = self.current_page_index
-        self._save_ui_state()
-        self.db.save()
-
-    def force_save(self) -> None:
-        self._flush_text_to_model_and_save()
-        QMessageBox.information(self, "Saved", "Saved to JSON.")
-
-    # ---------- Page navigation ----------
+    # ---------------- Page navigation ----------------
     def go_prev_page(self) -> None:
         st = self.current_step()
         if not st or self.current_page_index <= 0:
             return
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
         self.current_page_index -= 1
         st.last_page_index = self.current_page_index
         self._save_ui_state()
@@ -646,7 +768,7 @@ class MainWindow(QMainWindow):
         st = self.current_step()
         if not st or self.current_page_index >= len(st.pages) - 1:
             return
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
         self.current_page_index += 1
         st.last_page_index = self.current_page_index
         self._save_ui_state()
@@ -656,9 +778,9 @@ class MainWindow(QMainWindow):
         st = self.current_step()
         if not st:
             return
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
 
-        insert_at = self.current_page_index + 1
+        insert_at = self.current_page_index + 1  # policy: insert after current page
         st.pages.insert(insert_at, self.db.new_page())
         self.current_page_index = insert_at
         st.last_page_index = self.current_page_index
@@ -682,7 +804,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
         del st.pages[self.current_page_index]
         self.current_page_index = max(0, min(self.current_page_index, len(st.pages) - 1))
         st.last_page_index = self.current_page_index
@@ -691,7 +813,11 @@ class MainWindow(QMainWindow):
         self.db.save()
         self._load_current_page_to_ui()
 
-    # ---------- Image handling ----------
+    # ---------------- Image handling ----------------
+    def reset_image_view(self) -> None:
+        self.image_viewer.fit_to_view()
+        self.image_viewer.setFocus(Qt.MouseFocusReason)
+
     def _on_image_dropped(self, path: str) -> None:
         self._set_image_from_file(path)
 
@@ -711,17 +837,16 @@ class MainWindow(QMainWindow):
         pg = self.current_page()
         if not st or not pg:
             return
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
         pg.image_path = ""
         pg.updated_at = _now_epoch()
         self.db.save()
-        self.image_viewer.clear()
+        self.image_viewer.clear_image()
 
     def paste_image_from_clipboard(self) -> None:
         """
         Paste image from clipboard and save it into ./assets, then set to current page.
-        Note:
-          - Shortcut Ctrl+V is bound to the image viewer only to avoid breaking text paste behavior.
+        Shortcut Ctrl+V is bound to the image view only to avoid breaking text paste behavior.
         """
         st = self.current_step()
         pg = self.current_page()
@@ -734,7 +859,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Paste Image", "Clipboard does not contain an image.")
             return
 
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
 
         safe_step = _sanitize_for_folder(st.name, st.id[:8])
         dst_dir = os.path.join(ASSETS_DIR, safe_step)
@@ -755,7 +880,7 @@ class MainWindow(QMainWindow):
         self._save_ui_state()
         self.db.save()
 
-        self.image_viewer.set_image(dst_abs)
+        self.image_viewer.set_image_path(dst_abs)
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     def _set_image_from_file(self, src_path: str) -> None:
@@ -766,7 +891,7 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(src_path):
             return
 
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
 
         ext = os.path.splitext(src_path)[1].lower()
         if ext not in [".png", ".jpg", ".jpeg", ".bmp", ".webp"]:
@@ -793,19 +918,26 @@ class MainWindow(QMainWindow):
         self._save_ui_state()
         self.db.save()
 
-        self.image_viewer.set_image(dst_abs)
+        self.image_viewer.set_image_path(dst_abs)
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
-    # ---------- Text handling ----------
+    # ---------------- Text/meta utilities ----------------
     def clear_text(self) -> None:
         self.text_edit.clear()
 
-    # ---------- Step management ----------
+    def copy_ticker(self) -> None:
+        txt = self.edit_ticker.text().strip()
+        if not txt:
+            QMessageBox.information(self, "Copy Ticker", "Ticker is empty.")
+            return
+        QApplication.clipboard().setText(txt)
+
+    # ---------------- Step management ----------------
     def add_step(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Step", "Step name:")
         if not ok or not name.strip():
             return
-        self._flush_text_to_model_and_save()
+        self._flush_page_fields_to_model_and_save()
         st = self.db.add_step(name.strip())
         self.current_step_id = st.id
         self.current_page_index = 0
@@ -843,8 +975,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        step_id = st.id
-        ok = self.db.delete_step(step_id)
+        ok = self.db.delete_step(st.id)
         if not ok:
             QMessageBox.warning(self, "Failed", "Cannot delete the last remaining step.")
             return
