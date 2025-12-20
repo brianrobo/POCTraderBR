@@ -2,23 +2,26 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.3.3  (2025-12-20)
+Version: 0.3.4  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.3.3):
-- (Feature) 이미지 상단(Annotation 버튼과 같은 영역)에 "간단 설명" 입력창(overlay) 추가
-  - 페이지(Page)별로 저장/로드, 즉시 수정 가능
-  - JSON에 page.image_caption 필드로 영구 저장
-- v0.3.2 기능 유지:
-  - (Bugfix) QGraphicsPathItem deleted 크래시 방지
-  - Annotate 오버레이 패널(✎ 버튼 → 패널)
-  - Category → Step Tree + Category 우클릭 메뉴
-  - Category 순서 Up/Down 이동 및 JSON(category_order) 저장
-  - 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines(confirm)
-  - Checklist(4문항) + Description
-  - 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단
-  - Del Page confirm
-  - Clipboard 이미지 붙여넣기 저장 (Ctrl+V: image_viewer 포커스일 때)
+Release Notes (v0.3.4):
+- (UI/UX) 이미지 상단 "간단 설명" overlay를 멀티라인(자동 줄바꿈) 입력으로 확장
+- (UI/UX) 기본은 1줄 높이로 표시되며, hover 또는 클릭/포커스 시 2~3줄로 확장
+  - 포커스가 빠지고 마우스가 떠나면 자동 축소
+
+v0.3.3 기능 유지:
+- (Feature) 이미지 상단(Annotation 버튼과 같은 영역)에 "간단 설명" 입력창(overlay)
+  - 페이지(Page)별 저장/로드
+- (Bugfix) QGraphicsPathItem deleted 크래시 방지
+- Annotate 오버레이 패널(✎ 버튼 → 패널)
+- Category → Step Tree + Category 우클릭 메뉴
+- Category 순서 Up/Down 이동 및 JSON(category_order) 저장
+- 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines(confirm)
+- Checklist(4문항) + Description
+- 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단
+- Del Page confirm
+- Clipboard 이미지 붙여넣기 저장 (Ctrl+V: image_viewer 포커스일 때)
 
 Run:
   python trader_note_app.py
@@ -86,10 +89,11 @@ from PyQt5.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QMenu,
+    QPlainTextEdit,  # v0.3.4
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.3.3)"
+APP_TITLE = "Trader Chart Note (v0.3.4)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -248,6 +252,96 @@ class FlowLayout(QLayout):
 
 
 # ---------------------------
+# v0.3.4: Collapsible caption overlay (1-line collapsed, expands on hover/focus)
+# ---------------------------
+class CollapsibleCaptionEdit(QPlainTextEdit):
+    expandedChanged = pyqtSignal(bool)
+
+    def __init__(self, parent=None, collapsed_h: int = 28, expanded_h: int = 84):
+        super().__init__(parent)
+        self._collapsed_h = int(collapsed_h)
+        self._expanded_h = int(expanded_h)
+        self._expanded = False
+
+        self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
+
+        self.setFixedHeight(self._collapsed_h)
+        self.setStyleSheet("""
+            QPlainTextEdit {
+                background: rgba(255,255,255,235);
+                border: 1px solid #9A9A9A;
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #222;
+            }
+            QPlainTextEdit:focus {
+                border: 1px solid #5A8DFF;
+            }
+        """)
+
+    def setPlaceholderTextCompat(self, text: str) -> None:
+        # QPlainTextEdit는 placeholder 지원(버전에 따라 다름) -> Qt5.11+ 대부분 OK
+        try:
+            self.setPlaceholderText(text)
+        except Exception:
+            pass
+
+    def isExpanded(self) -> bool:
+        return self._expanded
+
+    def expand(self) -> None:
+        if self._expanded:
+            return
+        self._expanded = True
+        self.setFixedHeight(self._expanded_h)
+        # 3줄을 넘어가면 스크롤이 필요할 수 있으나, 기본은 OFF 유지
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.expandedChanged.emit(True)
+
+    def collapse(self) -> None:
+        if not self._expanded:
+            return
+        self._expanded = False
+        self.setFixedHeight(self._collapsed_h)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.expandedChanged.emit(False)
+
+    def enterEvent(self, event) -> None:
+        self.expand()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        # 마우스가 떠나도, 포커스 유지 중이면 유지
+        if not self.hasFocus():
+            self.collapse()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        # 클릭하면 확장 + 편집 모드
+        self.expand()
+        super().mousePressEvent(event)
+
+    def focusInEvent(self, event) -> None:
+        self.expand()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        # 포커스가 빠진 직후, 마우스가 위에 없으면 축소
+        QTimer.singleShot(0, self._collapse_if_not_hovered)
+
+    def _collapse_if_not_hovered(self) -> None:
+        if self.hasFocus():
+            return
+        # underMouse()가 False면 축소
+        if not self.underMouse():
+            self.collapse()
+
+
+# ---------------------------
 # Data Models
 # ---------------------------
 Strokes = List[Dict[str, Any]]
@@ -303,7 +397,7 @@ def _normalize_checklist(raw: Any) -> Checklist:
 class Page:
     id: str
     image_path: str
-    image_caption: str  # v0.3.3: 상단 간단 설명
+    image_caption: str  # multi-line supported
     note_text: str
     stock_name: str
     ticker: str
@@ -361,7 +455,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> None:
-        self.data["version"] = "0.3.3"
+        self.data["version"] = "0.3.4"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -383,7 +477,7 @@ class NoteDB:
                         {
                             "id": _uuid(),
                             "image_path": "",
-                            "image_caption": "",  # v0.3.3
+                            "image_caption": "",
                             "note_text": "",
                             "stock_name": "",
                             "ticker": "",
@@ -396,7 +490,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.3.3",
+            "version": "0.3.4",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -421,7 +515,7 @@ class NoteDB:
                     Page(
                         id=str(p.get("id", _uuid())),
                         image_path=str(p.get("image_path", "")),
-                        image_caption=str(p.get("image_caption", "")),  # v0.3.3
+                        image_caption=str(p.get("image_caption", "")),
                         note_text=str(p.get("note_text", "")),
                         stock_name=str(p.get("stock_name", "")),
                         ticker=str(p.get("ticker", "")),
@@ -459,7 +553,7 @@ class NoteDB:
                         {
                             "id": pg.id,
                             "image_path": pg.image_path,
-                            "image_caption": pg.image_caption,  # v0.3.3
+                            "image_caption": pg.image_caption,
                             "note_text": pg.note_text,
                             "stock_name": pg.stock_name,
                             "ticker": pg.ticker,
@@ -480,7 +574,7 @@ class NoteDB:
         return Page(
             id=_uuid(),
             image_path="",
-            image_caption="",  # v0.3.3
+            image_caption="",
             note_text="",
             stock_name="",
             ticker="",
@@ -529,7 +623,6 @@ class NoteDB:
         self._ensure_category_order_consistency()
         return True
 
-    # ----- Category operations -----
     def rename_category(self, old: str, new: str) -> None:
         old = (old or "").strip() or "General"
         new = (new or "").strip() or "General"
@@ -654,9 +747,8 @@ class ZoomPanAnnotateView(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.viewport().setCursor(Qt.OpenHandCursor)
 
-    # v0.3.2 bugfix: clear order (clear strokes first), and robust stroke cleanup
     def clear_image(self) -> None:
-        self._clear_strokes_internal(emit_signal=False)  # MUST before scene.clear()
+        self._clear_strokes_internal(emit_signal=False)
         self._scene.clear()
         self._pixmap_item = None
         self._has_image = False
@@ -669,9 +761,8 @@ class ZoomPanAnnotateView(QGraphicsView):
             return
         self._set_pixmap(pm)
 
-    # v0.3.2 bugfix: clear strokes before scene.clear()
     def _set_pixmap(self, pm: QPixmap) -> None:
-        self._clear_strokes_internal(emit_signal=False)  # MUST before scene.clear()
+        self._clear_strokes_internal(emit_signal=False)
         self._scene.clear()
 
         self._pixmap_item = self._scene.addPixmap(pm)
@@ -756,7 +847,6 @@ class ZoomPanAnnotateView(QGraphicsView):
     def clear_strokes(self) -> None:
         self._clear_strokes_internal(emit_signal=True)
 
-    # v0.3.2 bugfix: scene.clear() 등으로 이미 삭제된 wrapped object 안전 처리
     def _clear_strokes_internal(self, emit_signal: bool) -> None:
         for it in list(self._stroke_items):
             try:
@@ -1263,25 +1353,15 @@ class MainWindow(QMainWindow):
         self.db.save()
         self._refresh_steps_tree(select_current=True)
 
-    # ---------------- Annotate Overlay + Image caption overlay ----------------
+    # ---------------- Annotate Overlay + Caption Overlay ----------------
     def _build_annotate_overlay(self) -> None:
         vp = self.image_viewer.viewport()
 
-        # v0.3.3: Image caption overlay (top area)
-        self.edit_img_caption = QLineEdit(vp)
-        self.edit_img_caption.setPlaceholderText("이미지 간단 설명(예: 돌파 후 눌림, 거래량 체크 포인트 등)")
-        self.edit_img_caption.setFixedHeight(28)
+        # v0.3.4: collapsible multi-line caption overlay
+        self.edit_img_caption = CollapsibleCaptionEdit(vp, collapsed_h=28, expanded_h=84)
+        self.edit_img_caption.setPlaceholderTextCompat("이미지 간단 설명 (hover/클릭 시 2~3줄 확장)")
         self.edit_img_caption.textChanged.connect(self._on_page_field_changed)
-        self.edit_img_caption.setStyleSheet("""
-            QLineEdit {
-                background: rgba(255,255,255,235);
-                border: 1px solid #9A9A9A;
-                border-radius: 8px;
-                padding-left: 10px;
-                padding-right: 10px;
-                color: #222;
-            }
-        """)
+        self.edit_img_caption.expandedChanged.connect(lambda _: self._reposition_overlay())
 
         self.btn_anno_toggle = QToolButton(vp)
         self.btn_anno_toggle.setText("✎")
@@ -1402,27 +1482,29 @@ class MainWindow(QMainWindow):
         w = vp.width()
         margin = 10
 
-        # annotation button position
+        # annotation button
         self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
 
-        # caption line edit position (top row)
-        # 기본: 우측에 annotation 버튼을 두고, 그 왼쪽에 caption 배치
+        # caption placement: left to annotation button or left to panel when panel is open
         btn_w = self.btn_anno_toggle.width()
         cap_min = 260
-        cap_max = 640
-        cap_w = min(cap_max, max(cap_min, w - (btn_w + 3 * margin)))
+        cap_max = 720
+
+        # caption height is managed by CollapsibleCaptionEdit (fixedHeight)
         cap_h = self.edit_img_caption.height()
 
         if self.anno_panel.isVisible():
-            # panel이 우측을 차지하면, 그 왼쪽에 caption을 배치
             panel_x = max(margin, w - self.anno_panel.width() - margin)
-            cap_x = max(margin, panel_x - margin - cap_w)
             self.anno_panel.move(panel_x, margin)
+
+            cap_w = min(cap_max, max(cap_min, panel_x - 2 * margin))
+            cap_x = max(margin, panel_x - margin - cap_w)
         else:
+            cap_w = min(cap_max, max(cap_min, w - (btn_w + 3 * margin)))
             cap_x = max(margin, w - margin - btn_w - margin - cap_w)
 
         self.edit_img_caption.setFixedWidth(cap_w)
-        self.edit_img_caption.move(cap_x, margin + 1)
+        self.edit_img_caption.move(cap_x, margin)
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.image_viewer.viewport() and event.type() == QEvent.Resize:
@@ -1550,7 +1632,7 @@ class MainWindow(QMainWindow):
             try:
                 self.edit_stock_name.clear()
                 self.edit_ticker.clear()
-                self.edit_img_caption.clear()
+                self.edit_img_caption.setPlainText("")
                 for cb in self.chk_boxes:
                     cb.setChecked(False)
                 for note in self.chk_notes:
@@ -1567,7 +1649,7 @@ class MainWindow(QMainWindow):
         try:
             self.edit_stock_name.setText(pg.stock_name or "")
             self.edit_ticker.setText(pg.ticker or "")
-            self.edit_img_caption.setText(pg.image_caption or "")
+            self.edit_img_caption.setPlainText(pg.image_caption or "")
 
             if pg.image_path:
                 abs_path = _abspath_from_rel(pg.image_path)
@@ -1613,7 +1695,7 @@ class MainWindow(QMainWindow):
 
         changed = False
 
-        new_cap = self.edit_img_caption.text()
+        new_cap = self.edit_img_caption.toPlainText()
         if pg.image_caption != new_cap:
             pg.image_caption = new_cap
             changed = True
@@ -1872,7 +1954,7 @@ class MainWindow(QMainWindow):
             return
         QApplication.clipboard().setText(txt)
 
-    # ---------------- Step management (buttons) ----------------
+    # ---------------- Step management ----------------
     def add_step(self) -> None:
         self._flush_page_fields_to_model_and_save()
 
