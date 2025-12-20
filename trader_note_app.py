@@ -1,7 +1,27 @@
 """
-1번, 2번 모두 적용해줘. 그리고, 노트 이미지 상단 종목명 입력박스가 너무 길으니 반으로 줄여서, ticker부분을 더 옆으로 옮겨줘
-"""
+아래는 요청하신 UI 변경을 반영한 v0.1.6 전체 코드입니다.
 
+반영 사항
+
+종목명(Name) / Ticker / Copy Ticker를 “상단 공용 바”에서 제거하고, 좌측 이미지 섹션(차트 영역) 상단에 한 줄로 붙였습니다. (Ticker + Copy가 종목명 오른쪽에 바짝 붙음)
+
+페이지 이동/페이지 수/페이지 추가/삭제 네비게이션을 우측 전체 하단에서 제거하고, 좌측 이미지 섹션 하단으로 옮겼습니다.
+
+페이지 삭제는 confirm 팝업 유지(요청대로).
+
+기존 JSON 저장은 그대로 유지됩니다.
+
+------------
+
+원하시면 다음으로 “창 크기 줄였을 때도” 더 안정적으로 보이도록,
+
+이미지 섹션 상단(meta_in_image)과 툴바를 2줄로 자동 줄바꿈하거나
+
+Copy 버튼을 아이콘(📋) 형태로 더 작게
+
+이런 식으로 UI 밀림을 더 줄이는 것도 가능합니다.
+
+"""
 
 
 
@@ -9,22 +29,19 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.1.4  (2025-12-20)
+Version: 0.1.6  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.1.4):
-- Image annotation overlay (non-destructive):
-  - Draw mode: draw on top of the chart (original image unchanged)
-  - Clear Lines: deletes only drawn overlays
-  - Persist annotations in JSON per page
-- Drawing enhancements:
-  1) Shift-straight-line mode:
-     - While drawing, hold SHIFT to constrain to a straight line from start point
-  2) Pen customization:
-     - Select line color + thickness for new strokes
-     - Each stroke stores its own color/width and is restored on reload
-- Meta bar layout tweak:
-  - Stock Name input width reduced (fixed), so Ticker section is positioned further to the right
+Release Notes (v0.1.6):
+- UI Layout 개선
+  1) Name/Ticker/Copy Ticker를 "이미지 섹션 상단"으로 이동 (우측 Description 영역으로 넘치지 않도록)
+  2) 페이지 네비게이션(◀, 페이지수, ▶, +Page, Del Page)을 "이미지 섹션 하단"으로 이동
+     - Del Page는 사용자 confirm 팝업 제공
+- 기존 기능 유지:
+  - 이미지 Zoom/Pan
+  - Draw/Shift 직선/색/두께 + Clear Lines
+  - Checklist(4문항 체크 + 설명 입력) + Description 본문
+  - JSON 저장
 
 Run:
   python trader_note_app.py
@@ -67,12 +84,22 @@ from PyQt5.QtWidgets import (
     QWidget,
     QInputDialog,
     QComboBox,
+    QCheckBox,
+    QGroupBox,
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.1.4)"
+APP_TITLE = "Trader Chart Note (v0.1.6)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
+
+
+DEFAULT_CHECK_QUESTIONS = [
+    "Q. 매집구간이 보이는가?",
+    "Q. 매물이 모두 정리가 되었는가? 그럴만한 상승구간과 거래량이 나왔는가?",
+    "Q. 그렇지 않다면 지지선, 깨지말아야할 선은 무엇인가?",
+    "Q. 돌아서는 구간을 찾을 수 있는가?",
+]
 
 
 def _now_epoch() -> int:
@@ -108,24 +135,28 @@ def _sanitize_for_folder(name: str, fallback: str) -> str:
     return safe or fallback
 
 
-# Annotation model:
 # strokes = [
 #   { "color": "#FF0000", "width": 3.0, "points": [[x,y], [x,y], ...] },
 #   ...
 # ]
 Strokes = List[Dict[str, Any]]
 
+# checklist = [
+#   { "q": "...", "checked": true/false, "note": "..." },
+#   ...
+# ]
+Checklist = List[Dict[str, Any]]
+
 
 def _normalize_strokes(raw: Any) -> Strokes:
     """
     Backward compatible normalization:
     - v0.1.3 stored: List[List[List[float]]]  (points only)
-    - v0.1.4 stores: List[{"color","width","points"}]
+    - v0.1.4+ stores: List[{"color","width","points"}]
     """
     if not raw:
         return []
 
-    # New format
     if isinstance(raw, list) and raw and isinstance(raw[0], dict):
         out: Strokes = []
         for s in raw:
@@ -140,7 +171,6 @@ def _normalize_strokes(raw: Any) -> Strokes:
                 continue
         return out
 
-    # Old format: list of strokes, each stroke is list of [x,y]
     if isinstance(raw, list) and (len(raw) == 0 or isinstance(raw[0], list)):
         out2: Strokes = []
         for stroke in raw:
@@ -152,6 +182,23 @@ def _normalize_strokes(raw: Any) -> Strokes:
     return []
 
 
+def _default_checklist() -> Checklist:
+    return [{"q": q, "checked": False, "note": ""} for q in DEFAULT_CHECK_QUESTIONS]
+
+
+def _normalize_checklist(raw: Any) -> Checklist:
+    base = _default_checklist()
+    if not isinstance(raw, list):
+        return base
+
+    for i in range(min(len(base), len(raw))):
+        item = raw[i]
+        if isinstance(item, dict):
+            base[i]["checked"] = bool(item.get("checked", False))
+            base[i]["note"] = str(item.get("note", ""))
+    return base
+
+
 @dataclass
 class Page:
     id: str
@@ -160,6 +207,7 @@ class Page:
     stock_name: str
     ticker: str
     strokes: Strokes
+    checklist: Checklist
     created_at: int
     updated_at: int
 
@@ -202,7 +250,7 @@ class NoteDB:
                 st.pages.append(self.new_page())
 
     def save(self) -> None:
-        self.data["version"] = "0.1.4"
+        self.data["version"] = "0.1.6"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -226,6 +274,7 @@ class NoteDB:
                             "stock_name": "",
                             "ticker": "",
                             "strokes": [],
+                            "checklist": _default_checklist(),
                             "created_at": _now_epoch(),
                             "updated_at": _now_epoch(),
                         }
@@ -233,7 +282,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.1.4",
+            "version": "0.1.6",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -247,11 +296,12 @@ class NoteDB:
             pages_raw = s.get("pages", [])
             pages: List[Page] = []
             for p in pages_raw:
-                # backward compatible: p["annotations"] -> p["strokes"]
                 raw_strokes = p.get("strokes", None)
                 if raw_strokes is None:
                     raw_strokes = p.get("annotations", [])
                 strokes = _normalize_strokes(raw_strokes)
+
+                checklist = _normalize_checklist(p.get("checklist", None))
 
                 pages.append(
                     Page(
@@ -261,6 +311,7 @@ class NoteDB:
                         stock_name=str(p.get("stock_name", "")),
                         ticker=str(p.get("ticker", "")),
                         strokes=strokes,
+                        checklist=checklist,
                         created_at=int(p.get("created_at", _now_epoch())),
                         updated_at=int(p.get("updated_at", _now_epoch())),
                     )
@@ -292,6 +343,7 @@ class NoteDB:
                             "stock_name": pg.stock_name,
                             "ticker": pg.ticker,
                             "strokes": pg.strokes,
+                            "checklist": pg.checklist,
                             "created_at": pg.created_at,
                             "updated_at": pg.updated_at,
                         }
@@ -311,6 +363,7 @@ class NoteDB:
             stock_name="",
             ticker="",
             strokes=[],
+            checklist=_default_checklist(),
             created_at=now,
             updated_at=now,
         )
@@ -348,22 +401,18 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
         self._has_image: bool = False
 
-        # Zoom behavior
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self._zoom_factor_step = 1.25
         self._min_scale = 0.05
         self._max_scale = 20.0
 
-        # Modes
         self._draw_mode: bool = False
         self._is_drawing: bool = False
 
-        # Pen config for NEW strokes
         self._pen_color = QColor("#FF3C3C")
         self._pen_width = 3.0
 
-        # Current stroke data
         self._current_path: Optional[QPainterPath] = None
         self._current_item: Optional[QGraphicsPathItem] = None
         self._current_points: List[List[float]] = []
@@ -371,13 +420,11 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._stroke_color_hex: str = "#FF3C3C"
         self._stroke_width: float = 3.0
 
-        # All strokes (data + items)
         self._strokes: Strokes = []
         self._stroke_items: List[QGraphicsPathItem] = []
 
         self.set_mode_pan()
 
-    # ----- Pen config -----
     def set_pen(self, color_hex: str, width: float) -> None:
         try:
             c = QColor(color_hex)
@@ -397,10 +444,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         pen.setJoinStyle(Qt.RoundJoin)
         return pen
 
-    # ----- Mode control -----
-    def is_draw_mode(self) -> bool:
-        return self._draw_mode
-
     def set_mode_draw(self) -> None:
         self._draw_mode = True
         self.setDragMode(QGraphicsView.NoDrag)
@@ -411,7 +454,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.viewport().setCursor(Qt.OpenHandCursor)
 
-    # ----- Image control -----
     def clear_image(self) -> None:
         self._scene.clear()
         self._pixmap_item = None
@@ -427,7 +469,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._set_pixmap(pm)
 
     def _set_pixmap(self, pm: QPixmap) -> None:
-        # Policy: new image => clear strokes (coords mismatch)
         self._scene.clear()
         self._pixmap_item = self._scene.addPixmap(pm)
         self._pixmap_item.setTransformationMode(Qt.SmoothTransformation)
@@ -450,7 +491,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         self.resetTransform()
         self.fitInView(rect, Qt.KeepAspectRatio)
 
-    # ----- Zoom -----
     def wheelEvent(self, event) -> None:
         if not self._has_image:
             return
@@ -470,7 +510,6 @@ class ZoomPanAnnotateView(QGraphicsView):
             inv = 1.0 / self._zoom_factor_step
             self.scale(inv, inv)
 
-    # ----- Drag & drop image file -----
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -485,7 +524,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         if local_path and os.path.isfile(local_path):
             self.imageDropped.emit(local_path)
 
-    # ----- Stroke persistence -----
     def get_strokes(self) -> Strokes:
         return self._strokes
 
@@ -496,7 +534,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         if not self._has_image:
             return
 
-        # Rebuild items
         for s in self._strokes:
             pts = s.get("points", [])
             if not isinstance(pts, list) or len(pts) < 2:
@@ -532,7 +569,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         if emit_signal:
             self.strokesChanged.emit()
 
-    # ----- Drawing interactions -----
     def mousePressEvent(self, event) -> None:
         if self._draw_mode and self._has_image and event.button() == Qt.LeftButton:
             scene_pos = self.mapToScene(event.pos())
@@ -541,7 +577,6 @@ class ZoomPanAnnotateView(QGraphicsView):
             self._start_stroke(scene_pos)
             event.accept()
             return
-
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -553,7 +588,6 @@ class ZoomPanAnnotateView(QGraphicsView):
             self._append_stroke(scene_pos, shift=shift)
             event.accept()
             return
-
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -561,7 +595,6 @@ class ZoomPanAnnotateView(QGraphicsView):
             self._finish_stroke()
             event.accept()
             return
-
         super().mouseReleaseEvent(event)
 
     def _point_inside_pixmap(self, pt: QPointF) -> bool:
@@ -583,7 +616,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         item.setPen(self._make_pen(self._stroke_color_hex, self._stroke_width))
         item.setZValue(10)
         self._scene.addItem(item)
-
         self._current_item = item
 
     def _append_stroke(self, pt: QPointF, shift: bool) -> None:
@@ -591,7 +623,6 @@ class ZoomPanAnnotateView(QGraphicsView):
             return
 
         if shift:
-            # Straight line: only keep start and current
             start = self._stroke_start
             path = QPainterPath(start)
             path.lineTo(pt)
@@ -599,15 +630,13 @@ class ZoomPanAnnotateView(QGraphicsView):
             self._current_points = [[float(start.x()), float(start.y())], [float(pt.x()), float(pt.y())]]
             return
 
-        # Freehand
         if not self._current_path:
             self._current_path = QPainterPath(self._stroke_start)
 
-        # ignore tiny moves
         last = self._current_points[-1]
         dx = pt.x() - last[0]
         dy = pt.y() - last[1]
-        if (dx * dx + dy * dy) < 4.0:  # ~2px threshold
+        if (dx * dx + dy * dy) < 4.0:
             return
 
         self._current_path.lineTo(pt)
@@ -621,7 +650,6 @@ class ZoomPanAnnotateView(QGraphicsView):
             self._reset_current()
             return
 
-        # Commit data
         self._stroke_items.append(self._current_item)
         self._strokes.append(
             {
@@ -646,7 +674,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1350, 880)
+        self.resize(1380, 920)
 
         self.db = NoteDB(DEFAULT_DB_PATH)
 
@@ -668,7 +696,6 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_page)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.force_save)
 
-        # Ctrl+V for clipboard image paste ONLY when image area is focused
         QShortcut(QKeySequence("Ctrl+V"), self.image_viewer, activated=self.paste_image_from_clipboard)
 
     def closeEvent(self, event) -> None:
@@ -679,7 +706,6 @@ class MainWindow(QMainWindow):
             pass
         super().closeEvent(event)
 
-    # ---------------- UI ----------------
     def _build_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -714,59 +740,61 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(left_controls)
         left_layout.addWidget(self.steps_list, 1)
 
-        # Right: page meta + content + navigator
+        # Right panel
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 8, 8, 8)
         right_layout.setSpacing(8)
 
-        # Meta bar (per page): Stock Name + Ticker + Copy (layout tweak)
-        meta_bar = QHBoxLayout()
-        meta_bar.setContentsMargins(0, 0, 0, 0)
-
-        meta_bar.addWidget(QLabel("Name:"))
-        self.edit_stock_name = QLineEdit()
-        self.edit_stock_name.setPlaceholderText("e.g., Apple Inc.")
-        self.edit_stock_name.setFixedWidth(320)  # reduced width
-        self.edit_stock_name.textChanged.connect(self._on_page_field_changed)
-        meta_bar.addWidget(self.edit_stock_name)
-
-        meta_bar.addStretch(1)  # push ticker section to the right
-
-        meta_bar.addWidget(QLabel("Ticker:"))
-        self.edit_ticker = QLineEdit()
-        self.edit_ticker.setPlaceholderText("e.g., AAPL")
-        self.edit_ticker.setFixedWidth(200)
-        self.edit_ticker.textChanged.connect(self._on_page_field_changed)
-        meta_bar.addWidget(self.edit_ticker)
-
-        self.btn_copy_ticker = QPushButton("Copy Ticker")
-        self.btn_copy_ticker.clicked.connect(self.copy_ticker)
-        meta_bar.addWidget(self.btn_copy_ticker)
-
-        # Page split (image | text)
         self.page_splitter = QSplitter(Qt.Horizontal)
 
-        # Image section
+        # ---------------- Image section ----------------
         img_container = QWidget()
         img_layout = QVBoxLayout(img_container)
         img_layout.setContentsMargins(0, 0, 0, 0)
         img_layout.setSpacing(6)
 
+        # (NEW) Name/Ticker/Copy inside IMAGE section top
+        meta_in_image = QHBoxLayout()
+        meta_in_image.setContentsMargins(0, 0, 0, 0)
+
+        meta_in_image.addWidget(QLabel("Name:"))
+        self.edit_stock_name = QLineEdit()
+        self.edit_stock_name.setPlaceholderText("e.g., Apple Inc.")
+        self.edit_stock_name.setFixedWidth(220)
+        self.edit_stock_name.textChanged.connect(self._on_page_field_changed)
+        meta_in_image.addWidget(self.edit_stock_name)
+
+        meta_in_image.addSpacing(6)
+
+        meta_in_image.addWidget(QLabel("Ticker:"))
+        self.edit_ticker = QLineEdit()
+        self.edit_ticker.setPlaceholderText("e.g., AAPL")
+        self.edit_ticker.setFixedWidth(120)
+        self.edit_ticker.textChanged.connect(self._on_page_field_changed)
+        meta_in_image.addWidget(self.edit_ticker)
+
+        self.btn_copy_ticker = QPushButton("Copy")
+        self.btn_copy_ticker.setFixedWidth(68)
+        self.btn_copy_ticker.clicked.connect(self.copy_ticker)
+        meta_in_image.addWidget(self.btn_copy_ticker)
+
+        meta_in_image.addStretch(1)
+
+        # Image toolbar
         img_toolbar = QHBoxLayout()
 
         self.btn_set_image = QPushButton("Set Image...")
-        self.btn_paste_image = QPushButton("Paste Image (Ctrl+V)")
+        self.btn_paste_image = QPushButton("Paste (Ctrl+V)")
         self.btn_clear_image = QPushButton("Clear Image")
         self.btn_reset_view = QPushButton("Reset View")
 
         self.btn_draw_mode = QToolButton()
         self.btn_draw_mode.setText("Draw")
         self.btn_draw_mode.setCheckable(True)
-        self.btn_draw_mode.setToolTip("Draw mode: drag to draw. Hold SHIFT for straight line.")
+        self.btn_draw_mode.setToolTip("Draw: drag to draw. Hold SHIFT for straight line.")
 
         self.combo_color = QComboBox()
-        # label, value(hex)
         self.combo_color.addItem("Red", "#FF3C3C")
         self.combo_color.addItem("Yellow", "#FFD400")
         self.combo_color.addItem("Cyan", "#00D5FF")
@@ -776,7 +804,7 @@ class MainWindow(QMainWindow):
         self.combo_width = QComboBox()
         for w in ["2", "3", "4", "6", "8"]:
             self.combo_width.addItem(f"{w}px", float(w))
-        self.combo_width.setCurrentIndex(1)  # 3px default
+        self.combo_width.setCurrentIndex(1)
         self.combo_width.currentIndexChanged.connect(self._on_pen_changed)
 
         self.btn_clear_lines = QPushButton("Clear Lines")
@@ -793,7 +821,7 @@ class MainWindow(QMainWindow):
         img_toolbar.addWidget(self.btn_paste_image)
         img_toolbar.addWidget(self.btn_clear_image)
         img_toolbar.addWidget(self.btn_reset_view)
-        img_toolbar.addSpacing(12)
+        img_toolbar.addSpacing(10)
         img_toolbar.addWidget(self.btn_draw_mode)
         img_toolbar.addWidget(QLabel("Color:"))
         img_toolbar.addWidget(self.combo_color)
@@ -806,44 +834,11 @@ class MainWindow(QMainWindow):
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
         self.image_viewer.strokesChanged.connect(self._on_page_field_changed)
 
-        # initialize pen from UI
         self._apply_pen_from_ui()
 
-        img_layout.addLayout(img_toolbar)
-        img_layout.addWidget(self.image_viewer, 1)
-
-        # Text section
-        text_container = QWidget()
-        text_layout = QVBoxLayout(text_container)
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(6)
-
-        text_header = QHBoxLayout()
-        self.text_title = QLabel("Description")
-        self.text_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
-        self.btn_clear_text = QPushButton("Clear Text")
-        self.btn_clear_text.clicked.connect(self.clear_text)
-
-        text_header.addWidget(self.text_title)
-        text_header.addStretch(1)
-        text_header.addWidget(self.btn_clear_text)
-
-        self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("Write your analysis / explanation here...")
-        self.text_edit.textChanged.connect(self._on_page_field_changed)
-
-        text_layout.addLayout(text_header)
-        text_layout.addWidget(self.text_edit, 1)
-
-        self.page_splitter.addWidget(img_container)
-        self.page_splitter.addWidget(text_container)
-        self.page_splitter.setStretchFactor(0, 1)
-        self.page_splitter.setStretchFactor(1, 1)
-
-        # Navigator bar
-        nav = QHBoxLayout()
-        nav.setContentsMargins(0, 0, 0, 0)
+        # (NEW) Page navigator inside IMAGE section bottom
+        nav_in_image = QHBoxLayout()
+        nav_in_image.setContentsMargins(0, 0, 0, 0)
 
         self.btn_prev = QToolButton()
         self.btn_prev.setText("◀")
@@ -865,24 +860,78 @@ class MainWindow(QMainWindow):
         self.btn_del_page.setText("Del Page")
         self.btn_del_page.clicked.connect(self.delete_page)
 
-        nav.addWidget(self.btn_prev)
-        nav.addWidget(self.lbl_page)
-        nav.addWidget(self.btn_next)
-        nav.addStretch(1)
-        nav.addWidget(self.btn_add_page)
-        nav.addWidget(self.btn_del_page)
+        nav_in_image.addWidget(self.btn_prev)
+        nav_in_image.addWidget(self.lbl_page)
+        nav_in_image.addWidget(self.btn_next)
+        nav_in_image.addSpacing(10)
+        nav_in_image.addWidget(self.btn_add_page)
+        nav_in_image.addWidget(self.btn_del_page)
+        nav_in_image.addStretch(1)
 
-        # Assemble right layout
-        right_layout.addLayout(meta_bar)
+        img_layout.addLayout(meta_in_image)
+        img_layout.addLayout(img_toolbar)
+        img_layout.addWidget(self.image_viewer, 1)
+        img_layout.addLayout(nav_in_image)
+
+        # ---------------- Text section ----------------
+        text_container = QWidget()
+        text_layout = QVBoxLayout(text_container)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(6)
+
+        self.chk_group = QGroupBox("Checklist")
+        chk_layout = QVBoxLayout(self.chk_group)
+        chk_layout.setContentsMargins(10, 10, 10, 10)
+        chk_layout.setSpacing(6)
+
+        self.chk_boxes: List[QCheckBox] = []
+        self.chk_notes: List[QTextEdit] = []
+
+        for q in DEFAULT_CHECK_QUESTIONS:
+            cb = QCheckBox(q)
+            cb.stateChanged.connect(self._on_page_field_changed)
+            self.chk_boxes.append(cb)
+
+            note = QTextEdit()
+            note.setPlaceholderText("간단 설명을 입력하세요...")
+            note.setFixedHeight(54)
+            note.textChanged.connect(self._on_page_field_changed)
+            self.chk_notes.append(note)
+
+            chk_layout.addWidget(cb)
+            chk_layout.addWidget(note)
+
+        text_header = QHBoxLayout()
+        self.text_title = QLabel("Description")
+        self.text_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.btn_clear_text = QPushButton("Clear Text")
+        self.btn_clear_text.clicked.connect(self.clear_text)
+
+        text_header.addWidget(self.text_title)
+        text_header.addStretch(1)
+        text_header.addWidget(self.btn_clear_text)
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요...")
+        self.text_edit.textChanged.connect(self._on_page_field_changed)
+
+        text_layout.addWidget(self.chk_group)
+        text_layout.addLayout(text_header)
+        text_layout.addWidget(self.text_edit, 1)
+
+        self.page_splitter.addWidget(img_container)
+        self.page_splitter.addWidget(text_container)
+        self.page_splitter.setStretchFactor(0, 1)
+        self.page_splitter.setStretchFactor(1, 1)
+
         right_layout.addWidget(self.page_splitter, 1)
-        right_layout.addLayout(nav)
 
-        # Main splitter
         main_splitter.addWidget(left_panel)
         main_splitter.addWidget(right_panel)
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([270, 1080])
+        main_splitter.setSizes([270, 1110])
 
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -896,7 +945,6 @@ class MainWindow(QMainWindow):
 
     def _on_pen_changed(self) -> None:
         self._apply_pen_from_ui()
-        # no save needed; affects only future strokes
 
     # ---------------- State helpers ----------------
     def _load_ui_state_or_defaults(self) -> None:
@@ -979,6 +1027,10 @@ class MainWindow(QMainWindow):
             try:
                 self.edit_stock_name.clear()
                 self.edit_ticker.clear()
+                for cb in self.chk_boxes:
+                    cb.setChecked(False)
+                for note in self.chk_notes:
+                    note.clear()
                 self.text_edit.clear()
                 self.image_viewer.clear_image()
                 self.btn_draw_mode.setChecked(False)
@@ -1003,9 +1055,13 @@ class MainWindow(QMainWindow):
 
             self.image_viewer.set_strokes(pg.strokes or [])
 
+            cl = _normalize_checklist(pg.checklist)
+            for i in range(len(DEFAULT_CHECK_QUESTIONS)):
+                self.chk_boxes[i].setChecked(bool(cl[i].get("checked", False)))
+                self.chk_notes[i].setPlainText(str(cl[i].get("note", "")))
+
             self.text_edit.setPlainText(pg.note_text or "")
 
-            # Default to Pan
             self.btn_draw_mode.setChecked(False)
             self.image_viewer.set_mode_pan()
 
@@ -1017,6 +1073,18 @@ class MainWindow(QMainWindow):
         if self._loading_ui:
             return
         self._save_timer.start(450)
+
+    def _collect_checklist_from_ui(self) -> Checklist:
+        out: Checklist = []
+        for i, q in enumerate(DEFAULT_CHECK_QUESTIONS):
+            out.append(
+                {
+                    "q": q,
+                    "checked": bool(self.chk_boxes[i].isChecked()),
+                    "note": self.chk_notes[i].toPlainText(),
+                }
+            )
+        return out
 
     def _flush_page_fields_to_model_and_save(self) -> None:
         st = self.current_step()
@@ -1046,6 +1114,11 @@ class MainWindow(QMainWindow):
         new_strokes = self.image_viewer.get_strokes()
         if pg.strokes != new_strokes:
             pg.strokes = new_strokes
+            changed = True
+
+        new_checklist = self._collect_checklist_from_ui()
+        if pg.checklist != new_checklist:
+            pg.checklist = new_checklist
             changed = True
 
         st.last_page_index = self.current_page_index
@@ -1200,7 +1273,7 @@ class MainWindow(QMainWindow):
             return
 
         pg.image_path = dst_rel
-        pg.strokes = []  # new image => clear strokes
+        pg.strokes = []
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
@@ -1240,7 +1313,7 @@ class MainWindow(QMainWindow):
             return
 
         pg.image_path = dst_rel
-        pg.strokes = []  # new image => clear strokes
+        pg.strokes = []
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
