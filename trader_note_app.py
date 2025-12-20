@@ -1,19 +1,63 @@
+
+"""
+이미지에, 그냥 원본을 그대로 두고,, 그냥 선을 그릴 수 있고, clear하면 다시 그린 선 삭제되는게 되었으면 좋겠어. 
+이런 기능이 있으면 차트에서 어떤 포인트나 설명을 하기가 더 쉬워서
+23s 동안 생각함
+
+-------------------------
+가능합니다. 핵심은 원본 이미지는 QGraphicsPixmapItem으로 그대로 두고, 그 위에 **선(주석)을 QGraphicsPathItem으로 “오버레이”**로 얹는 방식입니다. 그러면 원본 파일은 절대 변경되지 않고, Clear 하면 오버레이만 삭제됩니다.
+
+아래는 기존 v0.1.2 코드에 기능을 반영한 v0.1.3 전체 코드입니다.
+
+이미지 영역 툴바에 Draw(토글), Clear Lines 버튼 추가
+
+Draw 모드일 때: 마우스 좌클릭 드래그로 자유선(스트로크) 그리기
+
+Pan 모드일 때: 기존처럼 좌클릭 드래그로 이동
+
+Wheel 줌은 항상 동작
+
+선은 JSON에 페이지별로 저장됩니다(원본 이미지는 그대로, 오버레이 좌표만 저장).
+즉, 페이지 이동해도 선이 유지됩니다. Clear Lines는 저장된 선까지 삭제합니다.
+-----------------
+사용 방법
+
+Pan(이동): Draw 버튼 OFF 상태에서 좌클릭 드래그
+
+Draw(선 그리기): Draw 버튼 ON → 좌클릭 드래그로 자유선
+
+줌: 마우스 휠
+
+Reset View: 화면 맞춤
+
+Clear Lines: 그려진 선만 삭제(원본 이미지 파일은 그대로)
+
+
+
+"""
+
+
+
 # -*- coding: utf-8 -*-
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.1.2  (2025-12-20)
+Version: 0.1.3  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.1.2):
-- Image Zoom/Pan:
-  - Mouse wheel zoom in/out
-  - Left-drag pan (hand-drag)
-  - "Reset View" button to fit image to view
+Release Notes (v0.1.3):
+- Image annotation overlay (non-destructive):
+  - Original image stays unchanged
+  - Draw lines on top (overlay) in Draw mode
+  - Clear Lines removes only drawn strokes (overlay)
+  - Annotations are persisted in JSON per page (no image modification)
+- Image Zoom/Pan kept:
+  - Mouse wheel zoom
+  - Pan in Pan mode (hand drag)
+  - Reset View to fit
 - Per-page instrument metadata:
-  - Stock Name + Ticker editable per page
-  - "Copy Ticker" button (copies ticker text to clipboard)
-- JSON persistence extended to store name/ticker per page
+  - Stock Name + Ticker editable
+  - Copy Ticker button
 
 Run:
   python trader_note_app.py
@@ -29,14 +73,15 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF
-from PyQt5.QtGui import QImage, QKeySequence, QPixmap
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF
+from PyQt5.QtGui import QImage, QKeySequence, QPixmap, QPainterPath, QPen, QColor
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
     QGraphicsPixmapItem,
+    QGraphicsPathItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -57,7 +102,7 @@ from PyQt5.QtWidgets import (
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.1.2)"
+APP_TITLE = "Trader Chart Note (v0.1.3)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -96,6 +141,10 @@ def _sanitize_for_folder(name: str, fallback: str) -> str:
     return safe or fallback
 
 
+# annotations: list of strokes, each stroke is list of [x, y] points in scene coordinates
+Annotations = List[List[List[float]]]
+
+
 @dataclass
 class Page:
     id: str
@@ -103,6 +152,7 @@ class Page:
     note_text: str
     stock_name: str
     ticker: str
+    annotations: Annotations
     created_at: int
     updated_at: int
 
@@ -147,7 +197,7 @@ class NoteDB:
                 st.pages.append(self.new_page())
 
     def save(self) -> None:
-        self.data["version"] = "0.1.2"
+        self.data["version"] = "0.1.3"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -170,6 +220,7 @@ class NoteDB:
                             "note_text": "",
                             "stock_name": "",
                             "ticker": "",
+                            "annotations": [],
                             "created_at": _now_epoch(),
                             "updated_at": _now_epoch(),
                         }
@@ -177,7 +228,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.1.2",
+            "version": "0.1.3",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -191,6 +242,9 @@ class NoteDB:
             pages_raw = s.get("pages", [])
             pages: List[Page] = []
             for p in pages_raw:
+                anns = p.get("annotations", [])
+                if not isinstance(anns, list):
+                    anns = []
                 pages.append(
                     Page(
                         id=str(p.get("id", _uuid())),
@@ -198,6 +252,7 @@ class NoteDB:
                         note_text=str(p.get("note_text", "")),
                         stock_name=str(p.get("stock_name", "")),
                         ticker=str(p.get("ticker", "")),
+                        annotations=anns,  # type: ignore
                         created_at=int(p.get("created_at", _now_epoch())),
                         updated_at=int(p.get("updated_at", _now_epoch())),
                     )
@@ -228,6 +283,7 @@ class NoteDB:
                             "note_text": pg.note_text,
                             "stock_name": pg.stock_name,
                             "ticker": pg.ticker,
+                            "annotations": pg.annotations,
                             "created_at": pg.created_at,
                             "updated_at": pg.updated_at,
                         }
@@ -246,6 +302,7 @@ class NoteDB:
             note_text="",
             stock_name="",
             ticker="",
+            annotations=[],
             created_at=now,
             updated_at=now,
         )
@@ -268,9 +325,16 @@ class NoteDB:
         return True
 
 
-class ZoomPanImageView(QGraphicsView):
-    """Zoom with mouse wheel, pan with left-drag (hand drag). Supports drag & drop for image files."""
+class ZoomPanAnnotateView(QGraphicsView):
+    """
+    QGraphicsView 기반 이미지 뷰어
+    - Wheel: Zoom
+    - Pan mode: 좌클릭 드래그로 이동(ScrollHandDrag)
+    - Draw mode: 좌클릭 드래그로 선(자유선) 그리기 (원본 이미지 비파괴)
+    - annotations는 scene 좌표로 저장/복원
+    """
     imageDropped = pyqtSignal(str)
+    annotationsChanged = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -283,21 +347,48 @@ class ZoomPanImageView(QGraphicsView):
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
         self._has_image: bool = False
 
-        # Pan behavior
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        # Zoom behavior
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
-
-        # Zoom limits
         self._zoom_factor_step = 1.25
         self._min_scale = 0.05
         self._max_scale = 20.0
 
-        self._placeholder = QLabel("Drop an image here\nor use buttons above")
-        self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet("color: #666;")
-        self.setStyleSheet("background: #111;")  # just for contrast; safe for default
+        # Modes
+        self._draw_mode: bool = False
+        self._is_drawing: bool = False
 
+        # Current stroke
+        self._current_path: Optional[QPainterPath] = None
+        self._current_item: Optional[QGraphicsPathItem] = None
+        self._current_points: List[List[float]] = []
+
+        # All strokes
+        self._strokes: Annotations = []
+        self._stroke_items: List[QGraphicsPathItem] = []
+
+        # Pen (overlay only)
+        self._pen = QPen(QColor(255, 60, 60), 3.0)  # red, 3px
+        self._pen.setCapStyle(Qt.RoundCap)
+        self._pen.setJoinStyle(Qt.RoundJoin)
+
+        self.set_mode_pan()
+
+    # ----- Mode control -----
+    def is_draw_mode(self) -> bool:
+        return self._draw_mode
+
+    def set_mode_draw(self) -> None:
+        self._draw_mode = True
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.viewport().setCursor(Qt.CrossCursor)
+
+    def set_mode_pan(self) -> None:
+        self._draw_mode = False
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.viewport().setCursor(Qt.OpenHandCursor)
+
+    # ----- Image control -----
     def has_image(self) -> bool:
         return self._has_image
 
@@ -306,7 +397,7 @@ class ZoomPanImageView(QGraphicsView):
         self._pixmap_item = None
         self._has_image = False
         self.resetTransform()
-        self.viewport().update()
+        self._clear_annotations_internal(emit_signal=False)
 
     def set_image_path(self, abs_path: str) -> None:
         pm = QPixmap(abs_path)
@@ -325,28 +416,35 @@ class ZoomPanImageView(QGraphicsView):
         return True
 
     def _set_pixmap(self, pm: QPixmap) -> None:
+        # Keep annotations? Generally, changing image means coords mismatch.
+        # Policy: clear annotations on image set.
         self._scene.clear()
         self._pixmap_item = self._scene.addPixmap(pm)
         self._pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        self._pixmap_item.setZValue(0)
+
         self._has_image = True
         self._scene.setSceneRect(QRectF(pm.rect()))
+        self.resetTransform()
         self.fit_to_view()
+
+        self._clear_annotations_internal(emit_signal=False)
 
     def fit_to_view(self) -> None:
         if not self._pixmap_item:
             self.resetTransform()
             return
-        self.resetTransform()
         rect = self._pixmap_item.boundingRect()
         if rect.isNull():
             return
+        self.resetTransform()
         self.fitInView(rect, Qt.KeepAspectRatio)
 
+    # ----- Zoom -----
     def wheelEvent(self, event) -> None:
         if not self._has_image:
             return
 
-        # Current scale from transform matrix (m11 ~ x scale)
         current_scale = self.transform().m11()
         if event.angleDelta().y() > 0:
             target = current_scale * self._zoom_factor_step
@@ -362,6 +460,7 @@ class ZoomPanImageView(QGraphicsView):
             inv = 1.0 / self._zoom_factor_step
             self.scale(inv, inv)
 
+    # ----- Drag & drop image file -----
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -376,12 +475,140 @@ class ZoomPanImageView(QGraphicsView):
         if local_path and os.path.isfile(local_path):
             self.imageDropped.emit(local_path)
 
+    # ----- Annotation persistence -----
+    def get_annotations(self) -> Annotations:
+        return self._strokes
+
+    def set_annotations(self, strokes: Annotations) -> None:
+        # rebuild overlay items from strokes
+        self._clear_annotations_internal(emit_signal=False)
+        if not self._has_image:
+            # still store strokes (optional), but no visual until image exists
+            self._strokes = strokes or []
+            return
+
+        self._strokes = strokes or []
+        for stroke in self._strokes:
+            if len(stroke) < 2:
+                continue
+            path = QPainterPath(QPointF(stroke[0][0], stroke[0][1]))
+            for pt in stroke[1:]:
+                path.lineTo(QPointF(pt[0], pt[1]))
+            item = QGraphicsPathItem(path)
+            item.setPen(self._pen)
+            item.setZValue(10)
+            self._scene.addItem(item)
+            self._stroke_items.append(item)
+
+    def clear_annotations(self) -> None:
+        self._clear_annotations_internal(emit_signal=True)
+
+    def _clear_annotations_internal(self, emit_signal: bool) -> None:
+        # remove drawn items only
+        for it in self._stroke_items:
+            self._scene.removeItem(it)
+        self._stroke_items = []
+        self._strokes = []
+        self._is_drawing = False
+        self._current_item = None
+        self._current_path = None
+        self._current_points = []
+        if emit_signal:
+            self.annotationsChanged.emit()
+
+    # ----- Drawing interactions -----
+    def mousePressEvent(self, event) -> None:
+        if self._draw_mode and self._has_image and event.button() == Qt.LeftButton:
+            scene_pos = self.mapToScene(event.pos())
+            if not self._point_inside_pixmap(scene_pos):
+                return
+            self._start_stroke(scene_pos)
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._draw_mode and self._is_drawing and self._has_image:
+            scene_pos = self.mapToScene(event.pos())
+            if not self._point_inside_pixmap(scene_pos):
+                # allow drawing to edge; clamp is optional. We'll just ignore moves outside.
+                return
+            self._append_stroke(scene_pos)
+            event.accept()
+            return
+
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._draw_mode and self._is_drawing and event.button() == Qt.LeftButton:
+            self._finish_stroke()
+            event.accept()
+            return
+
+        super().mouseReleaseEvent(event)
+
+    def _point_inside_pixmap(self, pt: QPointF) -> bool:
+        if not self._pixmap_item:
+            return False
+        return self._pixmap_item.boundingRect().contains(pt)
+
+    def _start_stroke(self, pt: QPointF) -> None:
+        self._is_drawing = True
+        self._current_path = QPainterPath(pt)
+        self._current_points = [[float(pt.x()), float(pt.y())]]
+
+        item = QGraphicsPathItem(self._current_path)
+        item.setPen(self._pen)
+        item.setZValue(10)
+        self._scene.addItem(item)
+
+        self._current_item = item
+
+    def _append_stroke(self, pt: QPointF) -> None:
+        if not self._current_path or not self._current_item:
+            return
+
+        # simple smoothing: ignore very small moves
+        last = self._current_points[-1]
+        dx = pt.x() - last[0]
+        dy = pt.y() - last[1]
+        if (dx * dx + dy * dy) < 4.0:  # ~2px threshold
+            return
+
+        self._current_path.lineTo(pt)
+        self._current_item.setPath(self._current_path)
+        self._current_points.append([float(pt.x()), float(pt.y())])
+
+    def _finish_stroke(self) -> None:
+        if not self._current_item or len(self._current_points) < 2:
+            # discard
+            if self._current_item:
+                self._scene.removeItem(self._current_item)
+            self._is_drawing = False
+            self._current_item = None
+            self._current_path = None
+            self._current_points = []
+            return
+
+        # commit stroke
+        self._stroke_items.append(self._current_item)
+        self._strokes.append(self._current_points)
+
+        # reset current
+        self._is_drawing = False
+        self._current_item = None
+        self._current_path = None
+        self._current_points = []
+
+        self.annotationsChanged.emit()
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1280, 820)
+        self.resize(1320, 860)
 
         self.db = NoteDB(DEFAULT_DB_PATH)
 
@@ -495,19 +722,32 @@ class MainWindow(QMainWindow):
         self.btn_clear_image = QPushButton("Clear Image")
         self.btn_reset_view = QPushButton("Reset View")
 
+        self.btn_draw_mode = QToolButton()
+        self.btn_draw_mode.setText("Draw")
+        self.btn_draw_mode.setCheckable(True)
+        self.btn_draw_mode.setToolTip("Toggle draw mode (draw lines on top of image)")
+        self.btn_clear_lines = QPushButton("Clear Lines")
+
         self.btn_set_image.clicked.connect(self.set_image_via_dialog)
         self.btn_paste_image.clicked.connect(self.paste_image_from_clipboard)
         self.btn_clear_image.clicked.connect(self.clear_image)
         self.btn_reset_view.clicked.connect(self.reset_image_view)
 
+        self.btn_draw_mode.toggled.connect(self.toggle_draw_mode)
+        self.btn_clear_lines.clicked.connect(self.clear_lines)
+
         img_toolbar.addWidget(self.btn_set_image)
         img_toolbar.addWidget(self.btn_paste_image)
         img_toolbar.addWidget(self.btn_clear_image)
         img_toolbar.addWidget(self.btn_reset_view)
+        img_toolbar.addSpacing(10)
+        img_toolbar.addWidget(self.btn_draw_mode)
+        img_toolbar.addWidget(self.btn_clear_lines)
         img_toolbar.addStretch(1)
 
-        self.image_viewer = ZoomPanImageView()
+        self.image_viewer = ZoomPanAnnotateView()
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
+        self.image_viewer.annotationsChanged.connect(self._on_page_field_changed)
 
         img_layout.addLayout(img_toolbar)
         img_layout.addWidget(self.image_viewer, 1)
@@ -582,7 +822,7 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_panel)
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([270, 1010])
+        main_splitter.setSizes([270, 1050])
 
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -671,6 +911,7 @@ class MainWindow(QMainWindow):
                 self.edit_ticker.clear()
                 self.text_edit.clear()
                 self.image_viewer.clear_image()
+                self.btn_draw_mode.setChecked(False)
                 self._update_nav()
             finally:
                 self._loading_ui = False
@@ -692,8 +933,15 @@ class MainWindow(QMainWindow):
             else:
                 self.image_viewer.clear_image()
 
+            # Load annotations after image load (scene exists)
+            self.image_viewer.set_annotations(pg.annotations or [])
+
             # Text
             self.text_edit.setPlainText(pg.note_text or "")
+
+            # Default mode: Pan
+            self.btn_draw_mode.setChecked(False)
+            self.image_viewer.set_mode_pan()
 
             self._update_nav()
         finally:
@@ -729,6 +977,12 @@ class MainWindow(QMainWindow):
         new_ticker = self.edit_ticker.text()
         if pg.ticker != new_ticker:
             pg.ticker = new_ticker
+            changed = True
+
+        # Annotations
+        new_anns = self.image_viewer.get_annotations()
+        if pg.annotations != new_anns:
+            pg.annotations = new_anns
             changed = True
 
         # Track last visited page for this step
@@ -818,6 +1072,19 @@ class MainWindow(QMainWindow):
         self.image_viewer.fit_to_view()
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
+    def toggle_draw_mode(self, checked: bool) -> None:
+        if checked:
+            self.image_viewer.set_mode_draw()
+        else:
+            self.image_viewer.set_mode_pan()
+        self.image_viewer.setFocus(Qt.MouseFocusReason)
+
+    def clear_lines(self) -> None:
+        self.image_viewer.clear_annotations()
+        # autosave debounced via annotationsChanged, but keep immediate save safer
+        self._flush_page_fields_to_model_and_save()
+        self.image_viewer.setFocus(Qt.MouseFocusReason)
+
     def _on_image_dropped(self, path: str) -> None:
         self._set_image_from_file(path)
 
@@ -839,6 +1106,7 @@ class MainWindow(QMainWindow):
             return
         self._flush_page_fields_to_model_and_save()
         pg.image_path = ""
+        pg.annotations = []
         pg.updated_at = _now_epoch()
         self.db.save()
         self.image_viewer.clear_image()
@@ -875,12 +1143,14 @@ class MainWindow(QMainWindow):
             return
 
         pg.image_path = dst_rel
+        pg.annotations = []  # new image => clear annotations (coords mismatch)
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self.db.save()
 
         self.image_viewer.set_image_path(dst_abs)
+        self.image_viewer.set_annotations([])
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     def _set_image_from_file(self, src_path: str) -> None:
@@ -913,12 +1183,14 @@ class MainWindow(QMainWindow):
             return
 
         pg.image_path = dst_rel
+        pg.annotations = []  # new image => clear annotations (coords mismatch)
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self.db.save()
 
         self.image_viewer.set_image_path(dst_abs)
+        self.image_viewer.set_annotations([])
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     # ---------------- Text/meta utilities ----------------
