@@ -1,68 +1,61 @@
 """
-원하시면 다음 단계로는 더 “OneNote 느낌” 나게:
+원하시면 다음 개선도 바로 이어갈 수 있습니다(질문 없이 진행 가능):
 
-Annotate를 **이미지 위에 겹치는 오버레이 패널(작게 떠 있는 패널)**로 바꾸고,
+Category 노드에도 우클릭 메뉴로 “+Step in this Category”, “Rename Category”, “Delete Category(하위 Step 이동/삭제 옵션)” 추가
 
-평소엔 아이콘 1개만 보이다가 누르면 패널이 열리는 형태
-로도 바로 개선 가능합니다.
-------------------------------
+카테고리/스텝 정렬(예: category 알파벳, step 최근 수정 순)
 
-응 그렇게 개선해줘
+Step 검색(검색창 + 필터) 기능 추가
+-----------------------------------------
+첫번째만 적용해주고, 특정 category 위치를 상/하로 변경하는 기능을 추가해줘
+-----------------------------------------
+알겠습니다. 이전 v0.3.0(오버레이 Annotate + Category Tree) 기반에서, “추가 개선안 중 첫 번째(카테고리 우클릭 메뉴)”만 적용하고, 추가로 Category를 위/아래로 이동(순서 변경) 기능을 넣은 v0.3.1 전체 코드를 아래에 제공합니다.
 
+적용된 것
 
-그리고, step 별로 category tag 같은걸 달아서,,  같은 category tag인 step끼리는 같이 묶여있었으면해, ui상으로는 tree형식이 되어야겠고
-28s 동안 생각함
-------------------------------
+(1) Annotate 오버레이 패널 유지
 
-좋습니다. 요청하신 2가지를 모두 반영해서 v0.3.0 전체 코드로 업데이트했습니다.
+(2) Category → Step Tree 유지
 
-반영 사항 (v0.3.0)
+(3) Category 노드 우클릭 메뉴
 
-Annotate를 “오버레이 패널(이미지 위에 떠 있는 패널)”로 변경
++ Step in this Category
 
-평소엔 이미지 우측 상단에 **작은 버튼(✎)**만 보임
+Rename Category
 
-누르면 Annotate 패널이 이미지 위에 오버레이로 펼쳐짐
+Delete Category (하위 Step을 삭제하거나, 다른 Category로 이동)
 
-닫으면 다시 ✎ 버튼만 보임
+(4) Category 순서 상/하 이동
 
-패널을 닫을 때 Draw가 켜져 있으면 자동 OFF + Pan 모드로 전환
+Move Category Up / Down
 
-Step에 Category Tag 추가 + 좌측 UI를 Tree 형태로 그룹핑
-
-Step마다 category 필드 저장 (JSON 유지)
-
-좌측이 Category → Step 트리 구조로 표시됨
-
-+Step 시 Step 이름 입력 후, Category 입력(기존 카테고리 참고 가능)
-
-Set Category 버튼으로 선택 Step의 카테고리를 변경 가능
+순서가 JSON에 category_order로 영구 저장
 
 """
+
 
 
 # -*- coding: utf-8 -*-
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.3.0  (2025-12-20)
+Version: 0.3.1  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.3.0):
-- Annotate UI를 오버레이 패널로 변경:
-  - 이미지 우측 상단에 ✎ 버튼만 보이다가 클릭 시 패널 표시
-  - 패널 닫으면 다시 ✎ 버튼만 표시
-  - 패널 닫을 때 Draw가 켜져 있으면 자동 OFF + Pan 전환
-- Step에 Category Tag 추가 + 좌측 Step UI를 Tree로 구성:
-  - Category(상위) → Step(하위) 구조
-  - Step별 category 저장/로드(JSON)
-  - Set Category 버튼으로 카테고리 변경 가능
+Release Notes (v0.3.1):
+- (요청) "첫번째 개선"만 반영: Category 노드 우클릭 메뉴 추가
+  - + Step in this Category
+  - Rename Category
+  - Delete Category (하위 Step 삭제 또는 다른 Category로 이동)
+- (추가 요청) Category 순서 상/하 이동 기능 추가
+  - Move Category Up / Down
+  - category_order를 JSON에 저장하여 UI 순서 유지
 - 기존 기능 유지:
-  - JSON 저장
+  - Annotate 오버레이 패널(✎ 버튼 → 패널)
   - 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines(confirm)
   - Checklist(4문항) + Description
-  - 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단 위치
-  - Del Page confirm 팝업
+  - 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단
+  - Del Page confirm
   - Clipboard 이미지 붙여넣기 저장 (Ctrl+V: image_viewer에 포커스일 때)
 
 Run:
@@ -81,7 +74,17 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QRect, QSize, QPoint, QEvent
+from PyQt5.QtCore import (
+    Qt,
+    QTimer,
+    pyqtSignal,
+    QRectF,
+    QPointF,
+    QRect,
+    QSize,
+    QPoint,
+    QEvent,
+)
 from PyQt5.QtGui import (
     QImage,
     QKeySequence,
@@ -121,10 +124,11 @@ from PyQt5.QtWidgets import (
     QFrame,
     QTreeWidget,
     QTreeWidgetItem,
+    QMenu,
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.3.0)"
+APP_TITLE = "Trader Chart Note (v0.3.1)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -362,6 +366,7 @@ class NoteDB:
         self.data: Dict[str, Any] = {}
         self.steps: List[Step] = []
         self.ui_state: Dict[str, Any] = {}
+        self.category_order: List[str] = []
         self.load()
 
     def load(self) -> None:
@@ -385,11 +390,21 @@ class NoteDB:
             if not st.pages:
                 st.pages.append(self.new_page())
 
+        # category order (persisted)
+        raw_order = self.data.get("category_order", [])
+        if isinstance(raw_order, list):
+            self.category_order = [str(x).strip() for x in raw_order if str(x).strip()]
+        else:
+            self.category_order = []
+
+        self._ensure_category_order_consistency()
+
     def save(self) -> None:
-        self.data["version"] = "0.3.0"
+        self.data["version"] = "0.3.1"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
+        self.data["category_order"] = self.category_order
         _safe_write_json(self.db_path, self.data)
 
     @staticmethod
@@ -419,11 +434,12 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.3.0",
+            "version": "0.3.1",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
             "ui_state": {},
+            "category_order": ["General"],
         }
 
     @staticmethod
@@ -509,6 +525,26 @@ class NoteDB:
             updated_at=now,
         )
 
+    def _current_categories_set(self) -> List[str]:
+        return sorted({(s.category or "General").strip() or "General" for s in self.steps})
+
+    def _ensure_category_order_consistency(self) -> None:
+        # Remove non-existing
+        existing = set(self._current_categories_set())
+        self.category_order = [c for c in self.category_order if c in existing]
+
+        # Append missing categories (stable append)
+        for c in self._current_categories_set():
+            if c not in self.category_order:
+                self.category_order.append(c)
+
+        if not self.category_order:
+            self.category_order = ["General"]
+
+    def list_categories(self) -> List[str]:
+        self._ensure_category_order_consistency()
+        return list(self.category_order)
+
     def get_step_by_id(self, step_id: str) -> Optional[Step]:
         for st in self.steps:
             if st.id == step_id:
@@ -519,17 +555,78 @@ class NoteDB:
         category = (category or "").strip() or "General"
         st = Step(id=_uuid(), name=name, category=category, pages=[self.new_page()], last_page_index=0)
         self.steps.append(st)
+        if category not in self.category_order:
+            self.category_order.append(category)
         return st
 
     def delete_step(self, step_id: str) -> bool:
         if len(self.steps) <= 1:
             return False
         self.steps = [s for s in self.steps if s.id != step_id]
+        self._ensure_category_order_consistency()
         return True
 
-    def list_categories(self) -> List[str]:
-        cats = sorted({(s.category or "General").strip() or "General" for s in self.steps})
-        return cats
+    # ----- Category operations -----
+    def rename_category(self, old: str, new: str) -> None:
+        old = (old or "").strip() or "General"
+        new = (new or "").strip() or "General"
+        if old == new:
+            return
+
+        for st in self.steps:
+            if (st.category or "General").strip() == old:
+                st.category = new
+
+        # order update
+        if old in self.category_order:
+            # if new already exists, remove old; else replace old->new
+            if new in self.category_order:
+                self.category_order = [c for c in self.category_order if c != old]
+            else:
+                self.category_order = [new if c == old else c for c in self.category_order]
+        else:
+            if new not in self.category_order:
+                self.category_order.append(new)
+
+        self._ensure_category_order_consistency()
+
+    def delete_category_move_steps(self, cat: str, move_to: str) -> None:
+        cat = (cat or "").strip() or "General"
+        move_to = (move_to or "").strip() or "General"
+        if cat == move_to:
+            return
+        for st in self.steps:
+            if (st.category or "General").strip() == cat:
+                st.category = move_to
+        # remove cat from order
+        self.category_order = [c for c in self.category_order if c != cat]
+        if move_to not in self.category_order:
+            self.category_order.append(move_to)
+        self._ensure_category_order_consistency()
+
+    def delete_category_and_steps(self, cat: str) -> bool:
+        cat = (cat or "").strip() or "General"
+        remaining = [s for s in self.steps if (s.category or "General").strip() != cat]
+        if not remaining:
+            return False  # cannot delete all steps
+        self.steps = remaining
+        self.category_order = [c for c in self.category_order if c != cat]
+        self._ensure_category_order_consistency()
+        return True
+
+    def move_category(self, cat: str, direction: int) -> None:
+        """
+        direction: -1 (up), +1 (down)
+        """
+        cat = (cat or "").strip() or "General"
+        self._ensure_category_order_consistency()
+        if cat not in self.category_order:
+            return
+        idx = self.category_order.index(cat)
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(self.category_order):
+            return
+        self.category_order[idx], self.category_order[new_idx] = self.category_order[new_idx], self.category_order[idx]
 
 
 # ---------------------------
@@ -874,11 +971,11 @@ class MainWindow(QMainWindow):
         self.btn_add_step = QToolButton()
         self.btn_add_step.setText("+ Step")
         self.btn_rename_step = QToolButton()
-        self.btn_rename_step.setText("Rename")
+        self.btn_rename_step.setText("Rename Step")
         self.btn_set_category = QToolButton()
         self.btn_set_category.setText("Set Category")
         self.btn_del_step = QToolButton()
-        self.btn_del_step.setText("Del")
+        self.btn_del_step.setText("Del Step")
 
         self.btn_add_step.clicked.connect(self.add_step)
         self.btn_rename_step.clicked.connect(self.rename_step)
@@ -894,6 +991,10 @@ class MainWindow(QMainWindow):
         self.steps_tree.setHeaderHidden(True)
         self.steps_tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
         self.steps_tree.setUniformRowHeights(True)
+
+        # Category 우클릭 메뉴
+        self.steps_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.steps_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
         left_layout.addWidget(step_controls)
         left_layout.addWidget(self.steps_tree, 1)
@@ -937,7 +1038,7 @@ class MainWindow(QMainWindow):
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
         meta_flow.addWidget(self.btn_copy_ticker)
 
-        # Toolbar (wrap) - annotate는 오버레이이므로 여기서 제거
+        # Toolbar
         toolbar_widget = QWidget()
         toolbar_flow = FlowLayout(toolbar_widget, margin=0, spacing=6)
 
@@ -963,9 +1064,9 @@ class MainWindow(QMainWindow):
         self.image_viewer = ZoomPanAnnotateView()
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
         self.image_viewer.strokesChanged.connect(self._on_page_field_changed)
-        self.image_viewer.viewport().installEventFilter(self)  # overlay reposition용
+        self.image_viewer.viewport().installEventFilter(self)  # overlay reposition
 
-        # Navigator (still inside image section bottom)
+        # Navigator
         nav_widget = QWidget()
         nav_flow = FlowLayout(nav_widget, margin=0, spacing=6)
 
@@ -1057,17 +1158,151 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_panel)
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([320, 1080])
+        main_splitter.setSizes([340, 1060])
 
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(main_splitter)
 
+    # ---------------- Tree context menu (Category) ----------------
+    def _on_tree_context_menu(self, pos) -> None:
+        item = self.steps_tree.itemAt(pos)
+        if not item:
+            return
+
+        node_type = item.data(0, self.NODE_TYPE_ROLE)
+        if node_type != "category":
+            return  # 요청사항: category 대상만
+
+        cat = str(item.data(0, self.CATEGORY_NAME_ROLE) or "").strip() or "General"
+
+        menu = QMenu(self)
+
+        act_add_step = menu.addAction("+ Step in this Category")
+        act_rename_cat = menu.addAction("Rename Category")
+        act_delete_cat = menu.addAction("Delete Category")
+        menu.addSeparator()
+        act_move_up = menu.addAction("Move Category Up")
+        act_move_down = menu.addAction("Move Category Down")
+
+        # enable up/down depending on order index
+        cats = self.db.list_categories()
+        try:
+            idx = cats.index(cat)
+        except ValueError:
+            idx = -1
+        act_move_up.setEnabled(idx > 0)
+        act_move_down.setEnabled(0 <= idx < len(cats) - 1)
+
+        chosen = menu.exec_(self.steps_tree.viewport().mapToGlobal(pos))
+        if not chosen:
+            return
+
+        if chosen == act_add_step:
+            self._ctx_add_step_in_category(cat)
+        elif chosen == act_rename_cat:
+            self._ctx_rename_category(cat)
+        elif chosen == act_delete_cat:
+            self._ctx_delete_category(cat)
+        elif chosen == act_move_up:
+            self._ctx_move_category(cat, -1)
+        elif chosen == act_move_down:
+            self._ctx_move_category(cat, +1)
+
+    def _ctx_add_step_in_category(self, cat: str) -> None:
+        self._flush_page_fields_to_model_and_save()
+        name, ok = QInputDialog.getText(self, "Add Step", f"Step name (Category: {cat}):", text="New Step")
+        if not ok or not name.strip():
+            return
+        st = self.db.add_step(name.strip(), cat)
+        self.current_step_id = st.id
+        self.current_page_index = 0
+        self._save_ui_state()
+        self.db.save()
+        self._refresh_steps_tree(select_current=True)
+        self._load_current_page_to_ui()
+
+    def _ctx_rename_category(self, old_cat: str) -> None:
+        new_cat, ok = QInputDialog.getText(self, "Rename Category", "New category name:", text=old_cat)
+        if not ok:
+            return
+        new_cat = (new_cat or "").strip()
+        if not new_cat:
+            return
+
+        self._flush_page_fields_to_model_and_save()
+        self.db.rename_category(old_cat, new_cat)
+        self.db.save()
+        self._refresh_steps_tree(select_current=True)
+
+    def _ctx_delete_category(self, cat: str) -> None:
+        # Choose: move steps or delete steps
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Delete Category")
+        msg.setText(f"Category '{cat}' 처리 방식을 선택하세요.")
+        btn_move = msg.addButton("Move Steps to Another Category", QMessageBox.ActionRole)
+        btn_delete = msg.addButton("Delete Steps in This Category", QMessageBox.DestructiveRole)
+        btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
+        msg.setDefaultButton(btn_cancel)
+        msg.exec_()
+
+        clicked = msg.clickedButton()
+        if clicked == btn_cancel:
+            return
+
+        self._flush_page_fields_to_model_and_save()
+
+        if clicked == btn_move:
+            # target category prompt (allow new)
+            cats = [c for c in self.db.list_categories() if c != cat]
+            hint = ", ".join(cats) if cats else "General"
+            target, ok = QInputDialog.getText(
+                self,
+                "Move Steps",
+                f"Move steps to category (existing: {hint}):",
+                text=(cats[0] if cats else "General"),
+            )
+            if not ok:
+                return
+            target = (target or "").strip() or "General"
+
+            self.db.delete_category_move_steps(cat, target)
+            # keep current step valid
+            if self.current_step_id and not self.db.get_step_by_id(self.current_step_id):
+                self.current_step_id = self.db.steps[0].id
+                self.current_page_index = 0
+            self._save_ui_state()
+            self.db.save()
+            self._refresh_steps_tree(select_current=True)
+            self._load_current_page_to_ui()
+            return
+
+        if clicked == btn_delete:
+            ok = self.db.delete_category_and_steps(cat)
+            if not ok:
+                QMessageBox.warning(self, "Not allowed", "이 Category 삭제는 모든 Step을 제거하게 되어 허용되지 않습니다.")
+                return
+
+            # current step might be gone
+            if self.current_step_id and not self.db.get_step_by_id(self.current_step_id):
+                self.current_step_id = self.db.steps[0].id
+                self.current_page_index = max(0, min(self.db.steps[0].last_page_index, len(self.db.steps[0].pages) - 1))
+
+            self._save_ui_state()
+            self.db.save()
+            self._refresh_steps_tree(select_current=True)
+            self._load_current_page_to_ui()
+            return
+
+    def _ctx_move_category(self, cat: str, direction: int) -> None:
+        self.db.move_category(cat, direction)
+        self.db.save()
+        self._refresh_steps_tree(select_current=True)
+
     # ---------------- Annotate Overlay ----------------
     def _build_annotate_overlay(self) -> None:
         vp = self.image_viewer.viewport()
 
-        # Closed state: small toggle button
         self.btn_anno_toggle = QToolButton(vp)
         self.btn_anno_toggle.setText("✎")
         self.btn_anno_toggle.setToolTip("Open Annotate panel")
@@ -1075,7 +1310,6 @@ class MainWindow(QMainWindow):
         self.btn_anno_toggle.setFixedSize(34, 30)
         self.btn_anno_toggle.clicked.connect(self._open_annotate_panel)
 
-        # Panel (floating)
         self.anno_panel = QFrame(vp)
         self.anno_panel.setObjectName("anno_panel")
         self.anno_panel.setFrameShape(QFrame.StyledPanel)
@@ -1095,7 +1329,6 @@ class MainWindow(QMainWindow):
         p_layout.setContentsMargins(10, 10, 10, 10)
         p_layout.setSpacing(8)
 
-        # Header row
         header = QWidget(self.anno_panel)
         header_l = QHBoxLayout(header)
         header_l.setContentsMargins(0, 0, 0, 0)
@@ -1115,7 +1348,6 @@ class MainWindow(QMainWindow):
 
         p_layout.addWidget(header)
 
-        # Draw toggle
         self.btn_draw_mode = QToolButton(self.anno_panel)
         self.btn_draw_mode.setText("Draw")
         self.btn_draw_mode.setCheckable(True)
@@ -1123,7 +1355,6 @@ class MainWindow(QMainWindow):
         self.btn_draw_mode.toggled.connect(self.toggle_draw_mode)
         p_layout.addWidget(self.btn_draw_mode)
 
-        # Color row
         color_row = QWidget(self.anno_panel)
         color_l = QHBoxLayout(color_row)
         color_l.setContentsMargins(0, 0, 0, 0)
@@ -1138,7 +1369,6 @@ class MainWindow(QMainWindow):
         color_l.addWidget(self.combo_color, 1)
         p_layout.addWidget(color_row)
 
-        # Width row
         width_row = QWidget(self.anno_panel)
         width_l = QHBoxLayout(width_row)
         width_l.setContentsMargins(0, 0, 0, 0)
@@ -1152,7 +1382,6 @@ class MainWindow(QMainWindow):
         width_l.addWidget(self.combo_width, 1)
         p_layout.addWidget(width_row)
 
-        # Clear lines
         self.btn_clear_lines = QPushButton("Clear Lines", self.anno_panel)
         self.btn_clear_lines.clicked.connect(self.clear_lines)
         p_layout.addWidget(self.btn_clear_lines)
@@ -1180,7 +1409,6 @@ class MainWindow(QMainWindow):
         self._reposition_overlay()
 
     def _close_annotate_panel(self) -> None:
-        # 패널 닫을 때 draw가 켜져 있으면 안전하게 OFF
         if self.btn_draw_mode.isChecked():
             self.btn_draw_mode.setChecked(False)
             self.image_viewer.set_mode_pan()
@@ -1194,11 +1422,9 @@ class MainWindow(QMainWindow):
         w = vp.width()
         margin = 10
 
-        # toggle button 위치 (항상 우상단)
         self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
 
         if self.anno_panel.isVisible():
-            # panel도 우상단(토글버튼 자리 근처)로 배치
             x = max(margin, w - self.anno_panel.width() - margin)
             y = margin
             self.anno_panel.move(x, y)
@@ -1256,20 +1482,18 @@ class MainWindow(QMainWindow):
         self.steps_tree.blockSignals(True)
         self.steps_tree.clear()
 
-        # category -> items
         cats = self.db.list_categories()
         cat_nodes: Dict[str, QTreeWidgetItem] = {}
 
-        # Create category nodes
         for cat in cats:
             top = QTreeWidgetItem([cat])
             top.setData(0, self.NODE_TYPE_ROLE, "category")
             top.setData(0, self.CATEGORY_NAME_ROLE, cat)
-            top.setFlags(top.flags() & ~Qt.ItemIsSelectable)  # category는 선택 불가(오작동 방지)
+            # 선택은 막되, 우클릭 메뉴는 쓰기 위해 flags는 유지하되 selectable만 제거
+            top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
             self.steps_tree.addTopLevelItem(top)
             cat_nodes[cat] = top
 
-        # Put steps under category
         selected_item: Optional[QTreeWidgetItem] = None
         for st in self.db.steps:
             cat = (st.category or "General").strip() or "General"
@@ -1289,11 +1513,9 @@ class MainWindow(QMainWindow):
             if select_current and st.id == self.current_step_id:
                 selected_item = child
 
-        # Expand all categories (원하면 ui_state로 확장상태 저장 가능)
         for i in range(self.steps_tree.topLevelItemCount()):
             self.steps_tree.topLevelItem(i).setExpanded(True)
 
-        # Select current
         if selected_item:
             self.steps_tree.setCurrentItem(selected_item)
 
@@ -1369,7 +1591,7 @@ class MainWindow(QMainWindow):
 
             self.text_edit.setPlainText(pg.note_text or "")
 
-            # 페이지 로드시 draw는 안전하게 off
+            # 안전하게 draw off
             self.btn_draw_mode.setChecked(False)
             self.image_viewer.set_mode_pan()
 
@@ -1650,42 +1872,27 @@ class MainWindow(QMainWindow):
             return
         QApplication.clipboard().setText(txt)
 
-    # ---------------- Step management ----------------
-    def _prompt_step_name_and_category(self, default_name: str = "", default_category: str = "") -> Optional[Tuple[str, str]]:
-        name, ok = QInputDialog.getText(self, "Step Name", "Step name:", text=default_name)
-        if not ok or not name.strip():
-            return None
-
-        cats = self.db.list_categories()
-        # getItem은 editable=False가 기본이라, 카테고리 신규 입력을 위해 getText를 사용하되
-        # 참고로 기존 카테고리 목록을 안내한다.
-        hint = ", ".join(cats) if cats else "General"
-        cat_text, ok2 = QInputDialog.getText(
-            self,
-            "Category",
-            f"Category tag (existing: {hint}):",
-            text=(default_category.strip() or "General"),
-        )
-        if not ok2:
-            return None
-
-        category = (cat_text or "").strip() or "General"
-        return name.strip(), category
-
+    # ---------------- Step management (buttons) ----------------
     def add_step(self) -> None:
         self._flush_page_fields_to_model_and_save()
 
-        res = self._prompt_step_name_and_category(default_name="New Step", default_category="General")
-        if not res:
+        name, ok = QInputDialog.getText(self, "Add Step", "Step name:", text="New Step")
+        if not ok or not name.strip():
             return
-        name, category = res
 
-        st = self.db.add_step(name, category)
+        cats = self.db.list_categories()
+        hint = ", ".join(cats) if cats else "General"
+        cat_text, ok2 = QInputDialog.getText(self, "Category", f"Category tag (existing: {hint}):", text="General")
+        if not ok2:
+            return
+
+        category = (cat_text or "").strip() or "General"
+        st = self.db.add_step(name.strip(), category)
         self.current_step_id = st.id
         self.current_page_index = 0
+
         self._save_ui_state()
         self.db.save()
-
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
@@ -1719,6 +1926,8 @@ class MainWindow(QMainWindow):
             return
 
         st.category = (new_cat or "").strip() or "General"
+        if st.category not in self.db.category_order:
+            self.db.category_order.append(st.category)
         self.db.save()
         self._refresh_steps_tree(select_current=True)
 
@@ -1733,7 +1942,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Delete Step",
-            f"Delete step '{st.name}' (Category: {st.category}) and all its pages?\n(This cannot be undone in v0.3.x.)",
+            f"Delete step '{st.name}' (Category: {st.category}) and all its pages?\n(This cannot be undone.)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -1745,7 +1954,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Failed", "Cannot delete the last remaining step.")
             return
 
-        # fallback to first step
         self.current_step_id = self.db.steps[0].id
         first = self.db.steps[0]
         self.current_page_index = max(0, min(first.last_page_index, len(first.pages) - 1))
