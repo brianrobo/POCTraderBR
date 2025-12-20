@@ -1,62 +1,23 @@
-"""
-원하시면 다음 개선도 바로 이어갈 수 있습니다(질문 없이 진행 가능):
-
-Category 노드에도 우클릭 메뉴로 “+Step in this Category”, “Rename Category”, “Delete Category(하위 Step 이동/삭제 옵션)” 추가
-
-카테고리/스텝 정렬(예: category 알파벳, step 최근 수정 순)
-
-Step 검색(검색창 + 필터) 기능 추가
------------------------------------------
-첫번째만 적용해주고, 특정 category 위치를 상/하로 변경하는 기능을 추가해줘
------------------------------------------
-알겠습니다. 이전 v0.3.0(오버레이 Annotate + Category Tree) 기반에서, “추가 개선안 중 첫 번째(카테고리 우클릭 메뉴)”만 적용하고, 추가로 Category를 위/아래로 이동(순서 변경) 기능을 넣은 v0.3.1 전체 코드를 아래에 제공합니다.
-
-적용된 것
-
-(1) Annotate 오버레이 패널 유지
-
-(2) Category → Step Tree 유지
-
-(3) Category 노드 우클릭 메뉴
-
-+ Step in this Category
-
-Rename Category
-
-Delete Category (하위 Step을 삭제하거나, 다른 Category로 이동)
-
-(4) Category 순서 상/하 이동
-
-Move Category Up / Down
-
-순서가 JSON에 category_order로 영구 저장
-
-"""
-
-
-
 # -*- coding: utf-8 -*-
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.3.1  (2025-12-20)
+Version: 0.3.2  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.3.1):
-- (요청) "첫번째 개선"만 반영: Category 노드 우클릭 메뉴 추가
-  - + Step in this Category
-  - Rename Category
-  - Delete Category (하위 Step 삭제 또는 다른 Category로 이동)
-- (추가 요청) Category 순서 상/하 이동 기능 추가
-  - Move Category Up / Down
-  - category_order를 JSON에 저장하여 UI 순서 유지
-- 기존 기능 유지:
+Release Notes (v0.3.2):
+- (Bugfix) Step 전환 시 간헐 크래시(RuntimeError: QGraphicsPathItem deleted) 수정
+  - QGraphicsScene.clear() 이후 삭제된 item을 다시 removeItem 하며 발생하던 문제 방지
+  - clear_image/_set_pixmap의 정리 순서 조정 + _clear_strokes_internal 안전 처리
+- v0.3.1 기능 유지:
   - Annotate 오버레이 패널(✎ 버튼 → 패널)
+  - Category → Step Tree + Category 우클릭 메뉴
+  - Category 순서 Up/Down 이동 및 JSON(category_order) 저장
   - 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines(confirm)
   - Checklist(4문항) + Description
   - 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단
   - Del Page confirm
-  - Clipboard 이미지 붙여넣기 저장 (Ctrl+V: image_viewer에 포커스일 때)
+  - Clipboard 이미지 붙여넣기 저장 (Ctrl+V: image_viewer 포커스일 때)
 
 Run:
   python trader_note_app.py
@@ -72,7 +33,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import (
     Qt,
@@ -128,7 +89,7 @@ from PyQt5.QtWidgets import (
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.3.1)"
+APP_TITLE = "Trader Chart Note (v0.3.2)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -390,7 +351,6 @@ class NoteDB:
             if not st.pages:
                 st.pages.append(self.new_page())
 
-        # category order (persisted)
         raw_order = self.data.get("category_order", [])
         if isinstance(raw_order, list):
             self.category_order = [str(x).strip() for x in raw_order if str(x).strip()]
@@ -400,7 +360,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> None:
-        self.data["version"] = "0.3.1"
+        self.data["version"] = "0.3.2"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -434,7 +394,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.3.1",
+            "version": "0.3.2",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -529,11 +489,9 @@ class NoteDB:
         return sorted({(s.category or "General").strip() or "General" for s in self.steps})
 
     def _ensure_category_order_consistency(self) -> None:
-        # Remove non-existing
         existing = set(self._current_categories_set())
         self.category_order = [c for c in self.category_order if c in existing]
 
-        # Append missing categories (stable append)
         for c in self._current_categories_set():
             if c not in self.category_order:
                 self.category_order.append(c)
@@ -577,9 +535,7 @@ class NoteDB:
             if (st.category or "General").strip() == old:
                 st.category = new
 
-        # order update
         if old in self.category_order:
-            # if new already exists, remove old; else replace old->new
             if new in self.category_order:
                 self.category_order = [c for c in self.category_order if c != old]
             else:
@@ -598,7 +554,6 @@ class NoteDB:
         for st in self.steps:
             if (st.category or "General").strip() == cat:
                 st.category = move_to
-        # remove cat from order
         self.category_order = [c for c in self.category_order if c != cat]
         if move_to not in self.category_order:
             self.category_order.append(move_to)
@@ -608,16 +563,13 @@ class NoteDB:
         cat = (cat or "").strip() or "General"
         remaining = [s for s in self.steps if (s.category or "General").strip() != cat]
         if not remaining:
-            return False  # cannot delete all steps
+            return False
         self.steps = remaining
         self.category_order = [c for c in self.category_order if c != cat]
         self._ensure_category_order_consistency()
         return True
 
     def move_category(self, cat: str, direction: int) -> None:
-        """
-        direction: -1 (up), +1 (down)
-        """
         cat = (cat or "").strip() or "General"
         self._ensure_category_order_consistency()
         if cat not in self.category_order:
@@ -697,12 +649,13 @@ class ZoomPanAnnotateView(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.viewport().setCursor(Qt.OpenHandCursor)
 
+    # v0.3.2 bugfix: clear order (clear strokes first), and robust stroke cleanup
     def clear_image(self) -> None:
+        self._clear_strokes_internal(emit_signal=False)  # MUST before scene.clear()
         self._scene.clear()
         self._pixmap_item = None
         self._has_image = False
         self.resetTransform()
-        self._clear_strokes_internal(emit_signal=False)
 
     def set_image_path(self, abs_path: str) -> None:
         pm = QPixmap(abs_path)
@@ -711,8 +664,11 @@ class ZoomPanAnnotateView(QGraphicsView):
             return
         self._set_pixmap(pm)
 
+    # v0.3.2 bugfix: clear strokes before scene.clear()
     def _set_pixmap(self, pm: QPixmap) -> None:
+        self._clear_strokes_internal(emit_signal=False)  # MUST before scene.clear()
         self._scene.clear()
+
         self._pixmap_item = self._scene.addPixmap(pm)
         self._pixmap_item.setTransformationMode(Qt.SmoothTransformation)
         self._pixmap_item.setZValue(0)
@@ -721,7 +677,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._scene.setSceneRect(QRectF(pm.rect()))
         self.resetTransform()
         self.fit_to_view()
-        self._clear_strokes_internal(emit_signal=False)
 
     def fit_to_view(self) -> None:
         if not self._pixmap_item:
@@ -796,9 +751,17 @@ class ZoomPanAnnotateView(QGraphicsView):
     def clear_strokes(self) -> None:
         self._clear_strokes_internal(emit_signal=True)
 
+    # v0.3.2 bugfix: scene.clear() 등으로 이미 삭제된 wrapped object 안전 처리
     def _clear_strokes_internal(self, emit_signal: bool) -> None:
-        for it in self._stroke_items:
-            self._scene.removeItem(it)
+        for it in list(self._stroke_items):
+            try:
+                self._scene.removeItem(it)
+            except RuntimeError:
+                # wrapped C/C++ object already deleted
+                pass
+            except Exception:
+                pass
+
         self._stroke_items = []
         self._strokes = []
 
@@ -888,7 +851,10 @@ class ZoomPanAnnotateView(QGraphicsView):
     def _finish_stroke(self) -> None:
         if not self._current_item or len(self._current_points) < 2:
             if self._current_item:
-                self._scene.removeItem(self._current_item)
+                try:
+                    self._scene.removeItem(self._current_item)
+                except Exception:
+                    pass
             self._reset_current()
             return
 
@@ -992,7 +958,7 @@ class MainWindow(QMainWindow):
         self.steps_tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
         self.steps_tree.setUniformRowHeights(True)
 
-        # Category 우클릭 메뉴
+        # Category context menu
         self.steps_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.steps_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
@@ -1038,7 +1004,6 @@ class MainWindow(QMainWindow):
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
         meta_flow.addWidget(self.btn_copy_ticker)
 
-        # Toolbar
         toolbar_widget = QWidget()
         toolbar_flow = FlowLayout(toolbar_widget, margin=0, spacing=6)
 
@@ -1064,7 +1029,7 @@ class MainWindow(QMainWindow):
         self.image_viewer = ZoomPanAnnotateView()
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
         self.image_viewer.strokesChanged.connect(self._on_page_field_changed)
-        self.image_viewer.viewport().installEventFilter(self)  # overlay reposition
+        self.image_viewer.viewport().installEventFilter(self)
 
         # Navigator
         nav_widget = QWidget()
@@ -1172,12 +1137,11 @@ class MainWindow(QMainWindow):
 
         node_type = item.data(0, self.NODE_TYPE_ROLE)
         if node_type != "category":
-            return  # 요청사항: category 대상만
+            return
 
         cat = str(item.data(0, self.CATEGORY_NAME_ROLE) or "").strip() or "General"
 
         menu = QMenu(self)
-
         act_add_step = menu.addAction("+ Step in this Category")
         act_rename_cat = menu.addAction("Rename Category")
         act_delete_cat = menu.addAction("Delete Category")
@@ -1185,7 +1149,6 @@ class MainWindow(QMainWindow):
         act_move_up = menu.addAction("Move Category Up")
         act_move_down = menu.addAction("Move Category Down")
 
-        # enable up/down depending on order index
         cats = self.db.list_categories()
         try:
             idx = cats.index(cat)
@@ -1236,7 +1199,6 @@ class MainWindow(QMainWindow):
         self._refresh_steps_tree(select_current=True)
 
     def _ctx_delete_category(self, cat: str) -> None:
-        # Choose: move steps or delete steps
         msg = QMessageBox(self)
         msg.setWindowTitle("Delete Category")
         msg.setText(f"Category '{cat}' 처리 방식을 선택하세요.")
@@ -1253,7 +1215,6 @@ class MainWindow(QMainWindow):
         self._flush_page_fields_to_model_and_save()
 
         if clicked == btn_move:
-            # target category prompt (allow new)
             cats = [c for c in self.db.list_categories() if c != cat]
             hint = ", ".join(cats) if cats else "General"
             target, ok = QInputDialog.getText(
@@ -1267,10 +1228,10 @@ class MainWindow(QMainWindow):
             target = (target or "").strip() or "General"
 
             self.db.delete_category_move_steps(cat, target)
-            # keep current step valid
             if self.current_step_id and not self.db.get_step_by_id(self.current_step_id):
                 self.current_step_id = self.db.steps[0].id
                 self.current_page_index = 0
+
             self._save_ui_state()
             self.db.save()
             self._refresh_steps_tree(select_current=True)
@@ -1283,10 +1244,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Not allowed", "이 Category 삭제는 모든 Step을 제거하게 되어 허용되지 않습니다.")
                 return
 
-            # current step might be gone
             if self.current_step_id and not self.db.get_step_by_id(self.current_step_id):
                 self.current_step_id = self.db.steps[0].id
-                self.current_page_index = max(0, min(self.db.steps[0].last_page_index, len(self.db.steps[0].pages) - 1))
+                self.current_page_index = max(
+                    0, min(self.db.steps[0].last_page_index, len(self.db.steps[0].pages) - 1)
+                )
 
             self._save_ui_state()
             self.db.save()
@@ -1489,7 +1451,6 @@ class MainWindow(QMainWindow):
             top = QTreeWidgetItem([cat])
             top.setData(0, self.NODE_TYPE_ROLE, "category")
             top.setData(0, self.CATEGORY_NAME_ROLE, cat)
-            # 선택은 막되, 우클릭 메뉴는 쓰기 위해 flags는 유지하되 selectable만 제거
             top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
             self.steps_tree.addTopLevelItem(top)
             cat_nodes[cat] = top
@@ -1591,7 +1552,6 @@ class MainWindow(QMainWindow):
 
             self.text_edit.setPlainText(pg.note_text or "")
 
-            # 안전하게 draw off
             self.btn_draw_mode.setChecked(False)
             self.image_viewer.set_mode_pan()
 
