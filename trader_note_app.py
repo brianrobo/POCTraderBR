@@ -1,53 +1,69 @@
 """
-엉 다음 개선도 진행해주고,, annotation 박스를 가로가 아닌 세로쪽으로 해서 만들어줘
------------------------
-12s 동안 생각함
+원하시면 다음 단계로는 더 “OneNote 느낌” 나게:
 
-아래는 요청하신 “다음 개선”을 반영한 v0.1.9 전체 코드입니다.
+Annotate를 **이미지 위에 겹치는 오버레이 패널(작게 떠 있는 패널)**로 바꾸고,
 
-반영 사항 (v0.1.9)
+평소엔 아이콘 1개만 보이다가 누르면 패널이 열리는 형태
+로도 바로 개선 가능합니다.
+------------------------------
 
-Annotate 박스를 세로(Vertical) 구성으로 변경
+응 그렇게 개선해줘
 
-Draw 토글 → Color → Width → Clear Lines → (단축키/가이드) 순으로 위에서 아래로 배치
 
-Clear Lines에 Confirm 팝업 추가 (Yes/No)
+그리고, step 별로 category tag 같은걸 달아서,,  같은 category tag인 step끼리는 같이 묶여있었으면해, ui상으로는 tree형식이 되어야겠고
+28s 동안 생각함
+------------------------------
 
-Annotate 박스 내부에 단축키/사용 가이드 라벨 추가
+좋습니다. 요청하신 2가지를 모두 반영해서 v0.3.0 전체 코드로 업데이트했습니다.
 
-실제로 구현되어 있는 동작만 안내하도록 구성 (오해 방지)
---------------------
+반영 사항 (v0.3.0)
 
-원하시면 다음은 “Annotate 박스가 세로로 길어져서 툴바가 높아지는 문제”를 줄이기 위해,
+Annotate를 “오버레이 패널(이미지 위에 떠 있는 패널)”로 변경
 
-Annotate 그룹을 접기/펼치기(Collapse) 버튼으로 접을 수 있게 하거나,
+평소엔 이미지 우측 상단에 **작은 버튼(✎)**만 보임
 
-Annotate를 툴바가 아니라 이미지 뷰 오른쪽 상단 Overlay 패널처럼 띄우는 방식
-으로도 바로 개선 가능합니다.
+누르면 Annotate 패널이 이미지 위에 오버레이로 펼쳐짐
+
+닫으면 다시 ✎ 버튼만 보임
+
+패널을 닫을 때 Draw가 켜져 있으면 자동 OFF + Pan 모드로 전환
+
+Step에 Category Tag 추가 + 좌측 UI를 Tree 형태로 그룹핑
+
+Step마다 category 필드 저장 (JSON 유지)
+
+좌측이 Category → Step 트리 구조로 표시됨
+
++Step 시 Step 이름 입력 후, Category 입력(기존 카테고리 참고 가능)
+
+Set Category 버튼으로 선택 Step의 카테고리를 변경 가능
+
 """
-
-
-
 
 
 # -*- coding: utf-8 -*-
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.1.9  (2025-12-20)
+Version: 0.3.0  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.1.9):
-- Annotate(주석) 그룹 UI를 세로(Vertical) 배치로 변경
-- Clear Lines 버튼에 사용자 Confirm 팝업 추가
-- Annotate 그룹 하단에 단축키/사용 가이드 라벨 추가 (구현된 기능만 안내)
+Release Notes (v0.3.0):
+- Annotate UI를 오버레이 패널로 변경:
+  - 이미지 우측 상단에 ✎ 버튼만 보이다가 클릭 시 패널 표시
+  - 패널 닫으면 다시 ✎ 버튼만 표시
+  - 패널 닫을 때 Draw가 켜져 있으면 자동 OFF + Pan 전환
+- Step에 Category Tag 추가 + 좌측 Step UI를 Tree로 구성:
+  - Category(상위) → Step(하위) 구조
+  - Step별 category 저장/로드(JSON)
+  - Set Category 버튼으로 카테고리 변경 가능
 - 기존 기능 유지:
   - JSON 저장
-  - 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines
+  - 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines(confirm)
   - Checklist(4문항) + Description
   - 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단 위치
   - Del Page confirm 팝업
-  - Clipboard 이미지 붙여넣기 저장
+  - Clipboard 이미지 붙여넣기 저장 (Ctrl+V: image_viewer에 포커스일 때)
 
 Run:
   python trader_note_app.py
@@ -63,9 +79,9 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QRect, QSize, QPoint
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QRect, QSize, QPoint, QEvent
 from PyQt5.QtGui import (
     QImage,
     QKeySequence,
@@ -85,8 +101,6 @@ from PyQt5.QtWidgets import (
     QGraphicsView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QShortcut,
@@ -103,10 +117,14 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QLayout,
     QWidgetItem,
+    QSizePolicy,
+    QFrame,
+    QTreeWidget,
+    QTreeWidgetItem,
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.1.9)"
+APP_TITLE = "Trader Chart Note (v0.3.0)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -153,10 +171,6 @@ def _sanitize_for_folder(name: str, fallback: str) -> str:
 
 
 def _make_copy_icon(size: int = 16) -> QIcon:
-    """
-    외부 PNG/SVG 없이도 안정적으로 보이도록,
-    코드에서 아이콘 픽셀을 직접 그려 QIcon으로 생성.
-    """
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
 
@@ -337,6 +351,7 @@ class Page:
 class Step:
     id: str
     name: str
+    category: str
     pages: List[Page]
     last_page_index: int = 0
 
@@ -371,7 +386,7 @@ class NoteDB:
                 st.pages.append(self.new_page())
 
     def save(self) -> None:
-        self.data["version"] = "0.1.9"
+        self.data["version"] = "0.3.0"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -386,6 +401,7 @@ class NoteDB:
                 {
                     "id": _uuid(),
                     "name": name,
+                    "category": "General",
                     "last_page_index": 0,
                     "pages": [
                         {
@@ -403,7 +419,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.1.9",
+            "version": "0.3.0",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -436,10 +452,14 @@ class NoteDB:
                         updated_at=int(p.get("updated_at", _now_epoch())),
                     )
                 )
+
+            category = str(s.get("category", "General")).strip() or "General"
+
             steps.append(
                 Step(
                     id=str(s.get("id", _uuid())),
                     name=str(s.get("name", "Untitled Step")),
+                    category=category,
                     pages=pages,
                     last_page_index=int(s.get("last_page_index", 0)),
                 )
@@ -454,6 +474,7 @@ class NoteDB:
                 {
                     "id": st.id,
                     "name": st.name,
+                    "category": st.category,
                     "last_page_index": st.last_page_index,
                     "pages": [
                         {
@@ -494,8 +515,9 @@ class NoteDB:
                 return st
         return None
 
-    def add_step(self, name: str) -> Step:
-        st = Step(id=_uuid(), name=name, pages=[self.new_page()], last_page_index=0)
+    def add_step(self, name: str, category: str) -> Step:
+        category = (category or "").strip() or "General"
+        st = Step(id=_uuid(), name=name, category=category, pages=[self.new_page()], last_page_index=0)
         self.steps.append(st)
         return st
 
@@ -504,6 +526,10 @@ class NoteDB:
             return False
         self.steps = [s for s in self.steps if s.id != step_id]
         return True
+
+    def list_categories(self) -> List[str]:
+        cats = sorted({(s.category or "General").strip() or "General" for s in self.steps})
+        return cats
 
 
 # ---------------------------
@@ -549,11 +575,8 @@ class ZoomPanAnnotateView(QGraphicsView):
         self.set_mode_pan()
 
     def set_pen(self, color_hex: str, width: float) -> None:
-        try:
-            c = QColor(color_hex)
-            if not c.isValid():
-                c = QColor("#FF3C3C")
-        except Exception:
+        c = QColor(color_hex)
+        if not c.isValid():
             c = QColor("#FF3C3C")
         self._pen_color = c
         self._pen_width = float(width)
@@ -774,11 +797,7 @@ class ZoomPanAnnotateView(QGraphicsView):
 
         self._stroke_items.append(self._current_item)
         self._strokes.append(
-            {
-                "color": self._stroke_color_hex,
-                "width": self._stroke_width,
-                "points": self._current_points,
-            }
+            {"color": self._stroke_color_hex, "width": self._stroke_width, "points": self._current_points}
         )
 
         self._reset_current()
@@ -796,10 +815,14 @@ class ZoomPanAnnotateView(QGraphicsView):
 # Main Window
 # ---------------------------
 class MainWindow(QMainWindow):
+    STEP_ID_ROLE = Qt.UserRole + 101
+    NODE_TYPE_ROLE = Qt.UserRole + 102  # "category" or "step"
+    CATEGORY_NAME_ROLE = Qt.UserRole + 103
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1380, 920)
+        self.resize(1400, 930)
 
         self.db = NoteDB(DEFAULT_DB_PATH)
 
@@ -812,8 +835,10 @@ class MainWindow(QMainWindow):
         self._save_timer.timeout.connect(self._flush_page_fields_to_model_and_save)
 
         self._build_ui()
+        self._build_annotate_overlay()
+
         self._load_ui_state_or_defaults()
-        self._refresh_steps_list(select_current=True)
+        self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.go_prev_page)
@@ -830,16 +855,18 @@ class MainWindow(QMainWindow):
             pass
         super().closeEvent(event)
 
+    # ---------------- UI ----------------
     def _build_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
 
         main_splitter = QSplitter(Qt.Horizontal, root)
 
-        # Left: steps list
+        # Left: category tree
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(8)
 
         step_controls = QWidget()
         step_controls_layout = FlowLayout(step_controls, margin=0, spacing=6)
@@ -848,22 +875,28 @@ class MainWindow(QMainWindow):
         self.btn_add_step.setText("+ Step")
         self.btn_rename_step = QToolButton()
         self.btn_rename_step.setText("Rename")
+        self.btn_set_category = QToolButton()
+        self.btn_set_category.setText("Set Category")
         self.btn_del_step = QToolButton()
         self.btn_del_step.setText("Del")
 
         self.btn_add_step.clicked.connect(self.add_step)
         self.btn_rename_step.clicked.connect(self.rename_step)
+        self.btn_set_category.clicked.connect(self.set_step_category)
         self.btn_del_step.clicked.connect(self.delete_step)
 
         step_controls_layout.addWidget(self.btn_add_step)
         step_controls_layout.addWidget(self.btn_rename_step)
+        step_controls_layout.addWidget(self.btn_set_category)
         step_controls_layout.addWidget(self.btn_del_step)
 
-        self.steps_list = QListWidget()
-        self.steps_list.currentRowChanged.connect(self._on_step_selected)
+        self.steps_tree = QTreeWidget()
+        self.steps_tree.setHeaderHidden(True)
+        self.steps_tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
+        self.steps_tree.setUniformRowHeights(True)
 
         left_layout.addWidget(step_controls)
-        left_layout.addWidget(self.steps_list, 1)
+        left_layout.addWidget(self.steps_tree, 1)
 
         # Right panel
         right_panel = QWidget()
@@ -904,11 +937,10 @@ class MainWindow(QMainWindow):
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
         meta_flow.addWidget(self.btn_copy_ticker)
 
-        # Toolbar (wrap)
+        # Toolbar (wrap) - annotate는 오버레이이므로 여기서 제거
         toolbar_widget = QWidget()
         toolbar_flow = FlowLayout(toolbar_widget, margin=0, spacing=6)
 
-        # Short labels + tooltips
         self.btn_set_image = QPushButton("Open")
         self.btn_set_image.setToolTip("Open image file and set as chart image")
         self.btn_paste_image = QPushButton("Paste")
@@ -928,77 +960,10 @@ class MainWindow(QMainWindow):
         toolbar_flow.addWidget(self.btn_clear_image)
         toolbar_flow.addWidget(self.btn_reset_view)
 
-        # Annotate group (VERTICAL)
-        self.grp_annotate = QGroupBox("Annotate")
-        anno_v = QVBoxLayout(self.grp_annotate)
-        anno_v.setContentsMargins(10, 10, 10, 10)
-        anno_v.setSpacing(6)
-
-        self.btn_draw_mode = QToolButton()
-        self.btn_draw_mode.setText("Draw")
-        self.btn_draw_mode.setCheckable(True)
-        self.btn_draw_mode.setToolTip("Toggle draw mode. Drag to draw. Hold SHIFT for straight line.")
-        self.btn_draw_mode.toggled.connect(self.toggle_draw_mode)
-        anno_v.addWidget(self.btn_draw_mode)
-
-        # Row: Color
-        color_row = QWidget()
-        color_row_l = QHBoxLayout(color_row)
-        color_row_l.setContentsMargins(0, 0, 0, 0)
-        color_row_l.setSpacing(6)
-
-        color_row_l.addWidget(QLabel("Color"))
-        self.combo_color = QComboBox()
-        self.combo_color.addItem("Red", "#FF3C3C")
-        self.combo_color.addItem("Yellow", "#FFD400")
-        self.combo_color.addItem("Cyan", "#00D5FF")
-        self.combo_color.addItem("White", "#FFFFFF")
-        self.combo_color.setToolTip("Stroke color")
-        self.combo_color.currentIndexChanged.connect(self._on_pen_changed)
-        color_row_l.addWidget(self.combo_color, 1)
-        anno_v.addWidget(color_row)
-
-        # Row: Width
-        width_row = QWidget()
-        width_row_l = QHBoxLayout(width_row)
-        width_row_l.setContentsMargins(0, 0, 0, 0)
-        width_row_l.setSpacing(6)
-
-        width_row_l.addWidget(QLabel("Width"))
-        self.combo_width = QComboBox()
-        for w in ["2", "3", "4", "6", "8"]:
-            self.combo_width.addItem(f"{w}px", float(w))
-        self.combo_width.setCurrentIndex(1)
-        self.combo_width.setToolTip("Stroke width")
-        self.combo_width.currentIndexChanged.connect(self._on_pen_changed)
-        width_row_l.addWidget(self.combo_width, 1)
-        anno_v.addWidget(width_row)
-
-        self.btn_clear_lines = QPushButton("Clear Lines")
-        self.btn_clear_lines.setToolTip("Clear all annotation lines on this page (confirm)")
-        self.btn_clear_lines.clicked.connect(self.clear_lines)
-        anno_v.addWidget(self.btn_clear_lines)
-
-        # Help / shortcut guide (implemented only)
-        self.lbl_anno_help = QLabel(
-            "• Mouse Wheel: Zoom\n"
-            "• Drag: Pan (Draw OFF)\n"
-            "• Drag: Draw stroke (Draw ON)\n"
-            "• Shift + Drag: Straight line (Draw ON)\n"
-            "• Ctrl+V: Paste image\n"
-            "• Alt+Left/Right: Prev/Next page\n"
-            "• Ctrl+N: Add page, Ctrl+S: Save"
-        )
-        self.lbl_anno_help.setWordWrap(True)
-        self.lbl_anno_help.setStyleSheet("color: #555;")
-        anno_v.addWidget(self.lbl_anno_help)
-
-        toolbar_flow.addWidget(self.grp_annotate)
-
         self.image_viewer = ZoomPanAnnotateView()
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
         self.image_viewer.strokesChanged.connect(self._on_page_field_changed)
-        self._apply_pen_from_ui()
+        self.image_viewer.viewport().installEventFilter(self)  # overlay reposition용
 
         # Navigator (still inside image section bottom)
         nav_widget = QWidget()
@@ -1092,11 +1057,156 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_panel)
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([270, 1110])
+        main_splitter.setSizes([320, 1080])
 
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(main_splitter)
+
+    # ---------------- Annotate Overlay ----------------
+    def _build_annotate_overlay(self) -> None:
+        vp = self.image_viewer.viewport()
+
+        # Closed state: small toggle button
+        self.btn_anno_toggle = QToolButton(vp)
+        self.btn_anno_toggle.setText("✎")
+        self.btn_anno_toggle.setToolTip("Open Annotate panel")
+        self.btn_anno_toggle.setAutoRaise(True)
+        self.btn_anno_toggle.setFixedSize(34, 30)
+        self.btn_anno_toggle.clicked.connect(self._open_annotate_panel)
+
+        # Panel (floating)
+        self.anno_panel = QFrame(vp)
+        self.anno_panel.setObjectName("anno_panel")
+        self.anno_panel.setFrameShape(QFrame.StyledPanel)
+        self.anno_panel.setVisible(False)
+        self.anno_panel.setFixedWidth(240)
+
+        self.anno_panel.setStyleSheet("""
+            QFrame#anno_panel {
+                background: rgba(255, 255, 255, 235);
+                border: 1px solid #9A9A9A;
+                border-radius: 10px;
+            }
+            QLabel { color: #222; }
+        """)
+
+        p_layout = QVBoxLayout(self.anno_panel)
+        p_layout.setContentsMargins(10, 10, 10, 10)
+        p_layout.setSpacing(8)
+
+        # Header row
+        header = QWidget(self.anno_panel)
+        header_l = QHBoxLayout(header)
+        header_l.setContentsMargins(0, 0, 0, 0)
+        header_l.setSpacing(6)
+
+        lbl = QLabel("Annotate", header)
+        lbl.setStyleSheet("font-weight: 600;")
+        header_l.addWidget(lbl, 1)
+
+        self.btn_anno_close = QToolButton(header)
+        self.btn_anno_close.setText("×")
+        self.btn_anno_close.setToolTip("Close panel")
+        self.btn_anno_close.setAutoRaise(True)
+        self.btn_anno_close.setFixedSize(26, 22)
+        self.btn_anno_close.clicked.connect(self._close_annotate_panel)
+        header_l.addWidget(self.btn_anno_close)
+
+        p_layout.addWidget(header)
+
+        # Draw toggle
+        self.btn_draw_mode = QToolButton(self.anno_panel)
+        self.btn_draw_mode.setText("Draw")
+        self.btn_draw_mode.setCheckable(True)
+        self.btn_draw_mode.setToolTip("Toggle draw mode. Drag to draw. Hold SHIFT for straight line.")
+        self.btn_draw_mode.toggled.connect(self.toggle_draw_mode)
+        p_layout.addWidget(self.btn_draw_mode)
+
+        # Color row
+        color_row = QWidget(self.anno_panel)
+        color_l = QHBoxLayout(color_row)
+        color_l.setContentsMargins(0, 0, 0, 0)
+        color_l.setSpacing(6)
+        color_l.addWidget(QLabel("Color"))
+        self.combo_color = QComboBox(color_row)
+        self.combo_color.addItem("Red", "#FF3C3C")
+        self.combo_color.addItem("Yellow", "#FFD400")
+        self.combo_color.addItem("Cyan", "#00D5FF")
+        self.combo_color.addItem("White", "#FFFFFF")
+        self.combo_color.currentIndexChanged.connect(self._on_pen_changed)
+        color_l.addWidget(self.combo_color, 1)
+        p_layout.addWidget(color_row)
+
+        # Width row
+        width_row = QWidget(self.anno_panel)
+        width_l = QHBoxLayout(width_row)
+        width_l.setContentsMargins(0, 0, 0, 0)
+        width_l.setSpacing(6)
+        width_l.addWidget(QLabel("Width"))
+        self.combo_width = QComboBox(width_row)
+        for w in ["2", "3", "4", "6", "8"]:
+            self.combo_width.addItem(f"{w}px", float(w))
+        self.combo_width.setCurrentIndex(1)
+        self.combo_width.currentIndexChanged.connect(self._on_pen_changed)
+        width_l.addWidget(self.combo_width, 1)
+        p_layout.addWidget(width_row)
+
+        # Clear lines
+        self.btn_clear_lines = QPushButton("Clear Lines", self.anno_panel)
+        self.btn_clear_lines.clicked.connect(self.clear_lines)
+        p_layout.addWidget(self.btn_clear_lines)
+
+        help_lbl = QLabel(
+            "• Wheel: Zoom\n"
+            "• Drag: Pan (Draw OFF)\n"
+            "• Drag: Draw (Draw ON)\n"
+            "• Shift+Drag: Straight line\n"
+            "• Ctrl+V: Paste image\n"
+            "• Alt+←/→: Prev/Next\n"
+            "• Ctrl+N: Add page, Ctrl+S: Save",
+            self.anno_panel
+        )
+        help_lbl.setWordWrap(True)
+        help_lbl.setStyleSheet("color:#555; font-size: 11px;")
+        p_layout.addWidget(help_lbl)
+
+        self._apply_pen_from_ui()
+        self._reposition_overlay()
+
+    def _open_annotate_panel(self) -> None:
+        self.btn_anno_toggle.setVisible(False)
+        self.anno_panel.setVisible(True)
+        self._reposition_overlay()
+
+    def _close_annotate_panel(self) -> None:
+        # 패널 닫을 때 draw가 켜져 있으면 안전하게 OFF
+        if self.btn_draw_mode.isChecked():
+            self.btn_draw_mode.setChecked(False)
+            self.image_viewer.set_mode_pan()
+
+        self.anno_panel.setVisible(False)
+        self.btn_anno_toggle.setVisible(True)
+        self._reposition_overlay()
+
+    def _reposition_overlay(self) -> None:
+        vp = self.image_viewer.viewport()
+        w = vp.width()
+        margin = 10
+
+        # toggle button 위치 (항상 우상단)
+        self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
+
+        if self.anno_panel.isVisible():
+            # panel도 우상단(토글버튼 자리 근처)로 배치
+            x = max(margin, w - self.anno_panel.width() - margin)
+            y = margin
+            self.anno_panel.move(x, y)
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.image_viewer.viewport() and event.type() == QEvent.Resize:
+            self._reposition_overlay()
+        return super().eventFilter(obj, event)
 
     # ---------------- Pen UI ----------------
     def _apply_pen_from_ui(self) -> None:
@@ -1141,34 +1251,70 @@ class MainWindow(QMainWindow):
         self.db.ui_state["selected_step_id"] = self.current_step_id
         self.db.ui_state["current_page_index"] = self.current_page_index
 
-    # ---------------- Steps list ----------------
-    def _refresh_steps_list(self, select_current: bool = False) -> None:
-        self.steps_list.blockSignals(True)
-        self.steps_list.clear()
+    # ---------------- Tree: category -> steps ----------------
+    def _refresh_steps_tree(self, select_current: bool = False) -> None:
+        self.steps_tree.blockSignals(True)
+        self.steps_tree.clear()
 
-        current_row = 0
-        for i, st in enumerate(self.db.steps):
-            item = QListWidgetItem(st.name)
-            item.setData(Qt.UserRole, st.id)
-            self.steps_list.addItem(item)
+        # category -> items
+        cats = self.db.list_categories()
+        cat_nodes: Dict[str, QTreeWidgetItem] = {}
+
+        # Create category nodes
+        for cat in cats:
+            top = QTreeWidgetItem([cat])
+            top.setData(0, self.NODE_TYPE_ROLE, "category")
+            top.setData(0, self.CATEGORY_NAME_ROLE, cat)
+            top.setFlags(top.flags() & ~Qt.ItemIsSelectable)  # category는 선택 불가(오작동 방지)
+            self.steps_tree.addTopLevelItem(top)
+            cat_nodes[cat] = top
+
+        # Put steps under category
+        selected_item: Optional[QTreeWidgetItem] = None
+        for st in self.db.steps:
+            cat = (st.category or "General").strip() or "General"
+            if cat not in cat_nodes:
+                top = QTreeWidgetItem([cat])
+                top.setData(0, self.NODE_TYPE_ROLE, "category")
+                top.setData(0, self.CATEGORY_NAME_ROLE, cat)
+                top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
+                self.steps_tree.addTopLevelItem(top)
+                cat_nodes[cat] = top
+
+            child = QTreeWidgetItem([st.name])
+            child.setData(0, self.NODE_TYPE_ROLE, "step")
+            child.setData(0, self.STEP_ID_ROLE, st.id)
+            cat_nodes[cat].addChild(child)
+
             if select_current and st.id == self.current_step_id:
-                current_row = i
+                selected_item = child
 
-        self.steps_list.setCurrentRow(current_row)
-        self.steps_list.blockSignals(False)
+        # Expand all categories (원하면 ui_state로 확장상태 저장 가능)
+        for i in range(self.steps_tree.topLevelItemCount()):
+            self.steps_tree.topLevelItem(i).setExpanded(True)
 
-    def _on_step_selected(self, row: int) -> None:
-        if row < 0:
-            return
-        item = self.steps_list.item(row)
+        # Select current
+        if selected_item:
+            self.steps_tree.setCurrentItem(selected_item)
+
+        self.steps_tree.blockSignals(False)
+
+    def _on_tree_selection_changed(self) -> None:
+        item = self.steps_tree.currentItem()
         if not item:
             return
 
-        self._flush_page_fields_to_model_and_save()
+        if item.data(0, self.NODE_TYPE_ROLE) != "step":
+            return
 
-        step_id = item.data(Qt.UserRole)
+        step_id = item.data(0, self.STEP_ID_ROLE)
         if not step_id:
             return
+
+        if str(step_id) == self.current_step_id:
+            return
+
+        self._flush_page_fields_to_model_and_save()
 
         self.current_step_id = str(step_id)
         st = self.current_step()
@@ -1223,6 +1369,7 @@ class MainWindow(QMainWindow):
 
             self.text_edit.setPlainText(pg.note_text or "")
 
+            # 페이지 로드시 draw는 안전하게 off
             self.btn_draw_mode.setChecked(False)
             self.image_viewer.set_mode_pan()
 
@@ -1238,9 +1385,7 @@ class MainWindow(QMainWindow):
     def _collect_checklist_from_ui(self) -> Checklist:
         out: Checklist = []
         for i, q in enumerate(DEFAULT_CHECK_QUESTIONS):
-            out.append(
-                {"q": q, "checked": bool(self.chk_boxes[i].isChecked()), "note": self.chk_notes[i].toPlainText()}
-            )
+            out.append({"q": q, "checked": bool(self.chk_boxes[i].isChecked()), "note": self.chk_notes[i].toPlainText()})
         return out
 
     def _flush_page_fields_to_model_and_save(self) -> None:
@@ -1341,7 +1486,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Delete Page",
-            "Delete current page?\n(This cannot be undone in v0.1.x.)",
+            "Delete current page?\n(This cannot be undone in v0.3.x.)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -1506,29 +1651,76 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(txt)
 
     # ---------------- Step management ----------------
-    def add_step(self) -> None:
-        name, ok = QInputDialog.getText(self, "Add Step", "Step name:")
+    def _prompt_step_name_and_category(self, default_name: str = "", default_category: str = "") -> Optional[Tuple[str, str]]:
+        name, ok = QInputDialog.getText(self, "Step Name", "Step name:", text=default_name)
         if not ok or not name.strip():
-            return
+            return None
+
+        cats = self.db.list_categories()
+        # getItem은 editable=False가 기본이라, 카테고리 신규 입력을 위해 getText를 사용하되
+        # 참고로 기존 카테고리 목록을 안내한다.
+        hint = ", ".join(cats) if cats else "General"
+        cat_text, ok2 = QInputDialog.getText(
+            self,
+            "Category",
+            f"Category tag (existing: {hint}):",
+            text=(default_category.strip() or "General"),
+        )
+        if not ok2:
+            return None
+
+        category = (cat_text or "").strip() or "General"
+        return name.strip(), category
+
+    def add_step(self) -> None:
         self._flush_page_fields_to_model_and_save()
-        st = self.db.add_step(name.strip())
+
+        res = self._prompt_step_name_and_category(default_name="New Step", default_category="General")
+        if not res:
+            return
+        name, category = res
+
+        st = self.db.add_step(name, category)
         self.current_step_id = st.id
         self.current_page_index = 0
         self._save_ui_state()
         self.db.save()
-        self._refresh_steps_list(select_current=True)
+
+        self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
     def rename_step(self) -> None:
         st = self.current_step()
         if not st:
             return
+
         new_name, ok = QInputDialog.getText(self, "Rename Step", "New name:", text=st.name)
         if not ok or not new_name.strip():
             return
+
         st.name = new_name.strip()
         self.db.save()
-        self._refresh_steps_list(select_current=True)
+        self._refresh_steps_tree(select_current=True)
+
+    def set_step_category(self) -> None:
+        st = self.current_step()
+        if not st:
+            return
+
+        cats = self.db.list_categories()
+        hint = ", ".join(cats) if cats else "General"
+        new_cat, ok = QInputDialog.getText(
+            self,
+            "Set Category",
+            f"Category tag (existing: {hint}):",
+            text=(st.category or "General"),
+        )
+        if not ok:
+            return
+
+        st.category = (new_cat or "").strip() or "General"
+        self.db.save()
+        self._refresh_steps_tree(select_current=True)
 
     def delete_step(self) -> None:
         st = self.current_step()
@@ -1541,7 +1733,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Delete Step",
-            f"Delete step '{st.name}' and all its pages?\n(This cannot be undone in v0.1.x.)",
+            f"Delete step '{st.name}' (Category: {st.category}) and all its pages?\n(This cannot be undone in v0.3.x.)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -1553,12 +1745,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Failed", "Cannot delete the last remaining step.")
             return
 
+        # fallback to first step
         self.current_step_id = self.db.steps[0].id
         first = self.db.steps[0]
         self.current_page_index = max(0, min(first.last_page_index, len(first.pages) - 1))
         self._save_ui_state()
         self.db.save()
-        self._refresh_steps_list(select_current=True)
+
+        self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
 
