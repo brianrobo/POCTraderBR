@@ -1,27 +1,32 @@
 """
-아래는 요청하신 UI 변경을 반영한 v0.1.6 전체 코드입니다.
+엉 다음 개선도 진행해주고,, annotation 박스를 가로가 아닌 세로쪽으로 해서 만들어줘
+-----------------------
+12s 동안 생각함
 
-반영 사항
+아래는 요청하신 “다음 개선”을 반영한 v0.1.9 전체 코드입니다.
 
-종목명(Name) / Ticker / Copy Ticker를 “상단 공용 바”에서 제거하고, 좌측 이미지 섹션(차트 영역) 상단에 한 줄로 붙였습니다. (Ticker + Copy가 종목명 오른쪽에 바짝 붙음)
+반영 사항 (v0.1.9)
 
-페이지 이동/페이지 수/페이지 추가/삭제 네비게이션을 우측 전체 하단에서 제거하고, 좌측 이미지 섹션 하단으로 옮겼습니다.
+Annotate 박스를 세로(Vertical) 구성으로 변경
 
-페이지 삭제는 confirm 팝업 유지(요청대로).
+Draw 토글 → Color → Width → Clear Lines → (단축키/가이드) 순으로 위에서 아래로 배치
 
-기존 JSON 저장은 그대로 유지됩니다.
+Clear Lines에 Confirm 팝업 추가 (Yes/No)
 
-------------
+Annotate 박스 내부에 단축키/사용 가이드 라벨 추가
 
-원하시면 다음으로 “창 크기 줄였을 때도” 더 안정적으로 보이도록,
+실제로 구현되어 있는 동작만 안내하도록 구성 (오해 방지)
+--------------------
 
-이미지 섹션 상단(meta_in_image)과 툴바를 2줄로 자동 줄바꿈하거나
+원하시면 다음은 “Annotate 박스가 세로로 길어져서 툴바가 높아지는 문제”를 줄이기 위해,
 
-Copy 버튼을 아이콘(📋) 형태로 더 작게
+Annotate 그룹을 접기/펼치기(Collapse) 버튼으로 접을 수 있게 하거나,
 
-이런 식으로 UI 밀림을 더 줄이는 것도 가능합니다.
-
+Annotate를 툴바가 아니라 이미지 뷰 오른쪽 상단 Overlay 패널처럼 띄우는 방식
+으로도 바로 개선 가능합니다.
 """
+
+
 
 
 
@@ -29,19 +34,20 @@ Copy 버튼을 아이콘(📋) 형태로 더 작게
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.1.6  (2025-12-20)
+Version: 0.1.9  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.1.6):
-- UI Layout 개선
-  1) Name/Ticker/Copy Ticker를 "이미지 섹션 상단"으로 이동 (우측 Description 영역으로 넘치지 않도록)
-  2) 페이지 네비게이션(◀, 페이지수, ▶, +Page, Del Page)을 "이미지 섹션 하단"으로 이동
-     - Del Page는 사용자 confirm 팝업 제공
+Release Notes (v0.1.9):
+- Annotate(주석) 그룹 UI를 세로(Vertical) 배치로 변경
+- Clear Lines 버튼에 사용자 Confirm 팝업 추가
+- Annotate 그룹 하단에 단축키/사용 가이드 라벨 추가 (구현된 기능만 안내)
 - 기존 기능 유지:
-  - 이미지 Zoom/Pan
-  - Draw/Shift 직선/색/두께 + Clear Lines
-  - Checklist(4문항 체크 + 설명 입력) + Description 본문
   - JSON 저장
+  - 이미지 Zoom/Pan + Draw(Shift 직선) + 색/두께 + Clear Lines
+  - Checklist(4문항) + Description
+  - 페이지 네비게이션(◀ 1/3 ▶ +Page Del Page) 좌측 이미지 섹션 하단 위치
+  - Del Page confirm 팝업
+  - Clipboard 이미지 붙여넣기 저장
 
 Run:
   python trader_note_app.py
@@ -59,8 +65,17 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF
-from PyQt5.QtGui import QImage, QKeySequence, QPixmap, QPainterPath, QPen, QColor
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QRect, QSize, QPoint
+from PyQt5.QtGui import (
+    QImage,
+    QKeySequence,
+    QPixmap,
+    QPainterPath,
+    QPen,
+    QColor,
+    QPainter,
+    QIcon,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -68,28 +83,30 @@ from PyQt5.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsScene,
     QGraphicsView,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QShortcut,
     QSplitter,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
+    QHBoxLayout,
     QWidget,
     QInputDialog,
     QComboBox,
     QCheckBox,
     QGroupBox,
+    QPushButton,
+    QLayout,
+    QWidgetItem,
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.1.6)"
+APP_TITLE = "Trader Chart Note (v0.1.9)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -135,25 +152,130 @@ def _sanitize_for_folder(name: str, fallback: str) -> str:
     return safe or fallback
 
 
-# strokes = [
-#   { "color": "#FF0000", "width": 3.0, "points": [[x,y], [x,y], ...] },
-#   ...
-# ]
-Strokes = List[Dict[str, Any]]
+def _make_copy_icon(size: int = 16) -> QIcon:
+    """
+    외부 PNG/SVG 없이도 안정적으로 보이도록,
+    코드에서 아이콘 픽셀을 직접 그려 QIcon으로 생성.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
 
-# checklist = [
-#   { "q": "...", "checked": true/false, "note": "..." },
-#   ...
-# ]
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+
+    fg = QColor("#2E2E2E")
+    pen = QPen(fg, 1.2)
+    p.setPen(pen)
+
+    back = QRect(4, 3, 9, 10)
+    p.drawRoundedRect(back, 1.5, 1.5)
+
+    front = QRect(2, 5, 9, 10)
+    p.drawRoundedRect(front, 1.5, 1.5)
+
+    p.drawLine(4, 9, 9, 9)
+    p.drawLine(4, 11, 9, 11)
+
+    p.end()
+    return QIcon(pm)
+
+
+# ---------------------------
+# FlowLayout (auto wrap)
+# ---------------------------
+class FlowLayout(QLayout):
+    def __init__(self, parent=None, margin=0, spacing=-1):
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing)
+        self._item_list: List[QWidgetItem] = []
+
+    def addItem(self, item):
+        self._item_list.append(item)
+
+    def count(self):
+        return len(self._item_list)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._item_list:
+            size = size.expandedTo(item.minimumSize())
+        left, top, right, bottom = self.getContentsMargins()
+        size += QSize(left + right, top + bottom)
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        left, top, right, bottom = self.getContentsMargins()
+        effective_rect = rect.adjusted(left, top, -right, -bottom)
+        x = effective_rect.x()
+        y = effective_rect.y()
+        line_height = 0
+
+        space_x = self.spacing()
+        space_y = self.spacing()
+        if space_x < 0:
+            space_x = 6
+        if space_y < 0:
+            space_y = 6
+
+        for item in self._item_list:
+            wid = item.widget()
+            if wid is not None and not wid.isVisible():
+                continue
+
+            item_size = item.sizeHint()
+            next_x = x + item_size.width() + space_x
+
+            if next_x - space_x > effective_rect.right() and line_height > 0:
+                x = effective_rect.x()
+                y = y + line_height + space_y
+                next_x = x + item_size.width() + space_x
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item_size))
+
+            x = next_x
+            line_height = max(line_height, item_size.height())
+
+        return (y + line_height - rect.y()) + bottom
+
+
+# ---------------------------
+# Data Models
+# ---------------------------
+Strokes = List[Dict[str, Any]]
 Checklist = List[Dict[str, Any]]
 
 
 def _normalize_strokes(raw: Any) -> Strokes:
-    """
-    Backward compatible normalization:
-    - v0.1.3 stored: List[List[List[float]]]  (points only)
-    - v0.1.4+ stores: List[{"color","width","points"}]
-    """
     if not raw:
         return []
 
@@ -190,7 +312,6 @@ def _normalize_checklist(raw: Any) -> Checklist:
     base = _default_checklist()
     if not isinstance(raw, list):
         return base
-
     for i in range(min(len(base), len(raw))):
         item = raw[i]
         if isinstance(item, dict):
@@ -250,7 +371,7 @@ class NoteDB:
                 st.pages.append(self.new_page())
 
     def save(self) -> None:
-        self.data["version"] = "0.1.6"
+        self.data["version"] = "0.1.9"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -282,7 +403,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.1.6",
+            "version": "0.1.9",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -300,7 +421,6 @@ class NoteDB:
                 if raw_strokes is None:
                     raw_strokes = p.get("annotations", [])
                 strokes = _normalize_strokes(raw_strokes)
-
                 checklist = _normalize_checklist(p.get("checklist", None))
 
                 pages.append(
@@ -386,6 +506,9 @@ class NoteDB:
         return True
 
 
+# ---------------------------
+# Image view with zoom/pan + strokes
+# ---------------------------
 class ZoomPanAnnotateView(QGraphicsView):
     imageDropped = pyqtSignal(str)
     strokesChanged = pyqtSignal()
@@ -478,7 +601,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._scene.setSceneRect(QRectF(pm.rect()))
         self.resetTransform()
         self.fit_to_view()
-
         self._clear_strokes_internal(emit_signal=False)
 
     def fit_to_view(self) -> None:
@@ -670,6 +792,9 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._stroke_start = None
 
 
+# ---------------------------
+# Main Window
+# ---------------------------
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -695,7 +820,6 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_page)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.force_save)
-
         QShortcut(QKeySequence("Ctrl+V"), self.image_viewer, activated=self.paste_image_from_clipboard)
 
     def closeEvent(self, event) -> None:
@@ -717,7 +841,9 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
 
-        left_controls = QHBoxLayout()
+        step_controls = QWidget()
+        step_controls_layout = FlowLayout(step_controls, margin=0, spacing=6)
+
         self.btn_add_step = QToolButton()
         self.btn_add_step.setText("+ Step")
         self.btn_rename_step = QToolButton()
@@ -729,15 +855,14 @@ class MainWindow(QMainWindow):
         self.btn_rename_step.clicked.connect(self.rename_step)
         self.btn_del_step.clicked.connect(self.delete_step)
 
-        left_controls.addWidget(self.btn_add_step)
-        left_controls.addWidget(self.btn_rename_step)
-        left_controls.addWidget(self.btn_del_step)
-        left_controls.addStretch(1)
+        step_controls_layout.addWidget(self.btn_add_step)
+        step_controls_layout.addWidget(self.btn_rename_step)
+        step_controls_layout.addWidget(self.btn_del_step)
 
         self.steps_list = QListWidget()
         self.steps_list.currentRowChanged.connect(self._on_step_selected)
 
-        left_layout.addLayout(left_controls)
+        left_layout.addWidget(step_controls)
         left_layout.addWidget(self.steps_list, 1)
 
         # Right panel
@@ -754,91 +879,130 @@ class MainWindow(QMainWindow):
         img_layout.setContentsMargins(0, 0, 0, 0)
         img_layout.setSpacing(6)
 
-        # (NEW) Name/Ticker/Copy inside IMAGE section top
-        meta_in_image = QHBoxLayout()
-        meta_in_image.setContentsMargins(0, 0, 0, 0)
+        # Meta (wrap)
+        meta_widget = QWidget()
+        meta_flow = FlowLayout(meta_widget, margin=0, spacing=6)
 
-        meta_in_image.addWidget(QLabel("Name:"))
+        meta_flow.addWidget(QLabel("Name:"))
         self.edit_stock_name = QLineEdit()
         self.edit_stock_name.setPlaceholderText("e.g., Apple Inc.")
         self.edit_stock_name.setFixedWidth(220)
         self.edit_stock_name.textChanged.connect(self._on_page_field_changed)
-        meta_in_image.addWidget(self.edit_stock_name)
+        meta_flow.addWidget(self.edit_stock_name)
 
-        meta_in_image.addSpacing(6)
-
-        meta_in_image.addWidget(QLabel("Ticker:"))
+        meta_flow.addWidget(QLabel("Ticker:"))
         self.edit_ticker = QLineEdit()
         self.edit_ticker.setPlaceholderText("e.g., AAPL")
         self.edit_ticker.setFixedWidth(120)
         self.edit_ticker.textChanged.connect(self._on_page_field_changed)
-        meta_in_image.addWidget(self.edit_ticker)
+        meta_flow.addWidget(self.edit_ticker)
 
-        self.btn_copy_ticker = QPushButton("Copy")
-        self.btn_copy_ticker.setFixedWidth(68)
+        self.btn_copy_ticker = QToolButton()
+        self.btn_copy_ticker.setIcon(_make_copy_icon(16))
+        self.btn_copy_ticker.setToolTip("Copy ticker to clipboard")
+        self.btn_copy_ticker.setFixedSize(30, 26)
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
-        meta_in_image.addWidget(self.btn_copy_ticker)
+        meta_flow.addWidget(self.btn_copy_ticker)
 
-        meta_in_image.addStretch(1)
+        # Toolbar (wrap)
+        toolbar_widget = QWidget()
+        toolbar_flow = FlowLayout(toolbar_widget, margin=0, spacing=6)
 
-        # Image toolbar
-        img_toolbar = QHBoxLayout()
-
-        self.btn_set_image = QPushButton("Set Image...")
-        self.btn_paste_image = QPushButton("Paste (Ctrl+V)")
-        self.btn_clear_image = QPushButton("Clear Image")
-        self.btn_reset_view = QPushButton("Reset View")
-
-        self.btn_draw_mode = QToolButton()
-        self.btn_draw_mode.setText("Draw")
-        self.btn_draw_mode.setCheckable(True)
-        self.btn_draw_mode.setToolTip("Draw: drag to draw. Hold SHIFT for straight line.")
-
-        self.combo_color = QComboBox()
-        self.combo_color.addItem("Red", "#FF3C3C")
-        self.combo_color.addItem("Yellow", "#FFD400")
-        self.combo_color.addItem("Cyan", "#00D5FF")
-        self.combo_color.addItem("White", "#FFFFFF")
-        self.combo_color.currentIndexChanged.connect(self._on_pen_changed)
-
-        self.combo_width = QComboBox()
-        for w in ["2", "3", "4", "6", "8"]:
-            self.combo_width.addItem(f"{w}px", float(w))
-        self.combo_width.setCurrentIndex(1)
-        self.combo_width.currentIndexChanged.connect(self._on_pen_changed)
-
-        self.btn_clear_lines = QPushButton("Clear Lines")
+        # Short labels + tooltips
+        self.btn_set_image = QPushButton("Open")
+        self.btn_set_image.setToolTip("Open image file and set as chart image")
+        self.btn_paste_image = QPushButton("Paste")
+        self.btn_paste_image.setToolTip("Paste chart image from clipboard (Ctrl+V)")
+        self.btn_clear_image = QPushButton("Clr Img")
+        self.btn_clear_image.setToolTip("Clear chart image for this page")
+        self.btn_reset_view = QPushButton("Fit")
+        self.btn_reset_view.setToolTip("Fit image to view (reset zoom/pan)")
 
         self.btn_set_image.clicked.connect(self.set_image_via_dialog)
         self.btn_paste_image.clicked.connect(self.paste_image_from_clipboard)
         self.btn_clear_image.clicked.connect(self.clear_image)
         self.btn_reset_view.clicked.connect(self.reset_image_view)
 
-        self.btn_draw_mode.toggled.connect(self.toggle_draw_mode)
-        self.btn_clear_lines.clicked.connect(self.clear_lines)
+        toolbar_flow.addWidget(self.btn_set_image)
+        toolbar_flow.addWidget(self.btn_paste_image)
+        toolbar_flow.addWidget(self.btn_clear_image)
+        toolbar_flow.addWidget(self.btn_reset_view)
 
-        img_toolbar.addWidget(self.btn_set_image)
-        img_toolbar.addWidget(self.btn_paste_image)
-        img_toolbar.addWidget(self.btn_clear_image)
-        img_toolbar.addWidget(self.btn_reset_view)
-        img_toolbar.addSpacing(10)
-        img_toolbar.addWidget(self.btn_draw_mode)
-        img_toolbar.addWidget(QLabel("Color:"))
-        img_toolbar.addWidget(self.combo_color)
-        img_toolbar.addWidget(QLabel("Width:"))
-        img_toolbar.addWidget(self.combo_width)
-        img_toolbar.addWidget(self.btn_clear_lines)
-        img_toolbar.addStretch(1)
+        # Annotate group (VERTICAL)
+        self.grp_annotate = QGroupBox("Annotate")
+        anno_v = QVBoxLayout(self.grp_annotate)
+        anno_v.setContentsMargins(10, 10, 10, 10)
+        anno_v.setSpacing(6)
+
+        self.btn_draw_mode = QToolButton()
+        self.btn_draw_mode.setText("Draw")
+        self.btn_draw_mode.setCheckable(True)
+        self.btn_draw_mode.setToolTip("Toggle draw mode. Drag to draw. Hold SHIFT for straight line.")
+        self.btn_draw_mode.toggled.connect(self.toggle_draw_mode)
+        anno_v.addWidget(self.btn_draw_mode)
+
+        # Row: Color
+        color_row = QWidget()
+        color_row_l = QHBoxLayout(color_row)
+        color_row_l.setContentsMargins(0, 0, 0, 0)
+        color_row_l.setSpacing(6)
+
+        color_row_l.addWidget(QLabel("Color"))
+        self.combo_color = QComboBox()
+        self.combo_color.addItem("Red", "#FF3C3C")
+        self.combo_color.addItem("Yellow", "#FFD400")
+        self.combo_color.addItem("Cyan", "#00D5FF")
+        self.combo_color.addItem("White", "#FFFFFF")
+        self.combo_color.setToolTip("Stroke color")
+        self.combo_color.currentIndexChanged.connect(self._on_pen_changed)
+        color_row_l.addWidget(self.combo_color, 1)
+        anno_v.addWidget(color_row)
+
+        # Row: Width
+        width_row = QWidget()
+        width_row_l = QHBoxLayout(width_row)
+        width_row_l.setContentsMargins(0, 0, 0, 0)
+        width_row_l.setSpacing(6)
+
+        width_row_l.addWidget(QLabel("Width"))
+        self.combo_width = QComboBox()
+        for w in ["2", "3", "4", "6", "8"]:
+            self.combo_width.addItem(f"{w}px", float(w))
+        self.combo_width.setCurrentIndex(1)
+        self.combo_width.setToolTip("Stroke width")
+        self.combo_width.currentIndexChanged.connect(self._on_pen_changed)
+        width_row_l.addWidget(self.combo_width, 1)
+        anno_v.addWidget(width_row)
+
+        self.btn_clear_lines = QPushButton("Clear Lines")
+        self.btn_clear_lines.setToolTip("Clear all annotation lines on this page (confirm)")
+        self.btn_clear_lines.clicked.connect(self.clear_lines)
+        anno_v.addWidget(self.btn_clear_lines)
+
+        # Help / shortcut guide (implemented only)
+        self.lbl_anno_help = QLabel(
+            "• Mouse Wheel: Zoom\n"
+            "• Drag: Pan (Draw OFF)\n"
+            "• Drag: Draw stroke (Draw ON)\n"
+            "• Shift + Drag: Straight line (Draw ON)\n"
+            "• Ctrl+V: Paste image\n"
+            "• Alt+Left/Right: Prev/Next page\n"
+            "• Ctrl+N: Add page, Ctrl+S: Save"
+        )
+        self.lbl_anno_help.setWordWrap(True)
+        self.lbl_anno_help.setStyleSheet("color: #555;")
+        anno_v.addWidget(self.lbl_anno_help)
+
+        toolbar_flow.addWidget(self.grp_annotate)
 
         self.image_viewer = ZoomPanAnnotateView()
         self.image_viewer.imageDropped.connect(self._on_image_dropped)
         self.image_viewer.strokesChanged.connect(self._on_page_field_changed)
-
         self._apply_pen_from_ui()
 
-        # (NEW) Page navigator inside IMAGE section bottom
-        nav_in_image = QHBoxLayout()
-        nav_in_image.setContentsMargins(0, 0, 0, 0)
+        # Navigator (still inside image section bottom)
+        nav_widget = QWidget()
+        nav_flow = FlowLayout(nav_widget, margin=0, spacing=6)
 
         self.btn_prev = QToolButton()
         self.btn_prev.setText("◀")
@@ -860,18 +1024,16 @@ class MainWindow(QMainWindow):
         self.btn_del_page.setText("Del Page")
         self.btn_del_page.clicked.connect(self.delete_page)
 
-        nav_in_image.addWidget(self.btn_prev)
-        nav_in_image.addWidget(self.lbl_page)
-        nav_in_image.addWidget(self.btn_next)
-        nav_in_image.addSpacing(10)
-        nav_in_image.addWidget(self.btn_add_page)
-        nav_in_image.addWidget(self.btn_del_page)
-        nav_in_image.addStretch(1)
+        nav_flow.addWidget(self.btn_prev)
+        nav_flow.addWidget(self.lbl_page)
+        nav_flow.addWidget(self.btn_next)
+        nav_flow.addWidget(self.btn_add_page)
+        nav_flow.addWidget(self.btn_del_page)
 
-        img_layout.addLayout(meta_in_image)
-        img_layout.addLayout(img_toolbar)
+        img_layout.addWidget(meta_widget)
+        img_layout.addWidget(toolbar_widget)
         img_layout.addWidget(self.image_viewer, 1)
-        img_layout.addLayout(nav_in_image)
+        img_layout.addWidget(nav_widget)
 
         # ---------------- Text section ----------------
         text_container = QWidget()
@@ -901,23 +1063,22 @@ class MainWindow(QMainWindow):
             chk_layout.addWidget(cb)
             chk_layout.addWidget(note)
 
-        text_header = QHBoxLayout()
-        self.text_title = QLabel("Description")
-        self.text_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        text_header = QWidget()
+        text_header_flow = FlowLayout(text_header, margin=0, spacing=6)
 
+        self.text_title = QLabel("Description")
         self.btn_clear_text = QPushButton("Clear Text")
         self.btn_clear_text.clicked.connect(self.clear_text)
 
-        text_header.addWidget(self.text_title)
-        text_header.addStretch(1)
-        text_header.addWidget(self.btn_clear_text)
+        text_header_flow.addWidget(self.text_title)
+        text_header_flow.addWidget(self.btn_clear_text)
 
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요...")
         self.text_edit.textChanged.connect(self._on_page_field_changed)
 
         text_layout.addWidget(self.chk_group)
-        text_layout.addLayout(text_header)
+        text_layout.addWidget(text_header)
         text_layout.addWidget(self.text_edit, 1)
 
         self.page_splitter.addWidget(img_container)
@@ -1078,20 +1239,14 @@ class MainWindow(QMainWindow):
         out: Checklist = []
         for i, q in enumerate(DEFAULT_CHECK_QUESTIONS):
             out.append(
-                {
-                    "q": q,
-                    "checked": bool(self.chk_boxes[i].isChecked()),
-                    "note": self.chk_notes[i].toPlainText(),
-                }
+                {"q": q, "checked": bool(self.chk_boxes[i].isChecked()), "note": self.chk_notes[i].toPlainText()}
             )
         return out
 
     def _flush_page_fields_to_model_and_save(self) -> None:
         st = self.current_step()
         pg = self.current_page()
-        if not st or not pg:
-            return
-        if self._loading_ui:
+        if not st or not pg or self._loading_ui:
             return
 
         changed = False
@@ -1215,6 +1370,22 @@ class MainWindow(QMainWindow):
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     def clear_lines(self) -> None:
+        pg = self.current_page()
+        if not pg:
+            return
+        if not self.image_viewer.get_strokes():
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Clear Lines",
+            "Clear all annotation lines on this page?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
         self.image_viewer.clear_strokes()
         self._flush_page_fields_to_model_and_save()
         self.image_viewer.setFocus(Qt.MouseFocusReason)
