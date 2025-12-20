@@ -2,14 +2,15 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.3.2  (2025-12-20)
+Version: 0.3.3  (2025-12-20)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.3.2):
-- (Bugfix) Step 전환 시 간헐 크래시(RuntimeError: QGraphicsPathItem deleted) 수정
-  - QGraphicsScene.clear() 이후 삭제된 item을 다시 removeItem 하며 발생하던 문제 방지
-  - clear_image/_set_pixmap의 정리 순서 조정 + _clear_strokes_internal 안전 처리
-- v0.3.1 기능 유지:
+Release Notes (v0.3.3):
+- (Feature) 이미지 상단(Annotation 버튼과 같은 영역)에 "간단 설명" 입력창(overlay) 추가
+  - 페이지(Page)별로 저장/로드, 즉시 수정 가능
+  - JSON에 page.image_caption 필드로 영구 저장
+- v0.3.2 기능 유지:
+  - (Bugfix) QGraphicsPathItem deleted 크래시 방지
   - Annotate 오버레이 패널(✎ 버튼 → 패널)
   - Category → Step Tree + Category 우클릭 메뉴
   - Category 순서 Up/Down 이동 및 JSON(category_order) 저장
@@ -81,7 +82,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QLayout,
     QWidgetItem,
-    QSizePolicy,
     QFrame,
     QTreeWidget,
     QTreeWidgetItem,
@@ -89,7 +89,7 @@ from PyQt5.QtWidgets import (
 )
 
 
-APP_TITLE = "Trader Chart Note (v0.3.2)"
+APP_TITLE = "Trader Chart Note (v0.3.3)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -303,6 +303,7 @@ def _normalize_checklist(raw: Any) -> Checklist:
 class Page:
     id: str
     image_path: str
+    image_caption: str  # v0.3.3: 상단 간단 설명
     note_text: str
     stock_name: str
     ticker: str
@@ -360,7 +361,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> None:
-        self.data["version"] = "0.3.2"
+        self.data["version"] = "0.3.3"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -382,6 +383,7 @@ class NoteDB:
                         {
                             "id": _uuid(),
                             "image_path": "",
+                            "image_caption": "",  # v0.3.3
                             "note_text": "",
                             "stock_name": "",
                             "ticker": "",
@@ -394,7 +396,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.3.2",
+            "version": "0.3.3",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -419,6 +421,7 @@ class NoteDB:
                     Page(
                         id=str(p.get("id", _uuid())),
                         image_path=str(p.get("image_path", "")),
+                        image_caption=str(p.get("image_caption", "")),  # v0.3.3
                         note_text=str(p.get("note_text", "")),
                         stock_name=str(p.get("stock_name", "")),
                         ticker=str(p.get("ticker", "")),
@@ -456,6 +459,7 @@ class NoteDB:
                         {
                             "id": pg.id,
                             "image_path": pg.image_path,
+                            "image_caption": pg.image_caption,  # v0.3.3
                             "note_text": pg.note_text,
                             "stock_name": pg.stock_name,
                             "ticker": pg.ticker,
@@ -476,6 +480,7 @@ class NoteDB:
         return Page(
             id=_uuid(),
             image_path="",
+            image_caption="",  # v0.3.3
             note_text="",
             stock_name="",
             ticker="",
@@ -757,7 +762,6 @@ class ZoomPanAnnotateView(QGraphicsView):
             try:
                 self._scene.removeItem(it)
             except RuntimeError:
-                # wrapped C/C++ object already deleted
                 pass
             except Exception:
                 pass
@@ -958,7 +962,6 @@ class MainWindow(QMainWindow):
         self.steps_tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
         self.steps_tree.setUniformRowHeights(True)
 
-        # Category context menu
         self.steps_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.steps_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
@@ -979,7 +982,6 @@ class MainWindow(QMainWindow):
         img_layout.setContentsMargins(0, 0, 0, 0)
         img_layout.setSpacing(6)
 
-        # Meta (wrap)
         meta_widget = QWidget()
         meta_flow = FlowLayout(meta_widget, margin=0, spacing=6)
 
@@ -1261,9 +1263,25 @@ class MainWindow(QMainWindow):
         self.db.save()
         self._refresh_steps_tree(select_current=True)
 
-    # ---------------- Annotate Overlay ----------------
+    # ---------------- Annotate Overlay + Image caption overlay ----------------
     def _build_annotate_overlay(self) -> None:
         vp = self.image_viewer.viewport()
+
+        # v0.3.3: Image caption overlay (top area)
+        self.edit_img_caption = QLineEdit(vp)
+        self.edit_img_caption.setPlaceholderText("이미지 간단 설명(예: 돌파 후 눌림, 거래량 체크 포인트 등)")
+        self.edit_img_caption.setFixedHeight(28)
+        self.edit_img_caption.textChanged.connect(self._on_page_field_changed)
+        self.edit_img_caption.setStyleSheet("""
+            QLineEdit {
+                background: rgba(255,255,255,235);
+                border: 1px solid #9A9A9A;
+                border-radius: 8px;
+                padding-left: 10px;
+                padding-right: 10px;
+                color: #222;
+            }
+        """)
 
         self.btn_anno_toggle = QToolButton(vp)
         self.btn_anno_toggle.setText("✎")
@@ -1353,7 +1371,7 @@ class MainWindow(QMainWindow):
             "• Drag: Pan (Draw OFF)\n"
             "• Drag: Draw (Draw ON)\n"
             "• Shift+Drag: Straight line\n"
-            "• Ctrl+V: Paste image\n"
+            "• Ctrl+V: Paste image (when viewer focused)\n"
             "• Alt+←/→: Prev/Next\n"
             "• Ctrl+N: Add page, Ctrl+S: Save",
             self.anno_panel
@@ -1384,12 +1402,27 @@ class MainWindow(QMainWindow):
         w = vp.width()
         margin = 10
 
+        # annotation button position
         self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
 
+        # caption line edit position (top row)
+        # 기본: 우측에 annotation 버튼을 두고, 그 왼쪽에 caption 배치
+        btn_w = self.btn_anno_toggle.width()
+        cap_min = 260
+        cap_max = 640
+        cap_w = min(cap_max, max(cap_min, w - (btn_w + 3 * margin)))
+        cap_h = self.edit_img_caption.height()
+
         if self.anno_panel.isVisible():
-            x = max(margin, w - self.anno_panel.width() - margin)
-            y = margin
-            self.anno_panel.move(x, y)
+            # panel이 우측을 차지하면, 그 왼쪽에 caption을 배치
+            panel_x = max(margin, w - self.anno_panel.width() - margin)
+            cap_x = max(margin, panel_x - margin - cap_w)
+            self.anno_panel.move(panel_x, margin)
+        else:
+            cap_x = max(margin, w - margin - btn_w - margin - cap_w)
+
+        self.edit_img_caption.setFixedWidth(cap_w)
+        self.edit_img_caption.move(cap_x, margin + 1)
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.image_viewer.viewport() and event.type() == QEvent.Resize:
@@ -1517,6 +1550,7 @@ class MainWindow(QMainWindow):
             try:
                 self.edit_stock_name.clear()
                 self.edit_ticker.clear()
+                self.edit_img_caption.clear()
                 for cb in self.chk_boxes:
                     cb.setChecked(False)
                 for note in self.chk_notes:
@@ -1533,6 +1567,7 @@ class MainWindow(QMainWindow):
         try:
             self.edit_stock_name.setText(pg.stock_name or "")
             self.edit_ticker.setText(pg.ticker or "")
+            self.edit_img_caption.setText(pg.image_caption or "")
 
             if pg.image_path:
                 abs_path = _abspath_from_rel(pg.image_path)
@@ -1577,6 +1612,11 @@ class MainWindow(QMainWindow):
             return
 
         changed = False
+
+        new_cap = self.edit_img_caption.text()
+        if pg.image_caption != new_cap:
+            pg.image_caption = new_cap
+            changed = True
 
         new_text = self.text_edit.toPlainText()
         if pg.note_text != new_text:
