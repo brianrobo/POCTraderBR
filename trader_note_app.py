@@ -6,18 +6,14 @@ Version: 0.3.6  (2025-12-21)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
 Release Notes (v0.3.6):
-- (Safety) 중복 실행 방지(Single Instance Lock) 적용
-  - data/trader_note_app.lock 파일 기반 QLockFile 사용
-  - 이미 실행 중이면 안내 후 즉시 종료(저장 경합/WinError 5 확률 감소)
-- (Recovery) Autosave 복구 UI 적용
-  - 시작 시 data/notes_db.json.autosave.<timestamp>.json 검색
-  - 최신 autosave가 본파일(notes_db.json)보다 “새로우면” 복구 여부 팝업
-  - 복구 시 기존 notes_db.json은 notes_db.json.bak.<timestamp>.json 으로 백업
-- (UX) Description(자유서술)에서 Bold(굵게) 강조 기능 추가
-  - Bold 버튼 + Ctrl+B 단축키
-  - Description은 Rich Text(HTML)로 저장/로드 (구버전 plain text도 자동 호환 로드)
+- (UX) Rich Text formatting toolbar 추가 (Bold/Italic/Underline)
+  - Description(자유 메모) + Checklist의 4개 “간단 설명” 모두에 적용
+  - Ctrl+B / Ctrl+I / Ctrl+U 단축키 지원
+  - 포커스가 있는 텍스트 박스에 자동 적용(선택영역 또는 이후 입력)
+- (Data) Description 및 Checklist note를 HTML로 저장/로드하여 서식 유지
+  - 기존 plain text 데이터도 자동 감지하여 하위호환 유지
 
-Existing features (unchanged):
+Existing features:
 - Category → Step Tree(좌측), Category 우클릭 메뉴(카테고리 rename/delete/move up/down, 해당 카테고리에 step 추가)
 - Category order JSON 저장(category_order)
 - Step: add/rename/set category/delete
@@ -36,13 +32,12 @@ Run:
 
 import json
 import os
-import re
 import shutil
 import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import (
     Qt,
@@ -54,7 +49,6 @@ from PyQt5.QtCore import (
     QSize,
     QPoint,
     QEvent,
-    QLockFile,
 )
 from PyQt5.QtGui import (
     QImage,
@@ -66,7 +60,6 @@ from PyQt5.QtGui import (
     QPainter,
     QIcon,
     QTextCharFormat,
-    QTextCursor,
     QFont,
 )
 from PyQt5.QtWidgets import (
@@ -104,7 +97,6 @@ from PyQt5.QtWidgets import (
 APP_TITLE = "Trader Chart Note (v0.3.6)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
-LOCK_PATH = os.path.join("data", "trader_note_app.lock")
 
 DEFAULT_CHECK_QUESTIONS = [
     "Q. 매집구간이 보이는가?",
@@ -211,114 +203,18 @@ def _make_copy_icon(size: int = 16) -> QIcon:
     return QIcon(pm)
 
 
-def _looks_like_html(text: str) -> bool:
-    if not text:
+def _looks_like_html(s: str) -> bool:
+    t = (s or "").lstrip().lower()
+    if not t:
         return False
-    t = text.lstrip().lower()
-    return t.startswith("<!doctype html") or t.startswith("<html") or "<body" in t or "<p" in t or "<span" in t
-
-
-def _parse_autosave_ts(fname: str) -> Optional[int]:
-    # notes_db.json.autosave.<epoch>.json
-    m = re.search(r"\.autosave\.(\d+)\.json$", fname)
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except Exception:
-        return None
-
-
-def _find_latest_autosave(db_path: str) -> Optional[str]:
-    d = os.path.dirname(db_path) or "."
-    base = os.path.basename(db_path)
-    prefix = f"{base}.autosave."
-    if not os.path.isdir(d):
-        return None
-
-    best: Tuple[int, str] = (-1, "")
-    for name in os.listdir(d):
-        if not name.startswith(prefix) or not name.endswith(".json"):
-            continue
-        ts = _parse_autosave_ts(name)
-        if ts is None:
-            continue
-        full = os.path.join(d, name)
-        if os.path.isfile(full) and ts > best[0]:
-            best = (ts, full)
-
-    return best[1] if best[0] >= 0 else None
-
-
-def _file_mtime(path: str) -> int:
-    try:
-        return int(os.path.getmtime(path))
-    except Exception:
-        return 0
-
-
-def _maybe_recover_autosave(db_path: str, parent=None) -> None:
-    """
-    Startup recovery UI:
-    - If a latest autosave exists and it's newer than the main db file (by timestamp in filename or mtime),
-      prompt user to restore.
-    - Restore = backup current db to .bak.<epoch>.json and replace with autosave.
-    """
-    autosave = _find_latest_autosave(db_path)
-    if not autosave:
-        return
-
-    autosave_ts = _parse_autosave_ts(os.path.basename(autosave)) or _file_mtime(autosave)
-    db_exists = os.path.exists(db_path)
-    db_mtime = _file_mtime(db_path) if db_exists else 0
-
-    # Trigger condition: autosave is "meaningfully" newer
-    if db_exists and autosave_ts <= db_mtime:
-        return
-
-    msg = QMessageBox(parent)
-    msg.setWindowTitle("Autosave Recovery")
-    if db_exists:
-        msg.setText("최신 autosave 파일이 notes_db.json 보다 새로 보입니다.\n복구를 진행할까요?")
-    else:
-        msg.setText("notes_db.json 파일이 없고 autosave 파일이 발견되었습니다.\n복구를 진행할까요?")
-
-    msg.setInformativeText(
-        f"- Latest autosave:\n  {autosave}\n\n"
-        f"- notes_db.json:\n  {db_path if db_exists else '(missing)'}\n\n"
-        "복구를 선택하면:\n"
-        "- 기존 notes_db.json(있다면)은 notes_db.json.bak.<timestamp>.json 으로 백업\n"
-        "- autosave 파일로 notes_db.json을 복원합니다."
+    return (
+        t.startswith("<!doctype")
+        or t.startswith("<html")
+        or t.startswith("<p")
+        or "<span" in t
+        or "<br" in t
+        or "<div" in t
     )
-
-    btn_restore = msg.addButton("Restore", QMessageBox.AcceptRole)
-    btn_ignore = msg.addButton("Ignore", QMessageBox.RejectRole)
-    msg.setDefaultButton(btn_restore)
-    msg.exec_()
-
-    if msg.clickedButton() != btn_restore:
-        return
-
-    # Backup existing db
-    try:
-        if db_exists:
-            bak_path = f"{db_path}.bak.{_now_epoch()}.json"
-            shutil.copy2(db_path, bak_path)
-    except Exception as e:
-        QMessageBox.warning(parent, "Backup warning", f"기존 DB 백업 중 문제가 발생했습니다:\n{e}\n\n복구는 계속 진행합니다.")
-
-    # Restore autosave -> db
-    try:
-        # use replace for atomic-ish behavior
-        # if replace fails (rare at startup), fallback to copy2
-        try:
-            os.replace(autosave, db_path)
-        except Exception:
-            shutil.copy2(autosave, db_path)
-
-        QMessageBox.information(parent, "Recovered", "Autosave 복구가 완료되었습니다.\n앱을 계속 실행합니다.")
-    except Exception as e:
-        QMessageBox.critical(parent, "Recovery failed", f"Autosave 복구에 실패했습니다:\n{e}\n\n복구 없이 계속 진행합니다.")
 
 
 # ---------------------------
@@ -334,9 +230,6 @@ class FlowLayout(QLayout):
 
     def addItem(self, item):
         self._item_list.append(item)
-
-    def addWidget(self, w: QWidget) -> None:
-        self.addItem(QWidgetItem(w))
 
     def count(self):
         return len(self._item_list)
@@ -550,7 +443,7 @@ class Page:
     id: str
     image_path: str
     image_caption: str
-    note_text: str  # v0.3.6+: HTML (rich text). legacy plain text supported.
+    note_text: str
     stock_name: str
     ticker: str
     strokes: Strokes
@@ -614,6 +507,9 @@ class NoteDB:
         self.data["category_order"] = self.category_order
 
         ok = _safe_write_json(self.db_path, self.data)
+        self.data["_last_save_ok"] = bool(ok)
+        if not ok:
+            self.data["_last_save_failed_at"] = _now_epoch()
         return ok
 
     @staticmethod
@@ -632,7 +528,7 @@ class NoteDB:
                             "id": _uuid(),
                             "image_path": "",
                             "image_caption": "",
-                            "note_text": "",  # legacy plain text, but ok
+                            "note_text": "",
                             "stock_name": "",
                             "ticker": "",
                             "strokes": [],
@@ -1141,6 +1037,9 @@ class MainWindow(QMainWindow):
         self.current_page_index: int = 0
         self._loading_ui: bool = False
 
+        # Rich text: currently active editor (Description or checklist notes)
+        self._active_rich_edit: Optional[QTextEdit] = None
+
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._flush_page_fields_to_model_and_save)
@@ -1162,8 +1061,10 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.force_save)
         QShortcut(QKeySequence("Ctrl+V"), self.image_viewer, activated=self.paste_image_from_clipboard)
 
-        # Bold shortcut (Description)
-        QShortcut(QKeySequence("Ctrl+B"), self.text_edit, activated=self._toggle_bold_shortcut)
+        # Rich text shortcuts (apply to active editor)
+        QShortcut(QKeySequence("Ctrl+B"), self, activated=lambda: self.btn_fmt_bold.toggle())
+        QShortcut(QKeySequence("Ctrl+I"), self, activated=lambda: self.btn_fmt_italic.toggle())
+        QShortcut(QKeySequence("Ctrl+U"), self, activated=lambda: self.btn_fmt_underline.toggle())
 
     def closeEvent(self, event) -> None:
         try:
@@ -1324,6 +1225,47 @@ class MainWindow(QMainWindow):
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(6)
 
+        # Formatting toolbar (applies to active QTextEdit: checklist notes or description)
+        fmt_row = QWidget()
+        fmt_flow = FlowLayout(fmt_row, margin=0, spacing=6)
+
+        self.text_title = QLabel("Description / Notes")
+        self.text_title.setStyleSheet("font-weight: 600;")
+
+        self.btn_fmt_bold = QToolButton()
+        self.btn_fmt_bold.setText("B")
+        self.btn_fmt_bold.setCheckable(True)
+        self.btn_fmt_bold.setFixedSize(28, 26)
+        self.btn_fmt_bold.setToolTip("Bold (Ctrl+B)")
+        self.btn_fmt_bold.setStyleSheet("font-weight: 800;")
+
+        self.btn_fmt_italic = QToolButton()
+        self.btn_fmt_italic.setText("I")
+        self.btn_fmt_italic.setCheckable(True)
+        self.btn_fmt_italic.setFixedSize(28, 26)
+        self.btn_fmt_italic.setToolTip("Italic (Ctrl+I)")
+        self.btn_fmt_italic.setStyleSheet("font-style: italic; font-weight: 600;")
+
+        self.btn_fmt_underline = QToolButton()
+        self.btn_fmt_underline.setText("U")
+        self.btn_fmt_underline.setCheckable(True)
+        self.btn_fmt_underline.setFixedSize(28, 26)
+        self.btn_fmt_underline.setToolTip("Underline (Ctrl+U)")
+        self.btn_fmt_underline.setStyleSheet("text-decoration: underline; font-weight: 600;")
+
+        self.btn_clear_text = QPushButton("Clear Text")
+        self.btn_clear_text.clicked.connect(self.clear_text)
+
+        self.btn_fmt_bold.toggled.connect(lambda v: self._apply_format(bold=v))
+        self.btn_fmt_italic.toggled.connect(lambda v: self._apply_format(italic=v))
+        self.btn_fmt_underline.toggled.connect(lambda v: self._apply_format(underline=v))
+
+        fmt_flow.addWidget(self.text_title)
+        fmt_flow.addWidget(self.btn_fmt_bold)
+        fmt_flow.addWidget(self.btn_fmt_italic)
+        fmt_flow.addWidget(self.btn_fmt_underline)
+        fmt_flow.addWidget(self.btn_clear_text)
+
         self.chk_group = QGroupBox("Checklist")
         chk_layout = QVBoxLayout(self.chk_group)
         chk_layout.setContentsMargins(10, 10, 10, 10)
@@ -1338,41 +1280,24 @@ class MainWindow(QMainWindow):
             self.chk_boxes.append(cb)
 
             note = QTextEdit()
-            note.setPlaceholderText("간단 설명을 입력하세요...")
+            note.setPlaceholderText("간단 설명을 입력하세요... (서식: Bold/Italic/Underline 가능)")
             note.setFixedHeight(54)
             note.textChanged.connect(self._on_page_field_changed)
+            note.installEventFilter(self)  # focus tracking
+            note.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
             self.chk_notes.append(note)
 
             chk_layout.addWidget(cb)
             chk_layout.addWidget(note)
 
-        # Header row + format tools
-        text_header = QWidget()
-        text_header_flow = FlowLayout(text_header, margin=0, spacing=6)
-
-        self.text_title = QLabel("Description")
-        self.btn_clear_text = QPushButton("Clear Text")
-        self.btn_clear_text.clicked.connect(self.clear_text)
-
-        self.btn_bold = QToolButton()
-        self.btn_bold.setText("B")
-        self.btn_bold.setCheckable(True)
-        self.btn_bold.setToolTip("Bold (Ctrl+B)")
-        self.btn_bold.setStyleSheet("QToolButton{font-weight:700; padding:2px 10px;}")
-        self.btn_bold.toggled.connect(self._toggle_bold)
-
-        text_header_flow.addWidget(self.text_title)
-        text_header_flow.addWidget(QLabel("Format:"))
-        text_header_flow.addWidget(self.btn_bold)
-        text_header_flow.addWidget(self.btn_clear_text)
-
         self.text_edit = QTextEdit()
-        self.text_edit.setAcceptRichText(True)
-        self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요... (굵게: Ctrl+B)")
+        self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요... (서식: Bold/Italic/Underline 가능)")
         self.text_edit.textChanged.connect(self._on_page_field_changed)
+        self.text_edit.installEventFilter(self)  # focus tracking
+        self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
 
+        text_layout.addWidget(fmt_row)
         text_layout.addWidget(self.chk_group)
-        text_layout.addWidget(text_header)
         text_layout.addWidget(self.text_edit, 1)
 
         self.page_splitter.addWidget(img_container)
@@ -1392,26 +1317,67 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(main_splitter)
 
-    # ---------------- Bold formatting helpers ----------------
-    def _toggle_bold_shortcut(self) -> None:
-        # mirror button state so UI stays coherent
-        self.btn_bold.setChecked(not self.btn_bold.isChecked())
+        # initial active editor
+        self._set_active_rich_edit(self.text_edit)
 
-    def _toggle_bold(self, checked: bool) -> None:
-        fmt = QTextCharFormat()
-        fmt.setFontWeight(QFont.Bold if checked else QFont.Normal)
+    # ---------------- Rich text format helpers ----------------
+    def _set_active_rich_edit(self, editor: QTextEdit) -> None:
+        self._active_rich_edit = editor
+        self._sync_format_buttons()
 
-        cursor = self.text_edit.textCursor()
-        if cursor is None:
+    def _on_any_rich_cursor_changed(self) -> None:
+        # Only sync when the sender is the current active editor
+        try:
+            snd = self.sender()
+        except Exception:
+            snd = None
+        if snd is not None and snd is self._active_rich_edit:
+            self._sync_format_buttons()
+
+    def _apply_format(self, bold: Optional[bool] = None, italic: Optional[bool] = None, underline: Optional[bool] = None):
+        ed = self._active_rich_edit
+        if ed is None:
             return
 
-        if cursor.hasSelection():
-            cursor.mergeCharFormat(fmt)
-            self.text_edit.setTextCursor(cursor)
-        else:
-            self.text_edit.mergeCurrentCharFormat(fmt)
+        fmt = QTextCharFormat()
+        if bold is not None:
+            fmt.setFontWeight(QFont.Bold if bold else QFont.Normal)
+        if italic is not None:
+            fmt.setFontItalic(bool(italic))
+        if underline is not None:
+            fmt.setFontUnderline(bool(underline))
 
-        self.text_edit.setFocus(Qt.ShortcutFocusReason)
+        cur = ed.textCursor()
+        if cur.hasSelection():
+            cur.mergeCharFormat(fmt)
+            ed.mergeCurrentCharFormat(fmt)
+        else:
+            # affect future typing
+            ed.mergeCurrentCharFormat(fmt)
+
+        ed.setFocus(Qt.MouseFocusReason)
+        # formatting change may not always trigger textChanged reliably -> schedule save
+        self._on_page_field_changed()
+
+    def _sync_format_buttons(self) -> None:
+        ed = self._active_rich_edit
+        if ed is None:
+            return
+        cf = ed.currentCharFormat()
+
+        is_bold = cf.fontWeight() >= QFont.Bold
+        is_italic = bool(cf.fontItalic())
+        is_under = bool(cf.fontUnderline())
+
+        self.btn_fmt_bold.blockSignals(True)
+        self.btn_fmt_italic.blockSignals(True)
+        self.btn_fmt_underline.blockSignals(True)
+        self.btn_fmt_bold.setChecked(is_bold)
+        self.btn_fmt_italic.setChecked(is_italic)
+        self.btn_fmt_underline.setChecked(is_under)
+        self.btn_fmt_bold.blockSignals(False)
+        self.btn_fmt_italic.blockSignals(False)
+        self.btn_fmt_underline.blockSignals(False)
 
     # ---------------- Tree context menu (Category) ----------------
     def _on_tree_context_menu(self, pos) -> None:
@@ -1645,7 +1611,7 @@ class MainWindow(QMainWindow):
             "• Ctrl+V: Paste image (when viewer focused)\n"
             "• Alt+←/→: Prev/Next\n"
             "• Ctrl+N: Add page, Ctrl+S: Save\n"
-            "• Ctrl+B: Bold (Description)",
+            "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)",
             self.anno_panel
         )
         help_lbl.setWordWrap(True)
@@ -1694,8 +1660,16 @@ class MainWindow(QMainWindow):
         self.edit_img_caption.move(cap_x, margin)
 
     def eventFilter(self, obj, event) -> bool:
+        # Image viewer overlay resize
         if obj is self.image_viewer.viewport() and event.type() == QEvent.Resize:
             self._reposition_overlay()
+            return super().eventFilter(obj, event)
+
+        # Rich text focus tracking
+        if isinstance(obj, QTextEdit) and event.type() == QEvent.FocusIn:
+            self._set_active_rich_edit(obj)
+            return super().eventFilter(obj, event)
+
         return super().eventFilter(obj, event)
 
     def _apply_pen_from_ui(self) -> None:
@@ -1824,7 +1798,7 @@ class MainWindow(QMainWindow):
                 "JSON 저장에 실패했습니다(파일이 다른 프로그램에 의해 잠겼을 수 있습니다).\n\n"
                 "조치:\n"
                 "- VS Code에서 data/notes_db.json 탭을 닫거나 JSON Viewer/Preview 확장이 파일을 잡고 있지 않은지 확인\n"
-                "- 앱이 2개 실행 중인지 확인(현재 버전은 중복 실행을 차단합니다)\n"
+                "- 앱이 2개 실행 중인지 확인\n"
                 "- OneDrive/백신 실시간 감시가 잠깐 락을 거는 경우 잠시 후 자동 저장 재시도\n\n"
                 "데이터 보호:\n"
                 "- data 폴더에 notes_db.json.autosave.<timestamp>.json 파일이 생성되었을 수 있습니다."
@@ -1848,7 +1822,6 @@ class MainWindow(QMainWindow):
                 self.text_edit.clear()
                 self.image_viewer.clear_image()
                 self.btn_draw_mode.setChecked(False)
-                self.btn_bold.setChecked(False)
                 self._update_nav()
             finally:
                 self._loading_ui = False
@@ -1874,19 +1847,25 @@ class MainWindow(QMainWindow):
             cl = _normalize_checklist(pg.checklist)
             for i in range(len(DEFAULT_CHECK_QUESTIONS)):
                 self.chk_boxes[i].setChecked(bool(cl[i].get("checked", False)))
-                self.chk_notes[i].setPlainText(str(cl[i].get("note", "")))
+                val = str(cl[i].get("note", "") or "")
+                if _looks_like_html(val):
+                    self.chk_notes[i].setHtml(val)
+                else:
+                    self.chk_notes[i].setPlainText(val)
 
-            # v0.3.6: RichText(HTML) load with legacy fallback
-            if _looks_like_html(pg.note_text):
-                self.text_edit.setHtml(pg.note_text or "")
+            val_desc = pg.note_text or ""
+            if _looks_like_html(val_desc):
+                self.text_edit.setHtml(val_desc)
             else:
-                self.text_edit.setPlainText(pg.note_text or "")
+                self.text_edit.setPlainText(val_desc)
 
             self.btn_draw_mode.setChecked(False)
             self.image_viewer.set_mode_pan()
-            self.btn_bold.setChecked(False)
 
             self._update_nav()
+
+            # default active editor
+            self._set_active_rich_edit(self.text_edit)
         finally:
             self._loading_ui = False
 
@@ -1898,7 +1877,13 @@ class MainWindow(QMainWindow):
     def _collect_checklist_from_ui(self) -> Checklist:
         out: Checklist = []
         for i, q in enumerate(DEFAULT_CHECK_QUESTIONS):
-            out.append({"q": q, "checked": bool(self.chk_boxes[i].isChecked()), "note": self.chk_notes[i].toPlainText()})
+            out.append(
+                {
+                    "q": q,
+                    "checked": bool(self.chk_boxes[i].isChecked()),
+                    "note": self.chk_notes[i].toHtml(),  # HTML 저장(서식 유지)
+                }
+            )
         return out
 
     def _flush_page_fields_to_model_and_save(self) -> None:
@@ -1914,10 +1899,10 @@ class MainWindow(QMainWindow):
             pg.image_caption = new_cap
             changed = True
 
-        # v0.3.6: store HTML for Description
-        new_text_html = self.text_edit.toHtml()
-        if pg.note_text != new_text_html:
-            pg.note_text = new_text_html
+        # HTML 저장(서식 유지)
+        new_text = self.text_edit.toHtml()
+        if pg.note_text != new_text:
+            pg.note_text = new_text
             changed = True
 
         new_name = self.edit_stock_name.text()
@@ -2161,6 +2146,7 @@ class MainWindow(QMainWindow):
 
     # ---------------- Text/meta utilities ----------------
     def clear_text(self) -> None:
+        # only clears Description free text (as before)
         self.text_edit.clear()
 
     def copy_ticker(self) -> None:
@@ -2262,43 +2248,11 @@ class MainWindow(QMainWindow):
         self._load_current_page_to_ui()
 
 
-def _acquire_single_instance_lock(app: QApplication) -> Optional[QLockFile]:
-    """
-    Single instance lock using QLockFile.
-    Keep returned lock object alive for the entire app lifetime.
-    """
-    _ensure_dir(os.path.dirname(LOCK_PATH) or ".")
-    lock = QLockFile(LOCK_PATH)
-    lock.setStaleLockTime(0)  # do not auto-break; be conservative on Windows
-    ok = lock.tryLock(50)
-    if ok:
-        return lock
-
-    QMessageBox.critical(
-        None,
-        "Already running",
-        "이미 실행 중인 Trader Chart Note App 인스턴스가 있습니다.\n\n"
-        "중복 실행은 notes_db.json 저장 경합(WinError 5)을 유발할 수 있어 차단되었습니다.\n"
-        "기존 앱을 종료한 뒤 다시 실행해 주세요."
-    )
-    return None
-
-
 def main() -> None:
     _ensure_dir("data")
     _ensure_dir(ASSETS_DIR)
 
     app = QApplication(sys.argv)
-
-    # 1) single instance
-    lock = _acquire_single_instance_lock(app)
-    if lock is None:
-        sys.exit(0)
-    app._instance_lock = lock  # keep alive
-
-    # 2) autosave recovery UI (before DB load)
-    _maybe_recover_autosave(DEFAULT_DB_PATH, parent=None)
-
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())
