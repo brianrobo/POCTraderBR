@@ -6,13 +6,11 @@ Version: 0.3.7  (2025-12-24)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
 Release Notes (v0.3.7):
-- (UX) "Global Ideas" 패널 추가
-  - Description / Notes 상단 우측에 Ideas 토글 버튼 추가
-  - 버튼 ON 시 우측에 Global Ideas 입력 패널이 펼쳐짐(QSplitter 기반)
-  - QSplitter children-collapsible 이슈로 패널이 안 보이던 문제 해결
-    (setChildrenCollapsible(False), setCollapsible(..., False) 적용)
-  - Global Ideas도 Rich Text(B/I/U) 지원(상단 포맷 툴바에 연동)
-- (Data) Global Ideas를 DB에 HTML로 저장/로드(plain text 하위호환)
+- (UX) Global Ideas 패널 추가
+  - Description/Notes 상단 우측의 "Ideas" 버튼으로 패널 토글
+  - 전 Step/Page 공통으로 유지되는 전역 아이디어 메모(HTML 저장)
+  - Clear Ideas 버튼 제공(확인창 포함)
+- (UX) Clear Text 버튼 제거 (페이지 Description 전체 삭제는 Ctrl+A + Delete로 대체)
 
 Existing features:
 - Category → Step Tree(좌측), Category 우클릭 메뉴(카테고리 rename/delete/move up/down, 해당 카테고리에 step 추가)
@@ -22,7 +20,7 @@ Existing features:
 - Image: Open / Paste(Clipboard) / Clear Image / Fit
 - Viewer: Zoom wheel, Pan drag, Draw mode(shift 직선), pen color/width, Clear Lines(confirm)
 - Page fields: stock name, ticker(복사 버튼), image caption overlay(멀티라인, hover/click 확장/축소)
-- Description: checklist 4문항 + note, free text
+- Description: checklist 4문항 + note(HTML), free text(HTML)
 
 Dependencies:
   pip install PyQt5
@@ -469,6 +467,7 @@ class NoteDB:
         self.steps: List[Step] = []
         self.ui_state: Dict[str, Any] = {}
         self.category_order: List[str] = []
+        self.global_ideas: str = ""  # HTML
         self.load()
 
     def load(self) -> None:
@@ -481,10 +480,6 @@ class NoteDB:
 
         if not self.data:
             self.data = self._default_data()
-
-        # Global ideas (HTML)
-        if "global_ideas_html" not in self.data:
-            self.data["global_ideas_html"] = ""
 
         self.ui_state = self.data.get("ui_state", {})
         self.steps = self._parse_steps(self.data.get("steps", []))
@@ -502,6 +497,8 @@ class NoteDB:
         else:
             self.category_order = []
 
+        self.global_ideas = str(self.data.get("global_ideas", "") or "")
+
         self._ensure_category_order_consistency()
 
     def save(self) -> bool:
@@ -510,6 +507,7 @@ class NoteDB:
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
         self.data["category_order"] = self.category_order
+        self.data["global_ideas"] = self.global_ideas
 
         ok = _safe_write_json(self.db_path, self.data)
         self.data["_last_save_ok"] = bool(ok)
@@ -550,11 +548,10 @@ class NoteDB:
             "updated_at": _now_epoch(),
             "steps": steps,
             "ui_state": {
-                "global_ideas_open": False,
-                "global_ideas_width": 340,
+                "global_ideas_visible": False,
             },
             "category_order": ["General"],
-            "global_ideas_html": "",
+            "global_ideas": "",
         }
 
     @staticmethod
@@ -1046,7 +1043,7 @@ class MainWindow(QMainWindow):
         self.current_page_index: int = 0
         self._loading_ui: bool = False
 
-        # Rich text: currently active editor (Description or checklist notes or global ideas)
+        # Rich text: currently active editor (Description / checklist notes / global ideas)
         self._active_rich_edit: Optional[QTextEdit] = None
 
         self._save_timer = QTimer(self)
@@ -1062,9 +1059,12 @@ class MainWindow(QMainWindow):
 
         self._load_ui_state_or_defaults()
         self._refresh_steps_tree(select_current=True)
-        self._load_global_ideas_to_ui()
-        self._apply_global_ideas_open_from_state()
         self._load_current_page_to_ui()
+        self._load_global_ideas_to_ui()
+
+        # Restore ideas panel visibility (after UI built)
+        vis = bool(self.db.ui_state.get("global_ideas_visible", False))
+        self._set_global_ideas_visible(vis, persist=False)
 
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.go_prev_page)
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
@@ -1230,17 +1230,17 @@ class MainWindow(QMainWindow):
         img_layout.addWidget(self.image_viewer, 1)
         img_layout.addWidget(nav_widget)
 
-        # ---------------- Text section (with Global Ideas panel) ----------------
+        # ---------------- Text section ----------------
         text_container = QWidget()
         text_layout = QVBoxLayout(text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(6)
 
-        # Formatting toolbar row (HBOX for right-aligned Ideas)
+        # Formatting toolbar (applies to active QTextEdit)
         fmt_row = QWidget()
-        fmt_h = QHBoxLayout(fmt_row)
-        fmt_h.setContentsMargins(0, 0, 0, 0)
-        fmt_h.setSpacing(6)
+        fmt_row_l = QHBoxLayout(fmt_row)
+        fmt_row_l.setContentsMargins(0, 0, 0, 0)
+        fmt_row_l.setSpacing(6)
 
         self.text_title = QLabel("Description / Notes")
         self.text_title.setStyleSheet("font-weight: 600;")
@@ -1266,33 +1266,31 @@ class MainWindow(QMainWindow):
         self.btn_fmt_underline.setToolTip("Underline (Ctrl+U)")
         self.btn_fmt_underline.setStyleSheet("text-decoration: underline; font-weight: 600;")
 
-        self.btn_clear_text = QPushButton("Clear Text")
-        self.btn_clear_text.clicked.connect(self.clear_text)
-
         self.btn_fmt_bold.toggled.connect(lambda v: self._apply_format(bold=v))
         self.btn_fmt_italic.toggled.connect(lambda v: self._apply_format(italic=v))
         self.btn_fmt_underline.toggled.connect(lambda v: self._apply_format(underline=v))
 
-        # Global Ideas toggle button (top-right)
-        self.btn_global_ideas = QToolButton()
-        self.btn_global_ideas.setText("Ideas")
-        self.btn_global_ideas.setCheckable(True)
-        self.btn_global_ideas.setToolTip("Toggle Global Ideas panel (global memo space)")
-        self.btn_global_ideas.toggled.connect(lambda v: self._toggle_global_ideas_panel(checked=v))
+        self.btn_ideas = QToolButton()
+        self.btn_ideas.setText("Ideas")
+        self.btn_ideas.setToolTip("Toggle Global Ideas panel (전역 아이디어)")
+        self.btn_ideas.setCheckable(True)
+        self.btn_ideas.toggled.connect(self._on_toggle_ideas)
 
-        fmt_h.addWidget(self.text_title)
-        fmt_h.addWidget(self.btn_fmt_bold)
-        fmt_h.addWidget(self.btn_fmt_italic)
-        fmt_h.addWidget(self.btn_fmt_underline)
-        fmt_h.addStretch(1)
-        fmt_h.addWidget(self.btn_global_ideas)
-        fmt_h.addWidget(self.btn_clear_text)
+        fmt_row_l.addWidget(self.text_title)
+        fmt_row_l.addWidget(self.btn_fmt_bold)
+        fmt_row_l.addWidget(self.btn_fmt_italic)
+        fmt_row_l.addWidget(self.btn_fmt_underline)
+        fmt_row_l.addStretch(1)
+        fmt_row_l.addWidget(self.btn_ideas)
 
-        # Left(main) text widgets
-        self.main_text_widget = QWidget()
-        main_text_l = QVBoxLayout(self.main_text_widget)
-        main_text_l.setContentsMargins(0, 0, 0, 0)
-        main_text_l.setSpacing(6)
+        # Notes + Ideas area (splitter)
+        self.notes_ideas_splitter = QSplitter(Qt.Horizontal)
+
+        # Left: per-page notes
+        notes_left = QWidget()
+        notes_left_l = QVBoxLayout(notes_left)
+        notes_left_l.setContentsMargins(0, 0, 0, 0)
+        notes_left_l.setSpacing(6)
 
         self.chk_group = QGroupBox("Checklist")
         chk_layout = QVBoxLayout(self.chk_group)
@@ -1324,83 +1322,57 @@ class MainWindow(QMainWindow):
         self.text_edit.installEventFilter(self)  # focus tracking
         self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
 
-        main_text_l.addWidget(fmt_row)
-        main_text_l.addWidget(self.chk_group)
-        main_text_l.addWidget(self.text_edit, 1)
+        notes_left_l.addWidget(self.chk_group)
+        notes_left_l.addWidget(self.text_edit, 1)
 
-        # Global Ideas panel (right side)
-        self.global_panel = QFrame()
-        self.global_panel.setObjectName("global_panel")
-        self.global_panel.setFrameShape(QFrame.StyledPanel)
-        self.global_panel.setStyleSheet("""
-            QFrame#global_panel {
-                background: rgba(255, 255, 255, 245);
-                border: 1px solid #9A9A9A;
+        # Right: global ideas panel
+        self.ideas_panel = QFrame()
+        self.ideas_panel.setFrameShape(QFrame.StyledPanel)
+        self.ideas_panel.setMinimumWidth(320)
+        self.ideas_panel.setStyleSheet("""
+            QFrame {
+                background: #FAFAFA;
+                border: 1px solid #D0D0D0;
                 border-radius: 10px;
             }
-            QLabel { color: #222; }
         """)
-        gp_l = QVBoxLayout(self.global_panel)
-        gp_l.setContentsMargins(10, 10, 10, 10)
-        gp_l.setSpacing(8)
 
-        gp_header = QWidget(self.global_panel)
-        gp_h = QHBoxLayout(gp_header)
-        gp_h.setContentsMargins(0, 0, 0, 0)
-        gp_h.setSpacing(6)
+        ideas_l = QVBoxLayout(self.ideas_panel)
+        ideas_l.setContentsMargins(10, 10, 10, 10)
+        ideas_l.setSpacing(6)
 
-        gp_title = QLabel("Global Ideas", gp_header)
-        gp_title.setStyleSheet("font-weight: 700;")
-        gp_h.addWidget(gp_title, 1)
+        ideas_header = QWidget()
+        ideas_header_l = QHBoxLayout(ideas_header)
+        ideas_header_l.setContentsMargins(0, 0, 0, 0)
+        ideas_header_l.setSpacing(6)
 
-        self.btn_global_ideas_close = QToolButton(gp_header)
-        self.btn_global_ideas_close.setText("×")
-        self.btn_global_ideas_close.setToolTip("Close Global Ideas panel")
-        self.btn_global_ideas_close.setAutoRaise(True)
-        self.btn_global_ideas_close.setFixedSize(26, 22)
-        self.btn_global_ideas_close.clicked.connect(lambda: self.btn_global_ideas.setChecked(False))
-        gp_h.addWidget(self.btn_global_ideas_close)
+        self.lbl_ideas = QLabel("Global Ideas")
+        self.lbl_ideas.setStyleSheet("font-weight: 700;")
 
-        self.edit_global_ideas = QTextEdit(self.global_panel)
-        self.edit_global_ideas.setPlaceholderText(
-            "전역 아이디어/규칙/체크리스트 등을 여기에 기록하세요...\n"
-            "- 어느 Step/Page와 무관하게 유지되는 메모\n"
-            "- 서식: Bold/Italic/Underline 지원"
-        )
-        self.edit_global_ideas.textChanged.connect(self._on_page_field_changed)
+        self.btn_clear_ideas = QPushButton("Clear Ideas")
+        self.btn_clear_ideas.setToolTip("Clear global ideas text (전역 아이디어 전체 삭제)")
+        self.btn_clear_ideas.clicked.connect(self.clear_global_ideas)
+
+        ideas_header_l.addWidget(self.lbl_ideas, 1)
+        ideas_header_l.addWidget(self.btn_clear_ideas)
+
+        self.edit_global_ideas = QTextEdit()
+        self.edit_global_ideas.setPlaceholderText("전역적으로 적용할 아이디어를 여기에 작성하세요... (서식 가능)")
+        self.edit_global_ideas.textChanged.connect(self._on_page_field_changed)  # reuse save timer
         self.edit_global_ideas.installEventFilter(self)
         self.edit_global_ideas.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
 
-        btns_row = QWidget(self.global_panel)
-        btns_h = QHBoxLayout(btns_row)
-        btns_h.setContentsMargins(0, 0, 0, 0)
-        btns_h.setSpacing(6)
+        ideas_l.addWidget(ideas_header)
+        ideas_l.addWidget(self.edit_global_ideas, 1)
 
-        self.btn_global_ideas_clear = QPushButton("Clear Ideas", btns_row)
-        self.btn_global_ideas_clear.clicked.connect(self._clear_global_ideas)
-        btns_h.addWidget(self.btn_global_ideas_clear)
-        btns_h.addStretch(1)
+        self.notes_ideas_splitter.addWidget(notes_left)
+        self.notes_ideas_splitter.addWidget(self.ideas_panel)
+        self.notes_ideas_splitter.setStretchFactor(0, 1)
+        self.notes_ideas_splitter.setStretchFactor(1, 0)
 
-        gp_l.addWidget(gp_header)
-        gp_l.addWidget(self.edit_global_ideas, 1)
-        gp_l.addWidget(btns_row)
+        text_layout.addWidget(fmt_row)
+        text_layout.addWidget(self.notes_ideas_splitter, 1)
 
-        # Splitter that holds main text + global panel
-        self.text_side_splitter = QSplitter(Qt.Horizontal)
-        self.text_side_splitter.addWidget(self.main_text_widget)
-        self.text_side_splitter.addWidget(self.global_panel)
-
-        # Critical: prevent "collapsed child never returns" splitter issue
-        self.text_side_splitter.setChildrenCollapsible(False)
-        self.text_side_splitter.setCollapsible(0, False)
-        self.text_side_splitter.setCollapsible(1, False)
-
-        self.text_side_splitter.setStretchFactor(0, 1)
-        self.text_side_splitter.setStretchFactor(1, 0)
-
-        text_layout.addWidget(self.text_side_splitter, 1)
-
-        # Page splitter: image vs text
         self.page_splitter.addWidget(img_container)
         self.page_splitter.addWidget(text_container)
         self.page_splitter.setStretchFactor(0, 1)
@@ -1434,7 +1406,12 @@ class MainWindow(QMainWindow):
         if snd is not None and snd is self._active_rich_edit:
             self._sync_format_buttons()
 
-    def _apply_format(self, bold: Optional[bool] = None, italic: Optional[bool] = None, underline: Optional[bool] = None):
+    def _apply_format(
+        self,
+        bold: Optional[bool] = None,
+        italic: Optional[bool] = None,
+        underline: Optional[bool] = None
+    ) -> None:
         ed = self._active_rich_edit
         if ed is None:
             return
@@ -1477,78 +1454,53 @@ class MainWindow(QMainWindow):
         self.btn_fmt_italic.blockSignals(False)
         self.btn_fmt_underline.blockSignals(False)
 
-    # ---------------- Global Ideas ----------------
-    def _load_global_ideas_to_ui(self) -> None:
-        val = str(self.db.data.get("global_ideas_html", "") or "")
-        if _looks_like_html(val):
-            self.edit_global_ideas.setHtml(val)
+    # ---------------- Ideas panel toggle ----------------
+    def _on_toggle_ideas(self, checked: bool) -> None:
+        self._set_global_ideas_visible(checked, persist=True)
+
+    def _set_global_ideas_visible(self, visible: bool, persist: bool = True) -> None:
+        self.ideas_panel.setVisible(bool(visible))
+        self.btn_ideas.blockSignals(True)
+        self.btn_ideas.setChecked(bool(visible))
+        self.btn_ideas.blockSignals(False)
+
+        # splitter sizing: when hidden -> all to left; when shown -> allocate reasonable width
+        if visible:
+            self.notes_ideas_splitter.setSizes([900, 420])
         else:
-            self.edit_global_ideas.setPlainText(val)
+            self.notes_ideas_splitter.setSizes([1, 0])
 
-    def _flush_global_ideas_to_model(self) -> bool:
-        # returns True if changed
-        new_html = self.edit_global_ideas.toHtml()
-        old = str(self.db.data.get("global_ideas_html", "") or "")
-        if old != new_html:
-            self.db.data["global_ideas_html"] = new_html
-            return True
-        return False
+        if persist:
+            self.db.ui_state["global_ideas_visible"] = bool(visible)
+            self._save_db_with_warning()
 
-    def _clear_global_ideas(self) -> None:
+    def _load_global_ideas_to_ui(self) -> None:
+        self._loading_ui = True
+        try:
+            val = self.db.global_ideas or ""
+            if _looks_like_html(val):
+                self.edit_global_ideas.setHtml(val)
+            else:
+                self.edit_global_ideas.setPlainText(val)
+        finally:
+            self._loading_ui = False
+
+    def clear_global_ideas(self) -> None:
+        if not (self.edit_global_ideas.toPlainText().strip() or self.edit_global_ideas.toHtml().strip()):
+            return
+
         reply = QMessageBox.question(
             self,
-            "Clear Global Ideas",
-            "Global Ideas 내용을 모두 지울까요?",
+            "Clear Ideas",
+            "전역(Global) Ideas 내용을 모두 삭제할까요?\n(모든 Step/Page에서 동일하게 사라집니다.)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
+
         self.edit_global_ideas.clear()
-        self._on_page_field_changed()
-
-    def _apply_global_ideas_open_from_state(self) -> None:
-        open_flag = bool(self.db.ui_state.get("global_ideas_open", False))
-        # Use setChecked -> will call toggled handler and set sizes
-        self.btn_global_ideas.blockSignals(True)
-        self.btn_global_ideas.setChecked(open_flag)
-        self.btn_global_ideas.blockSignals(False)
-        # Apply sizing explicitly (important on first show)
-        self._toggle_global_ideas_panel(checked=open_flag)
-
-    def _toggle_global_ideas_panel(self, checked: bool) -> None:
-        # Always keep widget visible; control "show/hide" by splitter sizes.
-        # This prevents the splitter from treating it as gone and never restoring it.
-        self.global_panel.setVisible(True)
-
-        total_w = max(1, self.text_side_splitter.width())
-        min_right = 260
-
-        if checked:
-            desired = int(self.db.ui_state.get("global_ideas_width", 340) or 340)
-            desired = max(min_right, min(desired, int(total_w * 0.75)))
-
-            left = max(200, total_w - desired)
-            right = max(min_right, desired)
-            self.text_side_splitter.setSizes([left, right])
-
-            self.edit_global_ideas.setFocus(Qt.MouseFocusReason)
-            self._set_active_rich_edit(self.edit_global_ideas)
-        else:
-            # collapse right to 0
-            self.text_side_splitter.setSizes([1, 0])
-            self.text_edit.setFocus(Qt.MouseFocusReason)
-            self._set_active_rich_edit(self.text_edit)
-
-        # persist ui_state
-        self.db.ui_state["global_ideas_open"] = bool(checked)
-        # store current right width when opened
-        if checked:
-            sz = self.text_side_splitter.sizes()
-            if len(sz) >= 2:
-                self.db.ui_state["global_ideas_width"] = int(sz[1])
-
-        self._save_db_with_warning()
+        self._flush_page_fields_to_model_and_save()
 
     # ---------------- Tree context menu (Category) ----------------
     def _on_tree_context_menu(self, pos) -> None:
@@ -1994,8 +1946,6 @@ class MainWindow(QMainWindow):
                 self.image_viewer.clear_image()
                 self.btn_draw_mode.setChecked(False)
                 self._update_nav()
-
-                self._set_active_rich_edit(self.text_edit)
             finally:
                 self._loading_ui = False
             return
@@ -2037,11 +1987,7 @@ class MainWindow(QMainWindow):
 
             self._update_nav()
 
-            # default active editor
-            if self.btn_global_ideas.isChecked():
-                self._set_active_rich_edit(self.edit_global_ideas)
-            else:
-                self._set_active_rich_edit(self.text_edit)
+            self._set_active_rich_edit(self.text_edit)
         finally:
             self._loading_ui = False
 
@@ -2065,64 +2011,52 @@ class MainWindow(QMainWindow):
     def _flush_page_fields_to_model_and_save(self) -> None:
         st = self.current_step()
         pg = self.current_page()
-        if self._loading_ui:
+        if not st or not pg or self._loading_ui:
             return
 
         changed = False
 
-        # Global ideas (always present)
-        try:
-            if self._flush_global_ideas_to_model():
-                changed = True
-        except Exception:
-            pass
+        # global ideas (HTML)
+        new_global = self.edit_global_ideas.toHtml()
+        if self.db.global_ideas != new_global:
+            self.db.global_ideas = new_global
+            changed = True
 
-        if st and pg:
-            new_cap = self.edit_img_caption.toPlainText()
-            if pg.image_caption != new_cap:
-                pg.image_caption = new_cap
-                changed = True
+        new_cap = self.edit_img_caption.toPlainText()
+        if pg.image_caption != new_cap:
+            pg.image_caption = new_cap
+            changed = True
 
-            # HTML 저장(서식 유지)
-            new_text = self.text_edit.toHtml()
-            if pg.note_text != new_text:
-                pg.note_text = new_text
-                changed = True
+        new_text = self.text_edit.toHtml()
+        if pg.note_text != new_text:
+            pg.note_text = new_text
+            changed = True
 
-            new_name = self.edit_stock_name.text()
-            if pg.stock_name != new_name:
-                pg.stock_name = new_name
-                changed = True
+        new_name = self.edit_stock_name.text()
+        if pg.stock_name != new_name:
+            pg.stock_name = new_name
+            changed = True
 
-            new_ticker = self.edit_ticker.text()
-            if pg.ticker != new_ticker:
-                pg.ticker = new_ticker
-                changed = True
+        new_ticker = self.edit_ticker.text()
+        if pg.ticker != new_ticker:
+            pg.ticker = new_ticker
+            changed = True
 
-            new_strokes = self.image_viewer.get_strokes()
-            if pg.strokes != new_strokes:
-                pg.strokes = new_strokes
-                changed = True
+        new_strokes = self.image_viewer.get_strokes()
+        if pg.strokes != new_strokes:
+            pg.strokes = new_strokes
+            changed = True
 
-            new_checklist = self._collect_checklist_from_ui()
-            if pg.checklist != new_checklist:
-                pg.checklist = new_checklist
-                changed = True
+        new_checklist = self._collect_checklist_from_ui()
+        if pg.checklist != new_checklist:
+            pg.checklist = new_checklist
+            changed = True
 
-            st.last_page_index = self.current_page_index
-            self._save_ui_state()
+        st.last_page_index = self.current_page_index
+        self._save_ui_state()
 
-            # persist global panel width when open
-            if self.btn_global_ideas.isChecked():
-                sz = self.text_side_splitter.sizes()
-                if len(sz) >= 2:
-                    self.db.ui_state["global_ideas_width"] = int(sz[1])
-
-            if changed:
-                pg.updated_at = _now_epoch()
-        else:
-            # still keep UI state
-            self._save_ui_state()
+        if changed:
+            pg.updated_at = _now_epoch()
 
         self._save_db_with_warning()
 
@@ -2338,10 +2272,6 @@ class MainWindow(QMainWindow):
         self.image_viewer.setFocus(Qt.MouseFocusReason)
 
     # ---------------- Text/meta utilities ----------------
-    def clear_text(self) -> None:
-        # only clears Description free text (as before)
-        self.text_edit.clear()
-
     def copy_ticker(self) -> None:
         txt = self.edit_ticker.text().strip()
         if not txt:
