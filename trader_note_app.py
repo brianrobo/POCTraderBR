@@ -2,12 +2,15 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.4.1  (2025-12-25)
+Version: 0.4.2  (2025-12-26)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.4.1):
-- (UX) Global Ideas 패널에서 "Clear Ideas" 버튼/기능 제거
-  - 전역 메모 특성상 사용자가 에디터에서 직접 삭제(전체선택/삭제)하는 방식으로 단순화
+Release Notes (v0.4.2):
+- (UX) Description 패널(Checklist + Description 텍스트)을 숨김/표시할 수 있는 토글 버튼 추가
+  - 버튼은 이미지 뷰(차트) 영역에 플로팅으로 배치
+  - Description OFF + Ideas OFF 인 경우 우측 텍스트 영역을 자동으로 접어 차트 영역을 최대화
+  - ui_state["desc_visible"]로 상태 저장/복원
+- (UX) Global Ideas의 "Clear Ideas" 버튼/기능 제거 유지(v0.4.1)
 
 Existing features:
 - Category → Step Tree(좌측), Category/Step Drag & Drop
@@ -22,9 +25,6 @@ Existing features:
 
 Dependencies:
   pip install PyQt5
-
-Run:
-  python trader_note_app.py
 """
 
 import json
@@ -93,7 +93,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
 )
 
-APP_TITLE = "Trader Chart Note (v0.4.1)"
+APP_TITLE = "Trader Chart Note (v0.4.2)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -661,8 +661,14 @@ class NoteDB:
             self.data = self._default_data()
 
         self.ui_state = self.data.get("ui_state", {})
-        self.steps = self._parse_steps(self.data.get("steps", []))
+        if not isinstance(self.ui_state, dict):
+            self.ui_state = {}
 
+        # ensure keys
+        self.ui_state.setdefault("global_ideas_visible", False)
+        self.ui_state.setdefault("desc_visible", True)
+
+        self.steps = self._parse_steps(self.data.get("steps", []))
         if not self.steps:
             self.steps = self._parse_steps(self._default_data()["steps"])
 
@@ -680,7 +686,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> bool:
-        self.data["version"] = "0.4.1"
+        self.data["version"] = "0.4.2"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -721,12 +727,13 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.4.1",
+            "version": "0.4.2",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
             "ui_state": {
                 "global_ideas_visible": False,
+                "desc_visible": True,
             },
             "category_order": ["General"],
             "global_ideas": "",
@@ -1085,8 +1092,6 @@ class ZoomPanAnnotateView(QGraphicsView):
         for it in list(self._stroke_items):
             try:
                 self._scene.removeItem(it)
-            except RuntimeError:
-                pass
             except Exception:
                 pass
 
@@ -1223,6 +1228,10 @@ class MainWindow(QMainWindow):
 
         self._active_rich_edit: Optional[QTextEdit] = None
 
+        # v0.4.2: Description visible state
+        self._desc_visible: bool = bool(self.db.ui_state.get("desc_visible", True))
+        self._page_split_prev_sizes: Optional[List[int]] = None
+
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._flush_page_fields_to_model_and_save)
@@ -1238,8 +1247,10 @@ class MainWindow(QMainWindow):
         self._load_current_page_to_ui()
         self._load_global_ideas_to_ui()
 
-        vis = bool(self.db.ui_state.get("global_ideas_visible", False))
-        self._set_global_ideas_visible(vis, persist=False)
+        # Apply panel visibilities
+        ideas_vis = bool(self.db.ui_state.get("global_ideas_visible", False))
+        self._set_global_ideas_visible(ideas_vis, persist=False)
+        self._set_desc_visible(bool(self.db.ui_state.get("desc_visible", True)), persist=False)
 
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.go_prev_page)
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
@@ -1306,7 +1317,6 @@ class MainWindow(QMainWindow):
         self.steps_tree.setDropIndicatorShown(True)
         self.steps_tree.setDefaultDropAction(Qt.MoveAction)
         self.steps_tree.setDragDropMode(QAbstractItemView.InternalMove)
-        self.steps_tree.setDragDropMode(QAbstractItemView.InternalMove)
 
         self.steps_tree.stepStructureDropped.connect(lambda _: self._rebuild_db_from_tree())
         self.steps_tree.categoryOrderDropped.connect(lambda _: self._rebuild_db_from_tree())
@@ -1323,8 +1333,8 @@ class MainWindow(QMainWindow):
         self.page_splitter = QSplitter(Qt.Horizontal)
 
         # ---------------- Image section ----------------
-        img_container = QWidget()
-        img_layout = QVBoxLayout(img_container)
+        self.img_container = QWidget()
+        img_layout = QVBoxLayout(self.img_container)
         img_layout.setContentsMargins(0, 0, 0, 0)
         img_layout.setSpacing(6)
 
@@ -1414,8 +1424,8 @@ class MainWindow(QMainWindow):
         img_layout.addWidget(nav_widget)
 
         # ---------------- Text section ----------------
-        text_container = QWidget()
-        text_layout = QVBoxLayout(text_container)
+        self.text_container = QWidget()
+        text_layout = QVBoxLayout(self.text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(6)
 
@@ -1467,8 +1477,9 @@ class MainWindow(QMainWindow):
 
         self.notes_ideas_splitter = QSplitter(Qt.Horizontal)
 
-        notes_left = QWidget()
-        notes_left_l = QVBoxLayout(notes_left)
+        # Left: Checklist + Description
+        self.notes_left = QWidget()
+        notes_left_l = QVBoxLayout(self.notes_left)
         notes_left_l.setContentsMargins(0, 0, 0, 0)
         notes_left_l.setSpacing(6)
 
@@ -1505,6 +1516,7 @@ class MainWindow(QMainWindow):
         notes_left_l.addWidget(self.chk_group)
         notes_left_l.addWidget(self.text_edit, 1)
 
+        # Right: Ideas
         self.ideas_panel = QFrame()
         self.ideas_panel.setFrameShape(QFrame.StyledPanel)
         self.ideas_panel.setMinimumWidth(320)
@@ -1528,7 +1540,7 @@ class MainWindow(QMainWindow):
         self.lbl_ideas = QLabel("Global Ideas")
         self.lbl_ideas.setStyleSheet("font-weight: 700;")
 
-        # v0.4.1: Clear Ideas 버튼 제거 (전역 메모는 직접 편집 삭제)
+        # v0.4.1+ : Clear Ideas 버튼 제거
         ideas_header_l.addWidget(self.lbl_ideas, 1)
 
         self.edit_global_ideas = QTextEdit()
@@ -1540,11 +1552,10 @@ class MainWindow(QMainWindow):
         ideas_l.addWidget(ideas_header)
         ideas_l.addWidget(self.edit_global_ideas, 1)
 
-        self.notes_ideas_splitter.addWidget(notes_left)
+        self.notes_ideas_splitter.addWidget(self.notes_left)
         self.notes_ideas_splitter.addWidget(self.ideas_panel)
-
         self.notes_ideas_splitter.setChildrenCollapsible(False)
-        self.notes_ideas_splitter.setCollapsible(0, False)
+        self.notes_ideas_splitter.setCollapsible(0, True)
         self.notes_ideas_splitter.setCollapsible(1, True)
         self.notes_ideas_splitter.setStretchFactor(0, 3)
         self.notes_ideas_splitter.setStretchFactor(1, 1)
@@ -1552,8 +1563,8 @@ class MainWindow(QMainWindow):
         text_layout.addWidget(fmt_row)
         text_layout.addWidget(self.notes_ideas_splitter, 1)
 
-        self.page_splitter.addWidget(img_container)
-        self.page_splitter.addWidget(text_container)
+        self.page_splitter.addWidget(self.img_container)
+        self.page_splitter.addWidget(self.text_container)
         self.page_splitter.setStretchFactor(0, 1)
         self.page_splitter.setStretchFactor(1, 1)
 
@@ -1680,15 +1691,6 @@ class MainWindow(QMainWindow):
     def _on_toggle_ideas(self, checked: bool) -> None:
         self._set_global_ideas_visible(checked, persist=True)
 
-    def _apply_ideas_split_sizes(self, visible: bool) -> None:
-        total = max(1, self.notes_ideas_splitter.width())
-        if visible:
-            right = max(320, min(520, int(total * 0.34)))
-            left = max(1, total - right)
-            self.notes_ideas_splitter.setSizes([left, right])
-        else:
-            self.notes_ideas_splitter.setSizes([total, 0])
-
     def _set_global_ideas_visible(self, visible: bool, persist: bool = True) -> None:
         self.ideas_panel.setVisible(bool(visible))
 
@@ -1696,23 +1698,79 @@ class MainWindow(QMainWindow):
         self.btn_ideas.setChecked(bool(visible))
         self.btn_ideas.blockSignals(False)
 
-        self._apply_ideas_split_sizes(bool(visible))
-        QTimer.singleShot(0, lambda: self._apply_ideas_split_sizes(bool(visible)))
+        self._update_text_area_layout()
 
         if persist:
             self.db.ui_state["global_ideas_visible"] = bool(visible)
             self._save_db_with_warning()
 
-    def _load_global_ideas_to_ui(self) -> None:
-        self._loading_ui = True
-        try:
-            val = self.db.global_ideas or ""
-            if _looks_like_html(val):
-                self.edit_global_ideas.setHtml(val)
+    # ---------------- v0.4.2 Description toggle ----------------
+    def _on_toggle_desc(self, checked: bool) -> None:
+        self._set_desc_visible(bool(checked), persist=True)
+
+    def _set_desc_visible(self, visible: bool, persist: bool = True) -> None:
+        self._desc_visible = bool(visible)
+        self.notes_left.setVisible(self._desc_visible)
+
+        if hasattr(self, "btn_desc_toggle"):
+            self.btn_desc_toggle.blockSignals(True)
+            self.btn_desc_toggle.setChecked(self._desc_visible)
+            self.btn_desc_toggle.blockSignals(False)
+
+        self._update_text_area_layout()
+
+        if persist:
+            self.db.ui_state["desc_visible"] = bool(self._desc_visible)
+            self._save_db_with_warning()
+
+    def _collapse_text_container(self, collapse: bool) -> None:
+        if collapse:
+            if self.text_container.isVisible():
+                self._page_split_prev_sizes = list(self.page_splitter.sizes())
+            self.text_container.setVisible(False)
+            total = max(1, self.page_splitter.width())
+            self.page_splitter.setSizes([total, 0])
+        else:
+            if not self.text_container.isVisible():
+                self.text_container.setVisible(True)
+            if self._page_split_prev_sizes and len(self._page_split_prev_sizes) == 2:
+                self.page_splitter.setSizes(self._page_split_prev_sizes)
             else:
-                self.edit_global_ideas.setPlainText(val)
-        finally:
-            self._loading_ui = False
+                self.page_splitter.setSizes([720, 680])
+
+    def _update_text_area_layout(self) -> None:
+        """
+        desc_visible/ideas_visible 조합에 따라:
+          - notes_ideas_splitter sizes 조정
+          - 둘 다 OFF이면 text_container 자체를 접어(chart area 최대화)
+        """
+        ideas_vis = bool(self.ideas_panel.isVisible())
+        desc_vis = bool(self._desc_visible)
+
+        if not desc_vis and not ideas_vis:
+            self._collapse_text_container(True)
+            QTimer.singleShot(0, self._reposition_overlay)
+            return
+
+        self._collapse_text_container(False)
+
+        total = max(1, self.notes_ideas_splitter.width())
+        if desc_vis and ideas_vis:
+            right = max(320, min(520, int(total * 0.34)))
+            left = max(1, total - right)
+            self.notes_ideas_splitter.setSizes([left, right])
+        elif desc_vis and (not ideas_vis):
+            self.notes_ideas_splitter.setSizes([total, 0])
+        elif (not desc_vis) and ideas_vis:
+            self.notes_ideas_splitter.setSizes([0, total])
+
+        QTimer.singleShot(0, lambda: self._sync_desc_button_text())
+        QTimer.singleShot(0, self._reposition_overlay)
+
+    def _sync_desc_button_text(self) -> None:
+        if not hasattr(self, "btn_desc_toggle"):
+            return
+        self.btn_desc_toggle.setText("Notes" if not self._desc_visible else "Notes✓")
 
     # ---------------- Context menu ----------------
     def _on_tree_context_menu(self, pos) -> None:
@@ -1903,6 +1961,8 @@ class MainWindow(QMainWindow):
     def _save_ui_state(self) -> None:
         self.db.ui_state["selected_step_id"] = self.current_step_id
         self.db.ui_state["current_page_index"] = self.current_page_index
+        self.db.ui_state["desc_visible"] = bool(self._desc_visible)
+        self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
 
     # ---------------- Tree: category -> steps ----------------
     def _refresh_steps_tree(self, select_current: bool = False) -> None:
@@ -2146,6 +2206,18 @@ class MainWindow(QMainWindow):
         self.btn_prev.setEnabled(total > 0 and self.current_page_index > 0)
         self.btn_next.setEnabled(total > 0 and self.current_page_index < total - 1)
         self.btn_del_page.setEnabled(total > 1)
+
+    # ---------------- Global ideas load ----------------
+    def _load_global_ideas_to_ui(self) -> None:
+        self._loading_ui = True
+        try:
+            val = self.db.global_ideas or ""
+            if _looks_like_html(val):
+                self.edit_global_ideas.setHtml(val)
+            else:
+                self.edit_global_ideas.setPlainText(val)
+        finally:
+            self._loading_ui = False
 
     # ---------------- Page navigation ----------------
     def go_prev_page(self) -> None:
@@ -2452,12 +2524,23 @@ class MainWindow(QMainWindow):
         self.edit_img_caption.textChanged.connect(self._on_page_field_changed)
         self.edit_img_caption.expandedChanged.connect(lambda _: self._reposition_overlay())
 
+        # Annotate floating button
         self.btn_anno_toggle = QToolButton(vp)
         self.btn_anno_toggle.setText("✎")
         self.btn_anno_toggle.setToolTip("Open Annotate panel")
         self.btn_anno_toggle.setAutoRaise(True)
         self.btn_anno_toggle.setFixedSize(34, 30)
         self.btn_anno_toggle.clicked.connect(self._open_annotate_panel)
+
+        # v0.4.2: Description toggle floating button (image view side)
+        self.btn_desc_toggle = QToolButton(vp)
+        self.btn_desc_toggle.setText("Notes✓" if self._desc_visible else "Notes")
+        self.btn_desc_toggle.setToolTip("Show/Hide Description & Checklist panel")
+        self.btn_desc_toggle.setCheckable(True)
+        self.btn_desc_toggle.setChecked(bool(self._desc_visible))
+        self.btn_desc_toggle.setAutoRaise(True)
+        self.btn_desc_toggle.setFixedSize(64, 30)
+        self.btn_desc_toggle.toggled.connect(self._on_toggle_desc)
 
         self.anno_panel = QFrame(vp)
         self.anno_panel.setObjectName("anno_panel")
@@ -2545,7 +2628,8 @@ class MainWindow(QMainWindow):
             "• Ctrl+N: Add page, Ctrl+S: Save\n"
             "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)\n"
             "• Step Tree: Drag & Drop (Step move / Category reorder)\n"
-            "  - Category drag: drop above/below only",
+            "  - Category drag: drop above/below only\n"
+            "• Notes(차트 상단): Description 패널 숨김/표시",
             self.anno_panel
         )
         help_lbl.setWordWrap(True)
@@ -2573,23 +2657,37 @@ class MainWindow(QMainWindow):
         vp = self.image_viewer.viewport()
         w = vp.width()
         margin = 10
+        gap = 6
 
-        self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
-
-        cap_min = 260
-        cap_max = 720
-        btn_w = self.btn_anno_toggle.width()
-
+        # If annotate panel visible, reserve right side
         if self.anno_panel.isVisible():
             panel_x = max(margin, w - self.anno_panel.width() - margin)
             self.anno_panel.move(panel_x, margin)
 
-            cap_w = min(cap_max, max(cap_min, panel_x - 2 * margin))
-            cap_x = max(margin, panel_x - margin - cap_w)
-        else:
-            cap_w = min(cap_max, max(cap_min, w - (btn_w + 3 * margin)))
-            cap_x = max(margin, w - margin - btn_w - margin - cap_w)
+            # place Notes toggle to the left of panel (top aligned)
+            self.btn_desc_toggle.move(max(margin, panel_x - margin - self.btn_desc_toggle.width()), margin)
 
+            # annotate toggle hidden already
+        else:
+            # top-right stack: annotate toggle then notes toggle
+            self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
+            self.btn_desc_toggle.move(
+                max(margin, w - self.btn_desc_toggle.width() - margin),
+                margin + self.btn_anno_toggle.height() + gap
+            )
+
+        # Caption sizing: avoid overlay buttons & (optional) panel
+        cap_min = 260
+        cap_max = 720
+
+        if self.anno_panel.isVisible():
+            cap_right_limit = self.anno_panel.x() - margin
+        else:
+            # use the leftmost x among the two buttons
+            cap_right_limit = min(self.btn_anno_toggle.x(), self.btn_desc_toggle.x()) - margin
+
+        cap_w = min(cap_max, max(cap_min, cap_right_limit - margin))
+        cap_x = max(margin, cap_right_limit - cap_w)
         self.edit_img_caption.setFixedWidth(cap_w)
         self.edit_img_caption.move(cap_x, margin)
 
