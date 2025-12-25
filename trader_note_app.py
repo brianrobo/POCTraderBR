@@ -2,15 +2,13 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.3.7  (2025-12-24)
+Version: 0.3.8  (2025-12-25)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.3.7):
-- (UX) Global Ideas 패널 추가
-  - Description/Notes 상단 우측의 "Ideas" 버튼으로 패널 토글
-  - 전 Step/Page 공통으로 유지되는 전역 아이디어 메모(HTML 저장)
-  - Clear Ideas 버튼 제공(확인창 포함)
-- (UX) Clear Text 버튼 제거 (페이지 Description 전체 삭제는 Ctrl+A + Delete로 대체)
+Release Notes (v0.3.8):
+- (FIX) Global Ideas 패널 토글 시 QSplitter 사이즈가 0에 고정되어 패널이 안 보이는 문제 개선
+  - splitter children collapsible/collapsible 설정 보강
+  - 토글 시 현재 폭 기반으로 sizes 재계산 + 0ms 지연 재적용(QTimer.singleShot)
 
 Existing features:
 - Category → Step Tree(좌측), Category 우클릭 메뉴(카테고리 rename/delete/move up/down, 해당 카테고리에 step 추가)
@@ -21,6 +19,7 @@ Existing features:
 - Viewer: Zoom wheel, Pan drag, Draw mode(shift 직선), pen color/width, Clear Lines(confirm)
 - Page fields: stock name, ticker(복사 버튼), image caption overlay(멀티라인, hover/click 확장/축소)
 - Description: checklist 4문항 + note(HTML), free text(HTML)
+- (UX) Global Ideas 패널 (Ideas 버튼 토글, HTML 저장, Clear Ideas 확인창)
 
 Dependencies:
   pip install PyQt5
@@ -93,7 +92,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
 )
 
-APP_TITLE = "Trader Chart Note (v0.3.7)"
+APP_TITLE = "Trader Chart Note (v0.3.8)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -502,7 +501,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> bool:
-        self.data["version"] = "0.3.7"
+        self.data["version"] = "0.3.8"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -543,7 +542,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.3.7",
+            "version": "0.3.8",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -1367,8 +1366,13 @@ class MainWindow(QMainWindow):
 
         self.notes_ideas_splitter.addWidget(notes_left)
         self.notes_ideas_splitter.addWidget(self.ideas_panel)
-        self.notes_ideas_splitter.setStretchFactor(0, 1)
-        self.notes_ideas_splitter.setStretchFactor(1, 0)
+
+        # v0.3.8 FIX: splitter 동작 안정화 (0폭 고정 방지)
+        self.notes_ideas_splitter.setChildrenCollapsible(False)
+        self.notes_ideas_splitter.setCollapsible(0, False)
+        self.notes_ideas_splitter.setCollapsible(1, True)
+        self.notes_ideas_splitter.setStretchFactor(0, 3)
+        self.notes_ideas_splitter.setStretchFactor(1, 1)
 
         text_layout.addWidget(fmt_row)
         text_layout.addWidget(self.notes_ideas_splitter, 1)
@@ -1458,17 +1462,26 @@ class MainWindow(QMainWindow):
     def _on_toggle_ideas(self, checked: bool) -> None:
         self._set_global_ideas_visible(checked, persist=True)
 
+    def _apply_ideas_split_sizes(self, visible: bool) -> None:
+        """Ideas 패널 토글 시 splitter 사이즈가 0에 박히지 않도록 현재 폭 기준으로 재계산."""
+        total = max(1, self.notes_ideas_splitter.width())
+        if visible:
+            right = max(320, min(520, int(total * 0.34)))  # 320~520, 전체의 약 1/3
+            left = max(1, total - right)
+            self.notes_ideas_splitter.setSizes([left, right])
+        else:
+            self.notes_ideas_splitter.setSizes([total, 0])
+
     def _set_global_ideas_visible(self, visible: bool, persist: bool = True) -> None:
         self.ideas_panel.setVisible(bool(visible))
+
         self.btn_ideas.blockSignals(True)
         self.btn_ideas.setChecked(bool(visible))
         self.btn_ideas.blockSignals(False)
 
-        # splitter sizing: when hidden -> all to left; when shown -> allocate reasonable width
-        if visible:
-            self.notes_ideas_splitter.setSizes([900, 420])
-        else:
-            self.notes_ideas_splitter.setSizes([1, 0])
+        # v0.3.8 FIX: 레이아웃 타이밍 이슈로 setSizes가 씹히는 경우를 방지하기 위해 0ms 지연 재적용
+        self._apply_ideas_split_sizes(bool(visible))
+        QTimer.singleShot(0, lambda: self._apply_ideas_split_sizes(bool(visible)))
 
         if persist:
             self.db.ui_state["global_ideas_visible"] = bool(visible)
