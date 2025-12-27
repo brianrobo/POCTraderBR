@@ -6,10 +6,22 @@ Version: 0.4.3  (2025-12-27)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
 Release Notes (v0.4.3):
-- (UX) Description/Checklist/Ideas Rich Text 강조에 "글자색" 기능 추가
-  - Red / Blue / Yellow / Auto(기본색) 버튼 추가 (B/I/U 옆)
-  - 선택 영역이 있으면 선택 영역에만 적용, 없으면 이후 입력부터 적용
-  - HTML 저장/로드 기반이므로 재시작 후에도 유지
+- (UX) Rich Text 강조 기능에 글자색 추가: Red/Blue/Yellow (+ Default/Black)
+  - Description + Checklist 4 notes + Global Ideas에 적용
+  - 활성 텍스트 박스(포커스) 기준 적용
+  - 커서 위치의 현재 색상에 따라 버튼 상태 동기화
+- (UX) Splitter 위치 저장/복원 강화
+  - page_splitter(Image/Text) sizes 저장/복원: ui_state["page_splitter_sizes"]
+  - notes_ideas_splitter(Notes/Ideas) sizes 저장/복원: ui_state["notes_splitter_sizes"]
+  - 토글(Notes/Ideas OFF) 직전 마지막 위치 저장 후 ON 시 복원
+  - 앱 재실행 후에도 마지막 위치 복원
+
+Release Notes (v0.4.2):
+- (UX) Description 패널(Checklist + Description 텍스트)을 숨김/표시할 수 있는 토글 버튼 추가
+  - 버튼은 이미지 뷰(차트) 영역에 플로팅으로 배치
+  - Description OFF + Ideas OFF 인 경우 우측 텍스트 영역을 자동으로 접어 차트 영역을 최대화
+  - ui_state["desc_visible"]로 상태 저장/복원
+- (UX) Global Ideas의 "Clear Ideas" 버튼/기능 제거 유지(v0.4.1)
 
 Existing features:
 - Category → Step Tree(좌측), Category/Step Drag & Drop
@@ -17,12 +29,9 @@ Existing features:
   - Category: reorder (drop above/below only)
   - Drag guide label + category highlight
 - Rich Text formatting toolbar (Bold/Italic/Underline)
-  - Description + Checklist 4 notes + Global Ideas에 적용
   - Ctrl+B / Ctrl+I / Ctrl+U
 - Description/Checklist/Ideas HTML 저장/로드(plain text 하위호환)
 - Safe JSON save (WinError 5 대응)
-- (UX) Description 패널(Checklist + Description 텍스트) 숨김/표시 토글(이미지 뷰 플로팅)
-  - Description OFF + Ideas OFF 인 경우 우측 텍스트 영역 자동 접기
 
 Dependencies:
   pip install PyQt5
@@ -105,6 +114,12 @@ DEFAULT_CHECK_QUESTIONS = [
     "Q. 그렇지 않다면 지지선, 깨지말아야할 선은 무엇인가?",
     "Q. 돌아서는 구간을 찾을 수 있는가?",
 ]
+
+# Text color presets
+COLOR_DEFAULT = "#222222"
+COLOR_RED = "#FF3C3C"
+COLOR_BLUE = "#2D6BFF"
+COLOR_YELLOW = "#FFD400"
 
 
 def _now_epoch() -> int:
@@ -581,7 +596,7 @@ def _normalize_strokes(raw: Any) -> Strokes:
         out: Strokes = []
         for s in raw:
             try:
-                color = str(s.get("color", "#FF3C3C"))
+                color = str(s.get("color", COLOR_RED))
                 width = float(s.get("width", 3.0))
                 pts = s.get("points", [])
                 if not isinstance(pts, list):
@@ -596,7 +611,7 @@ def _normalize_strokes(raw: Any) -> Strokes:
         for stroke in raw:
             if not isinstance(stroke, list):
                 continue
-            out2.append({"color": "#FF3C3C", "width": 3.0, "points": stroke})
+            out2.append({"color": COLOR_RED, "width": 3.0, "points": stroke})
         return out2
 
     return []
@@ -669,6 +684,8 @@ class NoteDB:
         # ensure keys
         self.ui_state.setdefault("global_ideas_visible", False)
         self.ui_state.setdefault("desc_visible", True)
+        self.ui_state.setdefault("page_splitter_sizes", None)
+        self.ui_state.setdefault("notes_splitter_sizes", None)
 
         self.steps = self._parse_steps(self.data.get("steps", []))
         if not self.steps:
@@ -736,6 +753,8 @@ class NoteDB:
             "ui_state": {
                 "global_ideas_visible": False,
                 "desc_visible": True,
+                "page_splitter_sizes": None,
+                "notes_splitter_sizes": None,
             },
             "category_order": ["General"],
             "global_ideas": "",
@@ -949,14 +968,14 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._draw_mode: bool = False
         self._is_drawing: bool = False
 
-        self._pen_color = QColor("#FF3C3C")
+        self._pen_color = QColor(COLOR_RED)
         self._pen_width = 3.0
 
         self._current_path: Optional[QPainterPath] = None
         self._current_item: Optional[QGraphicsPathItem] = None
         self._current_points: List[List[float]] = []
         self._stroke_start: Optional[QPointF] = None
-        self._stroke_color_hex: str = "#FF3C3C"
+        self._stroke_color_hex: str = COLOR_RED
         self._stroke_width: float = 3.0
 
         self._strokes: Strokes = []
@@ -967,14 +986,14 @@ class ZoomPanAnnotateView(QGraphicsView):
     def set_pen(self, color_hex: str, width: float) -> None:
         c = QColor(color_hex)
         if not c.isValid():
-            c = QColor("#FF3C3C")
+            c = QColor(COLOR_RED)
         self._pen_color = c
         self._pen_width = float(width)
 
     def _make_pen(self, color_hex: str, width: float) -> QPen:
         c = QColor(color_hex)
         if not c.isValid():
-            c = QColor("#FF3C3C")
+            c = QColor(COLOR_RED)
         pen = QPen(c, float(width))
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
@@ -1074,7 +1093,7 @@ class ZoomPanAnnotateView(QGraphicsView):
             pts = s.get("points", [])
             if not isinstance(pts, list) or len(pts) < 2:
                 continue
-            color = str(s.get("color", "#FF3C3C"))
+            color = str(s.get("color", COLOR_RED))
             width = float(s.get("width", 3.0))
 
             path = QPainterPath(QPointF(pts[0][0], pts[0][1]))
@@ -1230,9 +1249,10 @@ class MainWindow(QMainWindow):
 
         self._active_rich_edit: Optional[QTextEdit] = None
 
-        # Description visible state
+        # v0.4.2: Description visible state
         self._desc_visible: bool = bool(self.db.ui_state.get("desc_visible", True))
         self._page_split_prev_sizes: Optional[List[int]] = None
+        self._notes_split_prev_sizes: Optional[List[int]] = None
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -1244,7 +1264,13 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_annotate_overlay()
 
+        # Splitter moved save hooks
+        self.page_splitter.splitterMoved.connect(self._on_page_splitter_moved)
+        self.notes_ideas_splitter.splitterMoved.connect(self._on_notes_splitter_moved)
+
         self._load_ui_state_or_defaults()
+        self._apply_splitter_sizes_from_state()
+
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
         self._load_global_ideas_to_ui()
@@ -1264,12 +1290,76 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+I"), self, activated=lambda: self.btn_fmt_italic.toggle())
         QShortcut(QKeySequence("Ctrl+U"), self, activated=lambda: self.btn_fmt_underline.toggle())
 
+        # After init, ensure layout is consistent with states
+        self._update_text_area_layout()
+
     def closeEvent(self, event) -> None:
         try:
             self._flush_page_fields_to_model_and_save()
         except Exception:
             pass
         super().closeEvent(event)
+
+    # ---------------- Splitter persistence helpers ----------------
+    def _is_valid_splitter_sizes(self, v: Any) -> bool:
+        return (
+            isinstance(v, list)
+            and len(v) == 2
+            and all(isinstance(x, int) for x in v)
+            and v[0] >= 0 and v[1] >= 0
+        )
+
+    def _remember_page_splitter_sizes(self) -> None:
+        sizes = self.page_splitter.sizes()
+        if self._is_valid_splitter_sizes(sizes):
+            self._page_split_prev_sizes = list(sizes)
+            self.db.ui_state["page_splitter_sizes"] = list(sizes)
+
+    def _remember_notes_splitter_sizes(self) -> None:
+        sizes = self.notes_ideas_splitter.sizes()
+        if self._is_valid_splitter_sizes(sizes):
+            self._notes_split_prev_sizes = list(sizes)
+            self.db.ui_state["notes_splitter_sizes"] = list(sizes)
+
+    def _on_page_splitter_moved(self, pos: int, index: int) -> None:
+        if self._loading_ui:
+            return
+        if not self.text_container.isVisible():
+            return
+        self._remember_page_splitter_sizes()
+        self._save_db_with_warning()
+
+    def _on_notes_splitter_moved(self, pos: int, index: int) -> None:
+        if self._loading_ui:
+            return
+        # meaningful when both visible
+        if not self.notes_left.isVisible():
+            return
+        if not self.ideas_panel.isVisible():
+            return
+        self._remember_notes_splitter_sizes()
+        self._save_db_with_warning()
+
+    def _apply_splitter_sizes_from_state(self) -> None:
+        self._loading_ui = True
+        try:
+            ps = self.db.ui_state.get("page_splitter_sizes")
+            if self._is_valid_splitter_sizes(ps):
+                self._page_split_prev_sizes = list(ps)
+                try:
+                    self.page_splitter.setSizes(ps)
+                except Exception:
+                    pass
+
+            ns = self.db.ui_state.get("notes_splitter_sizes")
+            if self._is_valid_splitter_sizes(ns):
+                self._notes_split_prev_sizes = list(ns)
+                try:
+                    self.notes_ideas_splitter.setSizes(ns)
+                except Exception:
+                    pass
+        finally:
+            self._loading_ui = False
 
     # ---------------- UI ----------------
     def _build_ui(self) -> None:
@@ -1464,46 +1554,46 @@ class MainWindow(QMainWindow):
         self.btn_fmt_italic.toggled.connect(lambda v: self._apply_format(italic=v))
         self.btn_fmt_underline.toggled.connect(lambda v: self._apply_format(underline=v))
 
-        # ----- v0.4.3: Color buttons (Auto/Red/Blue/Yellow) -----
-        self.btn_color_auto = QToolButton()
-        self.btn_color_auto.setText("A")
-        self.btn_color_auto.setToolTip("Text color: Auto (default)")
-        self.btn_color_auto.setCheckable(True)
-        self.btn_color_auto.setFixedSize(28, 26)
-        self.btn_color_auto.setStyleSheet("font-weight:700;")
-
-        self.btn_color_red = QToolButton()
-        self.btn_color_red.setText("R")
-        self.btn_color_red.setToolTip("Text color: Red")
-        self.btn_color_red.setCheckable(True)
-        self.btn_color_red.setFixedSize(28, 26)
-        self.btn_color_red.setStyleSheet("font-weight:700; color:#FF3C3C;")
-
-        self.btn_color_blue = QToolButton()
-        self.btn_color_blue.setText("B")
-        self.btn_color_blue.setToolTip("Text color: Blue")
-        self.btn_color_blue.setCheckable(True)
-        self.btn_color_blue.setFixedSize(28, 26)
-        self.btn_color_blue.setStyleSheet("font-weight:700; color:#2E7DFF;")
-
-        self.btn_color_yellow = QToolButton()
-        self.btn_color_yellow.setText("Y")
-        self.btn_color_yellow.setToolTip("Text color: Yellow")
-        self.btn_color_yellow.setCheckable(True)
-        self.btn_color_yellow.setFixedSize(28, 26)
-        self.btn_color_yellow.setStyleSheet("font-weight:700; color:#C9A400;")
-
+        # ---- v0.4.3: color buttons (exclusive) ----
         self._color_group = QButtonGroup(self)
         self._color_group.setExclusive(True)
-        for b in [self.btn_color_auto, self.btn_color_red, self.btn_color_blue, self.btn_color_yellow]:
-            self._color_group.addButton(b)
 
-        self.btn_color_auto.setChecked(True)
+        def _mk_color_btn(text: str, color_hex: str, tip: str) -> QToolButton:
+            b = QToolButton()
+            b.setText(text)
+            b.setCheckable(True)
+            b.setFixedSize(28, 26)
+            b.setToolTip(tip)
+            # show color as background (yellow needs border for visibility)
+            border = "1px solid #777" if color_hex.upper() == COLOR_YELLOW else "1px solid transparent"
+            b.setStyleSheet(f"""
+                QToolButton {{
+                    background: {color_hex};
+                    border: {border};
+                    border-radius: 4px;
+                    color: #111;
+                    font-weight: 700;
+                }}
+                QToolButton:checked {{
+                    border: 2px solid #111;
+                }}
+            """)
+            return b
 
-        self.btn_color_auto.toggled.connect(lambda v: v and self._apply_format(color_hex="AUTO"))
-        self.btn_color_red.toggled.connect(lambda v: v and self._apply_format(color_hex="#FF3C3C"))
-        self.btn_color_blue.toggled.connect(lambda v: v and self._apply_format(color_hex="#2E7DFF"))
-        self.btn_color_yellow.toggled.connect(lambda v: v and self._apply_format(color_hex="#FFD400"))
+        self.btn_col_default = _mk_color_btn("A", COLOR_DEFAULT, "Text Color: Default")
+        self.btn_col_red = _mk_color_btn("R", COLOR_RED, "Text Color: Red")
+        self.btn_col_blue = _mk_color_btn("B", COLOR_BLUE, "Text Color: Blue")
+        self.btn_col_yellow = _mk_color_btn("Y", COLOR_YELLOW, "Text Color: Yellow")
+
+        self._color_group.addButton(self.btn_col_default, 0)
+        self._color_group.addButton(self.btn_col_red, 1)
+        self._color_group.addButton(self.btn_col_blue, 2)
+        self._color_group.addButton(self.btn_col_yellow, 3)
+
+        self.btn_col_default.toggled.connect(lambda v: v and self._apply_text_color(COLOR_DEFAULT))
+        self.btn_col_red.toggled.connect(lambda v: v and self._apply_text_color(COLOR_RED))
+        self.btn_col_blue.toggled.connect(lambda v: v and self._apply_text_color(COLOR_BLUE))
+        self.btn_col_yellow.toggled.connect(lambda v: v and self._apply_text_color(COLOR_YELLOW))
 
         self.btn_ideas = QToolButton()
         self.btn_ideas.setText("Ideas")
@@ -1515,12 +1605,11 @@ class MainWindow(QMainWindow):
         fmt_row_l.addWidget(self.btn_fmt_bold)
         fmt_row_l.addWidget(self.btn_fmt_italic)
         fmt_row_l.addWidget(self.btn_fmt_underline)
-
-        fmt_row_l.addWidget(self.btn_color_auto)
-        fmt_row_l.addWidget(self.btn_color_red)
-        fmt_row_l.addWidget(self.btn_color_blue)
-        fmt_row_l.addWidget(self.btn_color_yellow)
-
+        fmt_row_l.addSpacing(6)
+        fmt_row_l.addWidget(self.btn_col_default)
+        fmt_row_l.addWidget(self.btn_col_red)
+        fmt_row_l.addWidget(self.btn_col_blue)
+        fmt_row_l.addWidget(self.btn_col_yellow)
         fmt_row_l.addStretch(1)
         fmt_row_l.addWidget(self.btn_ideas)
 
@@ -1546,7 +1635,7 @@ class MainWindow(QMainWindow):
             self.chk_boxes.append(cb)
 
             note = QTextEdit()
-            note.setPlaceholderText("간단 설명을 입력하세요... (서식: Bold/Italic/Underline/Color 가능)")
+            note.setPlaceholderText("간단 설명을 입력하세요... (서식/색상 가능)")
             note.setFixedHeight(54)
             note.textChanged.connect(self._on_page_field_changed)
             note.installEventFilter(self)
@@ -1557,7 +1646,7 @@ class MainWindow(QMainWindow):
             chk_layout.addWidget(note)
 
         self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요... (서식: Bold/Italic/Underline/Color 가능)")
+        self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요... (서식/색상 가능)")
         self.text_edit.textChanged.connect(self._on_page_field_changed)
         self.text_edit.installEventFilter(self)
         self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
@@ -1588,11 +1677,10 @@ class MainWindow(QMainWindow):
 
         self.lbl_ideas = QLabel("Global Ideas")
         self.lbl_ideas.setStyleSheet("font-weight: 700;")
-
         ideas_header_l.addWidget(self.lbl_ideas, 1)
 
         self.edit_global_ideas = QTextEdit()
-        self.edit_global_ideas.setPlaceholderText("전역적으로 적용할 아이디어를 여기에 작성하세요... (서식 가능)")
+        self.edit_global_ideas.setPlaceholderText("전역적으로 적용할 아이디어를 여기에 작성하세요... (서식/색상 가능)")
         self.edit_global_ideas.textChanged.connect(self._on_page_field_changed)
         self.edit_global_ideas.installEventFilter(self)
         self.edit_global_ideas.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
@@ -1692,13 +1780,7 @@ class MainWindow(QMainWindow):
         if snd is not None and snd is self._active_rich_edit:
             self._sync_format_buttons()
 
-    def _apply_format(
-        self,
-        bold: Optional[bool] = None,
-        italic: Optional[bool] = None,
-        underline: Optional[bool] = None,
-        color_hex: Optional[str] = None,
-    ) -> None:
+    def _apply_format(self, bold: Optional[bool] = None, italic: Optional[bool] = None, underline: Optional[bool] = None) -> None:
         ed = self._active_rich_edit
         if ed is None:
             return
@@ -1711,13 +1793,26 @@ class MainWindow(QMainWindow):
         if underline is not None:
             fmt.setFontUnderline(bool(underline))
 
-        if color_hex is not None:
-            if str(color_hex).upper() == "AUTO":
-                fmt.clearForeground()
-            else:
-                c = QColor(str(color_hex))
-                if c.isValid():
-                    fmt.setForeground(QBrush(c))
+        cur = ed.textCursor()
+        if cur.hasSelection():
+            cur.mergeCharFormat(fmt)
+            ed.mergeCurrentCharFormat(fmt)
+        else:
+            ed.mergeCurrentCharFormat(fmt)
+
+        ed.setFocus(Qt.MouseFocusReason)
+        self._on_page_field_changed()
+
+    def _apply_text_color(self, color_hex: str) -> None:
+        ed = self._active_rich_edit
+        if ed is None:
+            return
+        c = QColor(color_hex)
+        if not c.isValid():
+            c = QColor(COLOR_DEFAULT)
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QBrush(c))
 
         cur = ed.textCursor()
         if cur.hasSelection():
@@ -1728,7 +1823,6 @@ class MainWindow(QMainWindow):
 
         ed.setFocus(Qt.MouseFocusReason)
         self._on_page_field_changed()
-        self._sync_format_buttons()
 
     def _sync_format_buttons(self) -> None:
         ed = self._active_rich_edit
@@ -1750,32 +1844,36 @@ class MainWindow(QMainWindow):
         self.btn_fmt_italic.blockSignals(False)
         self.btn_fmt_underline.blockSignals(False)
 
-        # ---- v0.4.3: color sync ----
-        try:
-            br = cf.foreground().color()
-            hexv = br.name().upper() if br.isValid() else ""
-        except Exception:
-            hexv = ""
+        # Color sync
+        col = cf.foreground().color() if cf.foreground().style() != Qt.NoBrush else QColor(COLOR_DEFAULT)
+        if not col.isValid():
+            col = QColor(COLOR_DEFAULT)
+        col_hex = col.name().upper()
 
-        def _set(btn, on):
+        def _set_color_checked(btn: QToolButton, on: bool) -> None:
             btn.blockSignals(True)
             btn.setChecked(on)
             btn.blockSignals(False)
 
-        if hexv == "#FF3C3C":
-            _set(self.btn_color_red, True)
-        elif hexv == "#2E7DFF":
-            _set(self.btn_color_blue, True)
-        elif hexv == "#FFD400":
-            _set(self.btn_color_yellow, True)
+        # Match by exact preset; otherwise clear all checks (default A)
+        if col_hex == QColor(COLOR_RED).name().upper():
+            _set_color_checked(self.btn_col_red, True)
+        elif col_hex == QColor(COLOR_BLUE).name().upper():
+            _set_color_checked(self.btn_col_blue, True)
+        elif col_hex == QColor(COLOR_YELLOW).name().upper():
+            _set_color_checked(self.btn_col_yellow, True)
         else:
-            _set(self.btn_color_auto, True)
+            _set_color_checked(self.btn_col_default, True)
 
     # ---------------- Ideas panel toggle ----------------
     def _on_toggle_ideas(self, checked: bool) -> None:
         self._set_global_ideas_visible(checked, persist=True)
 
     def _set_global_ideas_visible(self, visible: bool, persist: bool = True) -> None:
+        # turning off: remember split ratio if both were visible
+        if (not visible) and self.notes_left.isVisible() and self.ideas_panel.isVisible():
+            self._remember_notes_splitter_sizes()
+
         self.ideas_panel.setVisible(bool(visible))
 
         self.btn_ideas.blockSignals(True)
@@ -1788,11 +1886,15 @@ class MainWindow(QMainWindow):
             self.db.ui_state["global_ideas_visible"] = bool(visible)
             self._save_db_with_warning()
 
-    # ---------------- Description toggle ----------------
+    # ---------------- v0.4.2 Description toggle ----------------
     def _on_toggle_desc(self, checked: bool) -> None:
         self._set_desc_visible(bool(checked), persist=True)
 
     def _set_desc_visible(self, visible: bool, persist: bool = True) -> None:
+        # turning off: remember split ratio if both were visible
+        if (not visible) and self.notes_left.isVisible() and self.ideas_panel.isVisible():
+            self._remember_notes_splitter_sizes()
+
         self._desc_visible = bool(visible)
         self.notes_left.setVisible(self._desc_visible)
 
@@ -1809,15 +1911,23 @@ class MainWindow(QMainWindow):
 
     def _collapse_text_container(self, collapse: bool) -> None:
         if collapse:
+            # before hiding: store current splitter position
             if self.text_container.isVisible():
-                self._page_split_prev_sizes = list(self.page_splitter.sizes())
+                self._remember_page_splitter_sizes()
+                self._save_db_with_warning()
+
             self.text_container.setVisible(False)
             total = max(1, self.page_splitter.width())
             self.page_splitter.setSizes([total, 0])
         else:
             if not self.text_container.isVisible():
                 self.text_container.setVisible(True)
-            if self._page_split_prev_sizes and len(self._page_split_prev_sizes) == 2:
+
+            # restore priority: ui_state > runtime prev > default
+            ps = self.db.ui_state.get("page_splitter_sizes")
+            if self._is_valid_splitter_sizes(ps):
+                self.page_splitter.setSizes(ps)
+            elif self._page_split_prev_sizes and len(self._page_split_prev_sizes) == 2:
                 self.page_splitter.setSizes(self._page_split_prev_sizes)
             else:
                 self.page_splitter.setSizes([720, 680])
@@ -1840,11 +1950,19 @@ class MainWindow(QMainWindow):
 
         total = max(1, self.notes_ideas_splitter.width())
         if desc_vis and ideas_vis:
-            right = max(320, min(520, int(total * 0.34)))
-            left = max(1, total - right)
-            self.notes_ideas_splitter.setSizes([left, right])
+            ns = self.db.ui_state.get("notes_splitter_sizes")
+            if self._is_valid_splitter_sizes(ns):
+                self.notes_ideas_splitter.setSizes(ns)
+            elif self._notes_split_prev_sizes and len(self._notes_split_prev_sizes) == 2:
+                self.notes_ideas_splitter.setSizes(self._notes_split_prev_sizes)
+            else:
+                right = max(320, min(520, int(total * 0.34)))
+                left = max(1, total - right)
+                self.notes_ideas_splitter.setSizes([left, right])
+
         elif desc_vis and (not ideas_vis):
             self.notes_ideas_splitter.setSizes([total, 0])
+
         elif (not desc_vis) and ideas_vis:
             self.notes_ideas_splitter.setSizes([0, total])
 
@@ -2047,6 +2165,12 @@ class MainWindow(QMainWindow):
         self.db.ui_state["current_page_index"] = self.current_page_index
         self.db.ui_state["desc_visible"] = bool(self._desc_visible)
         self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
+
+        # sizes
+        if self.text_container.isVisible():
+            self._remember_page_splitter_sizes()
+        if self.notes_left.isVisible() and self.ideas_panel.isVisible():
+            self._remember_notes_splitter_sizes()
 
     # ---------------- Tree: category -> steps ----------------
     def _refresh_steps_tree(self, select_current: bool = False) -> None:
@@ -2599,7 +2723,7 @@ class MainWindow(QMainWindow):
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
-    # ---------------- Overlay / annotate ----------------
+    # ---------------- Overlay / other parts ----------------
     def _build_annotate_overlay(self) -> None:
         vp = self.image_viewer.viewport()
 
@@ -2616,7 +2740,7 @@ class MainWindow(QMainWindow):
         self.btn_anno_toggle.setFixedSize(34, 30)
         self.btn_anno_toggle.clicked.connect(self._open_annotate_panel)
 
-        # Description toggle floating button (image view side)
+        # v0.4.2: Description toggle floating button (image view side)
         self.btn_desc_toggle = QToolButton(vp)
         self.btn_desc_toggle.setText("Notes✓" if self._desc_visible else "Notes")
         self.btn_desc_toggle.setToolTip("Show/Hide Description & Checklist panel")
@@ -2677,8 +2801,8 @@ class MainWindow(QMainWindow):
         color_l.setSpacing(6)
         color_l.addWidget(QLabel("Color"))
         self.combo_color = QComboBox(color_row)
-        self.combo_color.addItem("Red", "#FF3C3C")
-        self.combo_color.addItem("Yellow", "#FFD400")
+        self.combo_color.addItem("Red", COLOR_RED)
+        self.combo_color.addItem("Yellow", COLOR_YELLOW)
         self.combo_color.addItem("Cyan", "#00D5FF")
         self.combo_color.addItem("White", "#FFFFFF")
         self.combo_color.currentIndexChanged.connect(self._on_pen_changed)
@@ -2711,7 +2835,7 @@ class MainWindow(QMainWindow):
             "• Alt+←/→: Prev/Next\n"
             "• Ctrl+N: Add page, Ctrl+S: Save\n"
             "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)\n"
-            "• Color buttons: A/R/B/Y (active text box)\n"
+            "• Color buttons: Default/Red/Blue/Yellow\n"
             "• Step Tree: Drag & Drop (Step move / Category reorder)\n"
             "  - Category drag: drop above/below only\n"
             "• Notes(차트 상단): Description 패널 숨김/표시",
@@ -2751,8 +2875,6 @@ class MainWindow(QMainWindow):
 
             # place Notes toggle to the left of panel (top aligned)
             self.btn_desc_toggle.move(max(margin, panel_x - margin - self.btn_desc_toggle.width()), margin)
-
-            # annotate toggle hidden already
         else:
             # top-right stack: annotate toggle then notes toggle
             self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
@@ -2768,7 +2890,6 @@ class MainWindow(QMainWindow):
         if self.anno_panel.isVisible():
             cap_right_limit = self.anno_panel.x() - margin
         else:
-            # use the leftmost x among the two buttons
             cap_right_limit = min(self.btn_anno_toggle.x(), self.btn_desc_toggle.x()) - margin
 
         cap_w = min(cap_max, max(cap_min, cap_right_limit - margin))
