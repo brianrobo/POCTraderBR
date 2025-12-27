@@ -2,15 +2,14 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.4.2  (2025-12-26)
+Version: 0.4.3  (2025-12-27)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.4.2):
-- (UX) Description 패널(Checklist + Description 텍스트)을 숨김/표시할 수 있는 토글 버튼 추가
-  - 버튼은 이미지 뷰(차트) 영역에 플로팅으로 배치
-  - Description OFF + Ideas OFF 인 경우 우측 텍스트 영역을 자동으로 접어 차트 영역을 최대화
-  - ui_state["desc_visible"]로 상태 저장/복원
-- (UX) Global Ideas의 "Clear Ideas" 버튼/기능 제거 유지(v0.4.1)
+Release Notes (v0.4.3):
+- (UX) Description/Checklist/Ideas Rich Text 강조에 "글자색" 기능 추가
+  - Red / Blue / Yellow / Auto(기본색) 버튼 추가 (B/I/U 옆)
+  - 선택 영역이 있으면 선택 영역에만 적용, 없으면 이후 입력부터 적용
+  - HTML 저장/로드 기반이므로 재시작 후에도 유지
 
 Existing features:
 - Category → Step Tree(좌측), Category/Step Drag & Drop
@@ -22,6 +21,8 @@ Existing features:
   - Ctrl+B / Ctrl+I / Ctrl+U
 - Description/Checklist/Ideas HTML 저장/로드(plain text 하위호환)
 - Safe JSON save (WinError 5 대응)
+- (UX) Description 패널(Checklist + Description 텍스트) 숨김/표시 토글(이미지 뷰 플로팅)
+  - Description OFF + Ideas OFF 인 경우 우측 텍스트 영역 자동 접기
 
 Dependencies:
   pip install PyQt5
@@ -91,9 +92,10 @@ from PyQt5.QtWidgets import (
     QMenu,
     QPlainTextEdit,
     QAbstractItemView,
+    QButtonGroup,
 )
 
-APP_TITLE = "Trader Chart Note (v0.4.2)"
+APP_TITLE = "Trader Chart Note (v0.4.3)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -686,7 +688,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> bool:
-        self.data["version"] = "0.4.2"
+        self.data["version"] = "0.4.3"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -727,7 +729,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.4.2",
+            "version": "0.4.3",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -1228,7 +1230,7 @@ class MainWindow(QMainWindow):
 
         self._active_rich_edit: Optional[QTextEdit] = None
 
-        # v0.4.2: Description visible state
+        # Description visible state
         self._desc_visible: bool = bool(self.db.ui_state.get("desc_visible", True))
         self._page_split_prev_sizes: Optional[List[int]] = None
 
@@ -1462,6 +1464,47 @@ class MainWindow(QMainWindow):
         self.btn_fmt_italic.toggled.connect(lambda v: self._apply_format(italic=v))
         self.btn_fmt_underline.toggled.connect(lambda v: self._apply_format(underline=v))
 
+        # ----- v0.4.3: Color buttons (Auto/Red/Blue/Yellow) -----
+        self.btn_color_auto = QToolButton()
+        self.btn_color_auto.setText("A")
+        self.btn_color_auto.setToolTip("Text color: Auto (default)")
+        self.btn_color_auto.setCheckable(True)
+        self.btn_color_auto.setFixedSize(28, 26)
+        self.btn_color_auto.setStyleSheet("font-weight:700;")
+
+        self.btn_color_red = QToolButton()
+        self.btn_color_red.setText("R")
+        self.btn_color_red.setToolTip("Text color: Red")
+        self.btn_color_red.setCheckable(True)
+        self.btn_color_red.setFixedSize(28, 26)
+        self.btn_color_red.setStyleSheet("font-weight:700; color:#FF3C3C;")
+
+        self.btn_color_blue = QToolButton()
+        self.btn_color_blue.setText("B")
+        self.btn_color_blue.setToolTip("Text color: Blue")
+        self.btn_color_blue.setCheckable(True)
+        self.btn_color_blue.setFixedSize(28, 26)
+        self.btn_color_blue.setStyleSheet("font-weight:700; color:#2E7DFF;")
+
+        self.btn_color_yellow = QToolButton()
+        self.btn_color_yellow.setText("Y")
+        self.btn_color_yellow.setToolTip("Text color: Yellow")
+        self.btn_color_yellow.setCheckable(True)
+        self.btn_color_yellow.setFixedSize(28, 26)
+        self.btn_color_yellow.setStyleSheet("font-weight:700; color:#C9A400;")
+
+        self._color_group = QButtonGroup(self)
+        self._color_group.setExclusive(True)
+        for b in [self.btn_color_auto, self.btn_color_red, self.btn_color_blue, self.btn_color_yellow]:
+            self._color_group.addButton(b)
+
+        self.btn_color_auto.setChecked(True)
+
+        self.btn_color_auto.toggled.connect(lambda v: v and self._apply_format(color_hex="AUTO"))
+        self.btn_color_red.toggled.connect(lambda v: v and self._apply_format(color_hex="#FF3C3C"))
+        self.btn_color_blue.toggled.connect(lambda v: v and self._apply_format(color_hex="#2E7DFF"))
+        self.btn_color_yellow.toggled.connect(lambda v: v and self._apply_format(color_hex="#FFD400"))
+
         self.btn_ideas = QToolButton()
         self.btn_ideas.setText("Ideas")
         self.btn_ideas.setToolTip("Toggle Global Ideas panel (전역 아이디어)")
@@ -1472,6 +1515,12 @@ class MainWindow(QMainWindow):
         fmt_row_l.addWidget(self.btn_fmt_bold)
         fmt_row_l.addWidget(self.btn_fmt_italic)
         fmt_row_l.addWidget(self.btn_fmt_underline)
+
+        fmt_row_l.addWidget(self.btn_color_auto)
+        fmt_row_l.addWidget(self.btn_color_red)
+        fmt_row_l.addWidget(self.btn_color_blue)
+        fmt_row_l.addWidget(self.btn_color_yellow)
+
         fmt_row_l.addStretch(1)
         fmt_row_l.addWidget(self.btn_ideas)
 
@@ -1497,7 +1546,7 @@ class MainWindow(QMainWindow):
             self.chk_boxes.append(cb)
 
             note = QTextEdit()
-            note.setPlaceholderText("간단 설명을 입력하세요... (서식: Bold/Italic/Underline 가능)")
+            note.setPlaceholderText("간단 설명을 입력하세요... (서식: Bold/Italic/Underline/Color 가능)")
             note.setFixedHeight(54)
             note.textChanged.connect(self._on_page_field_changed)
             note.installEventFilter(self)
@@ -1508,7 +1557,7 @@ class MainWindow(QMainWindow):
             chk_layout.addWidget(note)
 
         self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요... (서식: Bold/Italic/Underline 가능)")
+        self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요... (서식: Bold/Italic/Underline/Color 가능)")
         self.text_edit.textChanged.connect(self._on_page_field_changed)
         self.text_edit.installEventFilter(self)
         self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
@@ -1540,7 +1589,6 @@ class MainWindow(QMainWindow):
         self.lbl_ideas = QLabel("Global Ideas")
         self.lbl_ideas.setStyleSheet("font-weight: 700;")
 
-        # v0.4.1+ : Clear Ideas 버튼 제거
         ideas_header_l.addWidget(self.lbl_ideas, 1)
 
         self.edit_global_ideas = QTextEdit()
@@ -1644,7 +1692,13 @@ class MainWindow(QMainWindow):
         if snd is not None and snd is self._active_rich_edit:
             self._sync_format_buttons()
 
-    def _apply_format(self, bold: Optional[bool] = None, italic: Optional[bool] = None, underline: Optional[bool] = None) -> None:
+    def _apply_format(
+        self,
+        bold: Optional[bool] = None,
+        italic: Optional[bool] = None,
+        underline: Optional[bool] = None,
+        color_hex: Optional[str] = None,
+    ) -> None:
         ed = self._active_rich_edit
         if ed is None:
             return
@@ -1657,6 +1711,14 @@ class MainWindow(QMainWindow):
         if underline is not None:
             fmt.setFontUnderline(bool(underline))
 
+        if color_hex is not None:
+            if str(color_hex).upper() == "AUTO":
+                fmt.clearForeground()
+            else:
+                c = QColor(str(color_hex))
+                if c.isValid():
+                    fmt.setForeground(QBrush(c))
+
         cur = ed.textCursor()
         if cur.hasSelection():
             cur.mergeCharFormat(fmt)
@@ -1666,6 +1728,7 @@ class MainWindow(QMainWindow):
 
         ed.setFocus(Qt.MouseFocusReason)
         self._on_page_field_changed()
+        self._sync_format_buttons()
 
     def _sync_format_buttons(self) -> None:
         ed = self._active_rich_edit
@@ -1687,6 +1750,27 @@ class MainWindow(QMainWindow):
         self.btn_fmt_italic.blockSignals(False)
         self.btn_fmt_underline.blockSignals(False)
 
+        # ---- v0.4.3: color sync ----
+        try:
+            br = cf.foreground().color()
+            hexv = br.name().upper() if br.isValid() else ""
+        except Exception:
+            hexv = ""
+
+        def _set(btn, on):
+            btn.blockSignals(True)
+            btn.setChecked(on)
+            btn.blockSignals(False)
+
+        if hexv == "#FF3C3C":
+            _set(self.btn_color_red, True)
+        elif hexv == "#2E7DFF":
+            _set(self.btn_color_blue, True)
+        elif hexv == "#FFD400":
+            _set(self.btn_color_yellow, True)
+        else:
+            _set(self.btn_color_auto, True)
+
     # ---------------- Ideas panel toggle ----------------
     def _on_toggle_ideas(self, checked: bool) -> None:
         self._set_global_ideas_visible(checked, persist=True)
@@ -1704,7 +1788,7 @@ class MainWindow(QMainWindow):
             self.db.ui_state["global_ideas_visible"] = bool(visible)
             self._save_db_with_warning()
 
-    # ---------------- v0.4.2 Description toggle ----------------
+    # ---------------- Description toggle ----------------
     def _on_toggle_desc(self, checked: bool) -> None:
         self._set_desc_visible(bool(checked), persist=True)
 
@@ -2515,7 +2599,7 @@ class MainWindow(QMainWindow):
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
-    # ---------------- Overlay / other parts ----------------
+    # ---------------- Overlay / annotate ----------------
     def _build_annotate_overlay(self) -> None:
         vp = self.image_viewer.viewport()
 
@@ -2532,7 +2616,7 @@ class MainWindow(QMainWindow):
         self.btn_anno_toggle.setFixedSize(34, 30)
         self.btn_anno_toggle.clicked.connect(self._open_annotate_panel)
 
-        # v0.4.2: Description toggle floating button (image view side)
+        # Description toggle floating button (image view side)
         self.btn_desc_toggle = QToolButton(vp)
         self.btn_desc_toggle.setText("Notes✓" if self._desc_visible else "Notes")
         self.btn_desc_toggle.setToolTip("Show/Hide Description & Checklist panel")
@@ -2627,6 +2711,7 @@ class MainWindow(QMainWindow):
             "• Alt+←/→: Prev/Next\n"
             "• Ctrl+N: Add page, Ctrl+S: Save\n"
             "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)\n"
+            "• Color buttons: A/R/B/Y (active text box)\n"
             "• Step Tree: Drag & Drop (Step move / Category reorder)\n"
             "  - Category drag: drop above/below only\n"
             "• Notes(차트 상단): Description 패널 숨김/표시",
