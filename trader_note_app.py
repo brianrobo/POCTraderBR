@@ -2,18 +2,17 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.4.7  (2025-12-28)
+Version: 0.4.8  (2025-12-28)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.4.7):
-- (UX) Description/Notes 툴바 폭 축소:
-  - Highlight(배경색) 버튼/기능 제거
-  - Font Size 버튼/기능 제거
-  - Code Style 버튼/기능 제거 (미사용)
-  - 남긴 기능: Bold/Italic/Underline, Text Color(기본/빨강/파랑/노랑), Bullets/Numbered, Ideas 토글
-  - 툴바는 2줄 구성으로 유지(이미지 영역 확보)
-- (Data) 기존 notes_db.json에 남아있는 Highlight(배경색) HTML 마크업을 로드/저장 시 자동 제거
-  - background-color / background 스타일 제거 → 앱에서도 하이라이트가 더 이상 보이지 않도록 정리
+Release Notes (v0.4.8):
+- (UX) List indentation by keyboard:
+  - Tab: indent list level (sub-level)
+  - Shift+Tab: outdent list level (parent level)
+  - Applied to Description / Checklist Notes / Global Ideas
+  - Tab outside list inserts 4 spaces (configurable)
+- (UX) Keep v0.4.7 toolbar compact (no highlight/font size/code style)
+- (Data) Keep auto-stripping highlight(background-color/background) HTML on load/save
 
 Existing features:
 - Category → Step Tree(좌측), Category/Step Drag & Drop
@@ -98,7 +97,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-APP_TITLE = "Trader Chart Note (v0.4.7)"
+APP_TITLE = "Trader Chart Note (v0.4.8)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -735,7 +734,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> bool:
-        self.data["version"] = "0.4.7"
+        self.data["version"] = "0.4.8"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -776,7 +775,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.4.7",
+            "version": "0.4.8",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -1717,6 +1716,7 @@ class MainWindow(QMainWindow):
             note.textChanged.connect(self._on_page_field_changed)
             note.installEventFilter(self)
             note.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
+            note.setTabChangesFocus(False)  # IMPORTANT for Tab indentation
             self.chk_notes.append(note)
 
             chk_layout.addWidget(cb)
@@ -1727,6 +1727,7 @@ class MainWindow(QMainWindow):
         self.text_edit.textChanged.connect(self._on_page_field_changed)
         self.text_edit.installEventFilter(self)
         self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
+        self.text_edit.setTabChangesFocus(False)  # IMPORTANT for Tab indentation
 
         notes_left_l.addWidget(self.chk_group)
         notes_left_l.addWidget(self.text_edit, 1)
@@ -1761,6 +1762,7 @@ class MainWindow(QMainWindow):
         self.edit_global_ideas.textChanged.connect(self._on_page_field_changed)
         self.edit_global_ideas.installEventFilter(self)
         self.edit_global_ideas.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
+        self.edit_global_ideas.setTabChangesFocus(False)  # IMPORTANT for Tab indentation
 
         ideas_l.addWidget(ideas_header)
         ideas_l.addWidget(self.edit_global_ideas, 1)
@@ -1970,6 +1972,38 @@ class MainWindow(QMainWindow):
             _set_checked(self.btn_col_yellow, True)
         else:
             _set_checked(self.btn_col_default, True)
+
+    # ---------------- List indent/outdent (Tab / Shift+Tab) ----------------
+    def _indent_or_outdent_list(self, editor: QTextEdit, delta: int) -> bool:
+        """
+        Returns True if handled.
+        - If cursor is in a list: indent/outdent list level by delta
+        - Else: return False
+        """
+        cur = editor.textCursor()
+        lst = cur.currentList()
+        if lst is None:
+            return False
+
+        fmt = lst.format()
+        indent = int(fmt.indent())
+        new_indent = max(1, indent + int(delta))
+        if new_indent == indent:
+            return True
+
+        fmt.setIndent(new_indent)
+
+        cur.beginEditBlock()
+        try:
+            # recreate list with new indent; keeps style/numbering
+            cur.createList(fmt)
+        except Exception:
+            pass
+        cur.endEditBlock()
+
+        editor.setTextCursor(cur)
+        self._on_page_field_changed()
+        return True
 
     # ---------------- Ideas panel toggle ----------------
     def _on_toggle_ideas(self, checked: bool) -> None:
@@ -2937,6 +2971,7 @@ class MainWindow(QMainWindow):
             "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)\n"
             "• Text Color: Default/Red/Blue/Yellow\n"
             "• List: Bullet/Numbered\n"
+            "• List indent: Tab / Shift+Tab\n"
             "• Step Tree: Drag & Drop (Step move / Category reorder)\n"
             "  - Category drag: drop above/below only\n"
             "• Notes(차트 상단): Description 패널 숨김/표시",
@@ -2998,9 +3033,34 @@ class MainWindow(QMainWindow):
             self._reposition_overlay()
             return super().eventFilter(obj, event)
 
+        # Focus handling: set active editor
         if isinstance(obj, QTextEdit) and event.type() == QEvent.FocusIn:
             self._set_active_rich_edit(obj)
             return super().eventFilter(obj, event)
+
+        # Key handling: Tab / Shift+Tab list indent/outdent
+        if isinstance(obj, QTextEdit) and event.type() == QEvent.KeyPress:
+            key = event.key()
+            mods = event.modifiers()
+
+            is_tab = (key == Qt.Key_Tab)
+            is_backtab = (key == Qt.Key_Backtab) or (is_tab and bool(mods & Qt.ShiftModifier))
+
+            if is_backtab:
+                # Shift+Tab: outdent list if in list
+                if self._indent_or_outdent_list(obj, delta=-1):
+                    return True
+                # outside list: ignore
+                return True
+
+            if is_tab:
+                # Tab: indent list if in list, else insert spaces
+                if self._indent_or_outdent_list(obj, delta=+1):
+                    return True
+                # outside list => insert 4 spaces (configurable)
+                obj.textCursor().insertText("    ")
+                self._on_page_field_changed()
+                return True
 
         return super().eventFilter(obj, event)
 
