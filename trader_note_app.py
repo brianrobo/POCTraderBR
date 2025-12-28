@@ -2,26 +2,32 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.4.8  (2025-12-28)
+Version: 0.5.0  (2025-12-28)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.4.8):
-- (UX) List indentation by keyboard:
-  - Tab: indent list level (sub-level)
-  - Shift+Tab: outdent list level (parent level)
-  - Applied to Description / Checklist Notes / Global Ideas
-  - Tab outside list inserts 4 spaces (configurable)
-- (UX) Keep v0.4.7 toolbar compact (no highlight/font size/code style)
-- (Data) Keep auto-stripping highlight(background-color/background) HTML on load/save
+Release Notes (v0.5.0):
+- (UX) Dual chart image panes (A/B) stacked vertically for 비교 분석
+  - Each page can store two images + two independent annotation stroke sets
+  - Per-pane Open / Paste / Clear / Fit
+  - Per-pane caption overlay (hover/클릭 확장)
+  - Click a pane to make it "active" (only affects which overlay is interacted with)
+- (FIX) eventFilter now references viewer_a/viewer_b safely (prevents AttributeError during init)
+- (UX) List outdent rule:
+  - Shift+Tab: outdent ONLY when cursor is inside a list
+  - Outside list: let Qt default behavior happen (focus traversal 등 기본 동작)
 
 Existing features:
 - Category → Step Tree(좌측), Category/Step Drag & Drop
 - Rich Text formatting toolbar (Bold/Italic/Underline) + Ctrl+B/I/U
+- Text Color presets (Default/Red/Blue/Yellow)
+- List (Bullet/Numbered)
+- List indentation (Tab/Shift+Tab) with the rule above
 - Description/Checklist/Ideas HTML 저장/로드(plain text 하위호환)
 - Safe JSON save (WinError 5 대응)
 - 이미지 뷰: Zoom/Pan + Draw(shift 직선) + pen color/width + Clear Lines
 - Description 패널 숨김/표시(이미지 뷰 플로팅 Notes 버튼)
 - Global Ideas 패널 토글
+- Step Tree: Step move / Category reorder(위아래만)
 
 Dependencies:
   pip install PyQt5
@@ -97,7 +103,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-APP_TITLE = "Trader Chart Note (v0.4.8)"
+APP_TITLE = "Trader Chart Note (v0.5.0)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -665,12 +671,19 @@ def _normalize_checklist(raw: Any) -> Checklist:
 @dataclass
 class Page:
     id: str
-    image_path: str
-    image_caption: str
+
+    # Dual chart panes
+    image_a_path: str
+    image_b_path: str
+    image_a_caption: str
+    image_b_caption: str
+    strokes_a: Strokes
+    strokes_b: Strokes
+
+    # Notes/meta
     note_text: str
     stock_name: str
     ticker: str
-    strokes: Strokes
     checklist: Checklist
     created_at: int
     updated_at: int
@@ -734,7 +747,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> bool:
-        self.data["version"] = "0.4.8"
+        self.data["version"] = "0.5.0"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -761,12 +774,17 @@ class NoteDB:
                     "pages": [
                         {
                             "id": _uuid(),
-                            "image_path": "",
-                            "image_caption": "",
+
+                            "image_a_path": "",
+                            "image_b_path": "",
+                            "image_a_caption": "",
+                            "image_b_caption": "",
+                            "strokes_a": [],
+                            "strokes_b": [],
+
                             "note_text": "",
                             "stock_name": "",
                             "ticker": "",
-                            "strokes": [],
                             "checklist": _default_checklist(),
                             "created_at": _now_epoch(),
                             "updated_at": _now_epoch(),
@@ -775,7 +793,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.4.8",
+            "version": "0.5.0",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -796,21 +814,44 @@ class NoteDB:
             pages_raw = s.get("pages", [])
             pages: List[Page] = []
             for p in pages_raw:
-                raw_strokes = p.get("strokes", None)
-                if raw_strokes is None:
-                    raw_strokes = p.get("annotations", [])
-                strokes = _normalize_strokes(raw_strokes)
+                # Backward compatibility:
+                # - v0.4.x stored: image_path, image_caption, strokes (or annotations)
+                # - v0.5.0 stores: image_a_path/image_b_path, image_a_caption/image_b_caption, strokes_a/strokes_b
+                image_a_path = str(p.get("image_a_path", p.get("image_path", "")) or "")
+                image_b_path = str(p.get("image_b_path", "") or "")
+
+                image_a_caption = str(p.get("image_a_caption", p.get("image_caption", "")) or "")
+                image_b_caption = str(p.get("image_b_caption", "") or "")
+
+                raw_strokes_a = p.get("strokes_a", None)
+                if raw_strokes_a is None:
+                    raw_strokes_a = p.get("strokes", None)
+                if raw_strokes_a is None:
+                    raw_strokes_a = p.get("annotations", [])
+
+                raw_strokes_b = p.get("strokes_b", None)
+                if raw_strokes_b is None:
+                    raw_strokes_b = []
+
+                strokes_a = _normalize_strokes(raw_strokes_a)
+                strokes_b = _normalize_strokes(raw_strokes_b)
+
                 checklist = _normalize_checklist(p.get("checklist", None))
 
                 pages.append(
                     Page(
                         id=str(p.get("id", _uuid())),
-                        image_path=str(p.get("image_path", "")),
-                        image_caption=str(p.get("image_caption", "")),
+
+                        image_a_path=image_a_path,
+                        image_b_path=image_b_path,
+                        image_a_caption=image_a_caption,
+                        image_b_caption=image_b_caption,
+                        strokes_a=strokes_a,
+                        strokes_b=strokes_b,
+
                         note_text=str(p.get("note_text", "")),
                         stock_name=str(p.get("stock_name", "")),
                         ticker=str(p.get("ticker", "")),
-                        strokes=strokes,
                         checklist=checklist,
                         created_at=int(p.get("created_at", _now_epoch())),
                         updated_at=int(p.get("updated_at", _now_epoch())),
@@ -843,12 +884,17 @@ class NoteDB:
                     "pages": [
                         {
                             "id": pg.id,
-                            "image_path": pg.image_path,
-                            "image_caption": pg.image_caption,
+
+                            "image_a_path": pg.image_a_path,
+                            "image_b_path": pg.image_b_path,
+                            "image_a_caption": pg.image_a_caption,
+                            "image_b_caption": pg.image_b_caption,
+                            "strokes_a": pg.strokes_a,
+                            "strokes_b": pg.strokes_b,
+
                             "note_text": pg.note_text,
                             "stock_name": pg.stock_name,
                             "ticker": pg.ticker,
-                            "strokes": pg.strokes,
                             "checklist": pg.checklist,
                             "created_at": pg.created_at,
                             "updated_at": pg.updated_at,
@@ -864,12 +910,17 @@ class NoteDB:
         now = _now_epoch()
         return Page(
             id=_uuid(),
-            image_path="",
-            image_caption="",
+
+            image_a_path="",
+            image_b_path="",
+            image_a_caption="",
+            image_b_caption="",
+            strokes_a=[],
+            strokes_b=[],
+
             note_text="",
             stock_name="",
             ticker="",
-            strokes=[],
             checklist=_default_checklist(),
             created_at=now,
             updated_at=now,
@@ -1268,7 +1319,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1400, 930)
+        self.resize(1460, 960)
 
         self.db = NoteDB(DEFAULT_DB_PATH)
 
@@ -1283,6 +1334,12 @@ class MainWindow(QMainWindow):
         self._page_split_prev_sizes: Optional[List[int]] = None
         self._notes_split_prev_sizes: Optional[List[int]] = None
 
+        # FIX: prevent eventFilter crashing during init
+        self.viewer_a: Optional[ZoomPanAnnotateView] = None
+        self.viewer_b: Optional[ZoomPanAnnotateView] = None
+
+        self._active_pane: str = "A"  # "A" or "B"
+
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._flush_page_fields_to_model_and_save)
@@ -1290,8 +1347,11 @@ class MainWindow(QMainWindow):
         self._last_save_warn_ts: float = 0.0
         self._save_warn_cooldown_sec: float = 10.0
 
+        # overlay objects per pane: {"A": {...}, "B": {...}}
+        self._pane_ui: Dict[str, Dict[str, Any]] = {}
+
         self._build_ui()
-        self._build_annotate_overlay()
+        self._build_pane_overlays()
 
         # Splitter moved save hooks
         self.page_splitter.splitterMoved.connect(self._on_page_splitter_moved)
@@ -1313,11 +1373,17 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_page)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.force_save)
-        QShortcut(QKeySequence("Ctrl+V"), self.image_viewer, activated=self.paste_image_from_clipboard)
 
+        # Text formatting shortcuts (active text box)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=lambda: self.btn_fmt_bold.toggle())
         QShortcut(QKeySequence("Ctrl+I"), self, activated=lambda: self.btn_fmt_italic.toggle())
         QShortcut(QKeySequence("Ctrl+U"), self, activated=lambda: self.btn_fmt_underline.toggle())
+
+        # Viewer-specific paste shortcuts (avoid stealing paste from QTextEdit)
+        if self.viewer_a is not None:
+            QShortcut(QKeySequence("Ctrl+V"), self.viewer_a, activated=lambda: self.paste_image_from_clipboard("A"))
+        if self.viewer_b is not None:
+            QShortcut(QKeySequence("Ctrl+V"), self.viewer_b, activated=lambda: self.paste_image_from_clipboard("B"))
 
         # After init, ensure layout is consistent with states
         self._update_text_area_layout()
@@ -1452,7 +1518,7 @@ class MainWindow(QMainWindow):
 
         self.page_splitter = QSplitter(Qt.Horizontal)
 
-        # ---------------- Image section ----------------
+        # ---------------- Image section (dual panes) ----------------
         self.img_container = QWidget()
         img_layout = QVBoxLayout(self.img_container)
         img_layout.setContentsMargins(0, 0, 0, 0)
@@ -1482,33 +1548,87 @@ class MainWindow(QMainWindow):
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
         meta_flow.addWidget(self.btn_copy_ticker)
 
-        toolbar_widget = QWidget()
-        toolbar_flow = FlowLayout(toolbar_widget, margin=0, spacing=6)
+        img_layout.addWidget(meta_widget)
 
-        self.btn_set_image = QPushButton("Open")
-        self.btn_set_image.setToolTip("Open image file and set as chart image")
-        self.btn_paste_image = QPushButton("Paste")
-        self.btn_paste_image.setToolTip("Paste chart image from clipboard (Ctrl+V)")
-        self.btn_clear_image = QPushButton("Clr Img")
-        self.btn_clear_image.setToolTip("Clear chart image for this page")
-        self.btn_reset_view = QPushButton("Fit")
-        self.btn_reset_view.setToolTip("Fit image to view (reset zoom/pan)")
+        # Dual-pane splitter
+        self.dual_view_splitter = QSplitter(Qt.Vertical)
+        self.dual_view_splitter.setChildrenCollapsible(False)
 
-        self.btn_set_image.clicked.connect(self.set_image_via_dialog)
-        self.btn_paste_image.clicked.connect(self.paste_image_from_clipboard)
-        self.btn_clear_image.clicked.connect(self.clear_image)
-        self.btn_reset_view.clicked.connect(self.reset_image_view)
+        # Pane A
+        paneA = QWidget()
+        paneA_l = QVBoxLayout(paneA)
+        paneA_l.setContentsMargins(0, 0, 0, 0)
+        paneA_l.setSpacing(6)
 
-        toolbar_flow.addWidget(self.btn_set_image)
-        toolbar_flow.addWidget(self.btn_paste_image)
-        toolbar_flow.addWidget(self.btn_clear_image)
-        toolbar_flow.addWidget(self.btn_reset_view)
+        barA = QWidget()
+        barA_l = FlowLayout(barA, margin=0, spacing=6)
+        lblA = QLabel("Chart A")
+        lblA.setStyleSheet("font-weight: 700;")
+        barA_l.addWidget(lblA)
 
-        self.image_viewer = ZoomPanAnnotateView()
-        self.image_viewer.imageDropped.connect(self._on_image_dropped)
-        self.image_viewer.strokesChanged.connect(self._on_page_field_changed)
-        self.image_viewer.viewport().installEventFilter(self)
+        self.btn_open_a = QPushButton("Open A")
+        self.btn_paste_a = QPushButton("Paste A")
+        self.btn_clear_a = QPushButton("Clr A")
+        self.btn_fit_a = QPushButton("Fit A")
+        self.btn_open_a.clicked.connect(lambda: self.set_image_via_dialog("A"))
+        self.btn_paste_a.clicked.connect(lambda: self.paste_image_from_clipboard("A"))
+        self.btn_clear_a.clicked.connect(lambda: self.clear_image("A"))
+        self.btn_fit_a.clicked.connect(lambda: self.reset_image_view("A"))
+        barA_l.addWidget(self.btn_open_a)
+        barA_l.addWidget(self.btn_paste_a)
+        barA_l.addWidget(self.btn_clear_a)
+        barA_l.addWidget(self.btn_fit_a)
 
+        paneA_l.addWidget(barA)
+
+        self.viewer_a = ZoomPanAnnotateView()
+        self.viewer_a.imageDropped.connect(lambda p: self._on_image_dropped("A", p))
+        self.viewer_a.strokesChanged.connect(self._on_page_field_changed)
+        self.viewer_a.viewport().installEventFilter(self)
+        paneA_l.addWidget(self.viewer_a, 1)
+
+        # Pane B
+        paneB = QWidget()
+        paneB_l = QVBoxLayout(paneB)
+        paneB_l.setContentsMargins(0, 0, 0, 0)
+        paneB_l.setSpacing(6)
+
+        barB = QWidget()
+        barB_l = FlowLayout(barB, margin=0, spacing=6)
+        lblB = QLabel("Chart B")
+        lblB.setStyleSheet("font-weight: 700;")
+        barB_l.addWidget(lblB)
+
+        self.btn_open_b = QPushButton("Open B")
+        self.btn_paste_b = QPushButton("Paste B")
+        self.btn_clear_b = QPushButton("Clr B")
+        self.btn_fit_b = QPushButton("Fit B")
+        self.btn_open_b.clicked.connect(lambda: self.set_image_via_dialog("B"))
+        self.btn_paste_b.clicked.connect(lambda: self.paste_image_from_clipboard("B"))
+        self.btn_clear_b.clicked.connect(lambda: self.clear_image("B"))
+        self.btn_fit_b.clicked.connect(lambda: self.reset_image_view("B"))
+        barB_l.addWidget(self.btn_open_b)
+        barB_l.addWidget(self.btn_paste_b)
+        barB_l.addWidget(self.btn_clear_b)
+        barB_l.addWidget(self.btn_fit_b)
+
+        paneB_l.addWidget(barB)
+
+        self.viewer_b = ZoomPanAnnotateView()
+        self.viewer_b.imageDropped.connect(lambda p: self._on_image_dropped("B", p))
+        self.viewer_b.strokesChanged.connect(self._on_page_field_changed)
+        self.viewer_b.viewport().installEventFilter(self)
+        paneB_l.addWidget(self.viewer_b, 1)
+
+        self.dual_view_splitter.addWidget(paneA)
+        self.dual_view_splitter.addWidget(paneB)
+        self.dual_view_splitter.setStretchFactor(0, 1)
+        self.dual_view_splitter.setStretchFactor(1, 1)
+        self.dual_view_splitter.setSizes([420, 420])
+
+        img_layout.addWidget(self.dual_view_splitter, 1)
+
+        # Page nav
         nav_widget = QWidget()
         nav_flow = FlowLayout(nav_widget, margin=0, spacing=6)
 
@@ -1538,9 +1658,6 @@ class MainWindow(QMainWindow):
         nav_flow.addWidget(self.btn_add_page)
         nav_flow.addWidget(self.btn_del_page)
 
-        img_layout.addWidget(meta_widget)
-        img_layout.addWidget(toolbar_widget)
-        img_layout.addWidget(self.image_viewer, 1)
         img_layout.addWidget(nav_widget)
 
         # ---------------- Text section ----------------
@@ -1789,7 +1906,7 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(right_panel)
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([340, 1060])
+        main_splitter.setSizes([340, 1120])
 
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1798,7 +1915,7 @@ class MainWindow(QMainWindow):
         # Encourage image area
         self.text_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.img_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.text_container.setMinimumWidth(420)
+        self.text_container.setMinimumWidth(440)
 
         # Default active editor
         self._set_active_rich_edit(self.text_edit)
@@ -1806,7 +1923,252 @@ class MainWindow(QMainWindow):
         # Default checked states
         self.btn_col_default.setChecked(True)
 
-    # ---------------- v0.4.x: rebuild model from current tree ----------------
+    # ---------------- overlays for pane A/B ----------------
+    def _build_pane_overlays(self) -> None:
+        self._pane_ui = {}
+        self._pane_ui["A"] = self._build_overlay_for_pane("A", self.viewer_a)
+        self._pane_ui["B"] = self._build_overlay_for_pane("B", self.viewer_b)
+
+        # Initial active pane
+        self._set_active_pane("A")
+
+    def _build_overlay_for_pane(self, pane: str, viewer: Optional[ZoomPanAnnotateView]) -> Dict[str, Any]:
+        if viewer is None:
+            return {}
+
+        vp = viewer.viewport()
+
+        edit_cap = CollapsibleCaptionEdit(vp, collapsed_h=28, expanded_h=84)
+        edit_cap.setPlaceholderTextCompat(f"{pane} 이미지 간단 설명 (hover/클릭 시 2~3줄 확장)")
+        edit_cap.textChanged.connect(self._on_page_field_changed)
+        edit_cap.expandedChanged.connect(lambda _: self._reposition_overlay(pane))
+
+        btn_anno_toggle = QToolButton(vp)
+        btn_anno_toggle.setText("✎")
+        btn_anno_toggle.setToolTip(f"Open Annotate panel ({pane})")
+        btn_anno_toggle.setAutoRaise(True)
+        btn_anno_toggle.setFixedSize(34, 30)
+
+        btn_desc_toggle = QToolButton(vp)
+        btn_desc_toggle.setText("Notes✓" if self._desc_visible else "Notes")
+        btn_desc_toggle.setToolTip("Show/Hide Description & Checklist panel")
+        btn_desc_toggle.setCheckable(True)
+        btn_desc_toggle.setChecked(bool(self._desc_visible))
+        btn_desc_toggle.setAutoRaise(True)
+        btn_desc_toggle.setFixedSize(64, 30)
+        btn_desc_toggle.toggled.connect(self._on_toggle_desc)
+
+        anno_panel = QFrame(vp)
+        anno_panel.setObjectName(f"anno_panel_{pane}")
+        anno_panel.setFrameShape(QFrame.StyledPanel)
+        anno_panel.setVisible(False)
+        anno_panel.setFixedWidth(240)
+        anno_panel.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 235);
+                border: 1px solid #9A9A9A;
+                border-radius: 10px;
+            }
+            QLabel { color: #222; }
+        """)
+
+        p_layout = QVBoxLayout(anno_panel)
+        p_layout.setContentsMargins(10, 10, 10, 10)
+        p_layout.setSpacing(8)
+
+        header = QWidget(anno_panel)
+        header_l = QHBoxLayout(header)
+        header_l.setContentsMargins(0, 0, 0, 0)
+        header_l.setSpacing(6)
+
+        lbl = QLabel(f"Annotate ({pane})", header)
+        lbl.setStyleSheet("font-weight: 600;")
+        header_l.addWidget(lbl, 1)
+
+        btn_anno_close = QToolButton(header)
+        btn_anno_close.setText("×")
+        btn_anno_close.setToolTip("Close panel")
+        btn_anno_close.setAutoRaise(True)
+        btn_anno_close.setFixedSize(26, 22)
+        header_l.addWidget(btn_anno_close)
+
+        p_layout.addWidget(header)
+
+        btn_draw_mode = QToolButton(anno_panel)
+        btn_draw_mode.setText("Draw")
+        btn_draw_mode.setCheckable(True)
+        btn_draw_mode.setToolTip("Toggle draw mode. Drag to draw. Hold SHIFT for straight line.")
+        p_layout.addWidget(btn_draw_mode)
+
+        color_row = QWidget(anno_panel)
+        color_l = QHBoxLayout(color_row)
+        color_l.setContentsMargins(0, 0, 0, 0)
+        color_l.setSpacing(6)
+        color_l.addWidget(QLabel("Color"))
+        combo_color = QComboBox(color_row)
+        combo_color.addItem("Red", COLOR_RED)
+        combo_color.addItem("Yellow", COLOR_YELLOW)
+        combo_color.addItem("Cyan", "#00D5FF")
+        combo_color.addItem("White", "#FFFFFF")
+        color_l.addWidget(combo_color, 1)
+        p_layout.addWidget(color_row)
+
+        width_row = QWidget(anno_panel)
+        width_l = QHBoxLayout(width_row)
+        width_l.setContentsMargins(0, 0, 0, 0)
+        width_l.setSpacing(6)
+        width_l.addWidget(QLabel("Width"))
+        combo_width = QComboBox(width_row)
+        for w in ["2", "3", "4", "6", "8"]:
+            combo_width.addItem(f"{w}px", float(w))
+        combo_width.setCurrentIndex(1)
+        width_l.addWidget(combo_width, 1)
+        p_layout.addWidget(width_row)
+
+        btn_clear_lines = QPushButton("Clear Lines", anno_panel)
+        p_layout.addWidget(btn_clear_lines)
+
+        help_lbl = QLabel(
+            "• Wheel: Zoom\n"
+            "• Drag: Pan (Draw OFF)\n"
+            "• Drag: Draw (Draw ON)\n"
+            "• Shift+Drag: Straight line\n"
+            "• Ctrl+V: Paste image (viewer focused)\n"
+            "• Alt+←/→: Prev/Next\n"
+            "• Ctrl+N: Add page, Ctrl+S: Save\n"
+            "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)\n"
+            "• Text Color: Default/Red/Blue/Yellow\n"
+            "• List: Bullet/Numbered\n"
+            "• List indent: Tab / Shift+Tab\n"
+            "• Notes button: Description 패널 숨김/표시",
+            anno_panel
+        )
+        help_lbl.setWordWrap(True)
+        help_lbl.setStyleSheet("color:#555; font-size: 11px;")
+        p_layout.addWidget(help_lbl)
+
+        def apply_pen():
+            color_hex = str(combo_color.currentData())
+            width = float(combo_width.currentData())
+            viewer.set_pen(color_hex, width)
+
+        combo_color.currentIndexChanged.connect(lambda _: apply_pen())
+        combo_width.currentIndexChanged.connect(lambda _: apply_pen())
+        apply_pen()
+
+        def toggle_draw(checked: bool):
+            self._set_active_pane(pane)
+            if checked:
+                viewer.set_mode_draw()
+            else:
+                viewer.set_mode_pan()
+            viewer.setFocus(Qt.MouseFocusReason)
+
+        btn_draw_mode.toggled.connect(toggle_draw)
+
+        def clear_lines():
+            self._set_active_pane(pane)
+            pg = self.current_page()
+            if not pg:
+                return
+            if not viewer.get_strokes():
+                return
+            reply = QMessageBox.question(
+                self,
+                "Clear Lines",
+                f"Clear all annotation lines on Chart {pane}?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            viewer.clear_strokes()
+            self._flush_page_fields_to_model_and_save()
+            viewer.setFocus(Qt.MouseFocusReason)
+
+        btn_clear_lines.clicked.connect(clear_lines)
+
+        def open_panel():
+            self._set_active_pane(pane)
+            btn_anno_toggle.setVisible(False)
+            anno_panel.setVisible(True)
+            self._reposition_overlay(pane)
+
+        def close_panel():
+            if btn_draw_mode.isChecked():
+                btn_draw_mode.setChecked(False)
+                viewer.set_mode_pan()
+            anno_panel.setVisible(False)
+            btn_anno_toggle.setVisible(True)
+            self._reposition_overlay(pane)
+
+        btn_anno_toggle.clicked.connect(open_panel)
+        btn_anno_close.clicked.connect(close_panel)
+
+        # initial position
+        self._reposition_overlay(pane)
+
+        return {
+            "viewer": viewer,
+            "cap": edit_cap,
+            "anno_toggle": btn_anno_toggle,
+            "desc_toggle": btn_desc_toggle,
+            "panel": anno_panel,
+            "draw": btn_draw_mode,
+            "close": btn_anno_close,
+        }
+
+    def _set_active_pane(self, pane: str) -> None:
+        if pane not in ("A", "B"):
+            pane = "A"
+        self._active_pane = pane
+        # Visual hint: slightly different border
+        if self.viewer_a is not None:
+            self.viewer_a.setStyleSheet("border: 2px solid #5A8DFF;" if pane == "A" else "border: 1px solid #D0D0D0;")
+        if self.viewer_b is not None:
+            self.viewer_b.setStyleSheet("border: 2px solid #5A8DFF;" if pane == "B" else "border: 1px solid #D0D0D0;")
+
+    def _reposition_overlay(self, pane: str) -> None:
+        ui = self._pane_ui.get(pane, {})
+        viewer: Optional[ZoomPanAnnotateView] = ui.get("viewer")
+        if viewer is None:
+            return
+        vp = viewer.viewport()
+
+        edit_cap: CollapsibleCaptionEdit = ui["cap"]
+        btn_anno_toggle: QToolButton = ui["anno_toggle"]
+        btn_desc_toggle: QToolButton = ui["desc_toggle"]
+        anno_panel: QFrame = ui["panel"]
+
+        w = vp.width()
+        margin = 10
+        gap = 6
+
+        if anno_panel.isVisible():
+            panel_x = max(margin, w - anno_panel.width() - margin)
+            anno_panel.move(panel_x, margin)
+            btn_desc_toggle.move(max(margin, panel_x - margin - btn_desc_toggle.width()), margin)
+        else:
+            btn_anno_toggle.move(max(margin, w - btn_anno_toggle.width() - margin), margin)
+            btn_desc_toggle.move(
+                max(margin, w - btn_desc_toggle.width() - margin),
+                margin + btn_anno_toggle.height() + gap
+            )
+
+        cap_min = 260
+        cap_max = 720
+
+        if anno_panel.isVisible():
+            cap_right_limit = anno_panel.x() - margin
+        else:
+            cap_right_limit = min(btn_anno_toggle.x(), btn_desc_toggle.x()) - margin
+
+        cap_w = min(cap_max, max(cap_min, cap_right_limit - margin))
+        cap_x = max(margin, cap_right_limit - cap_w)
+        edit_cap.setFixedWidth(cap_w)
+        edit_cap.move(cap_x, margin)
+
+    # ---------------- v0.4.x+: rebuild model from current tree ----------------
     def _rebuild_db_from_tree(self) -> None:
         self._flush_page_fields_to_model_and_save()
 
@@ -1995,7 +2357,6 @@ class MainWindow(QMainWindow):
 
         cur.beginEditBlock()
         try:
-            # recreate list with new indent; keeps style/numbering
             cur.createList(fmt)
         except Exception:
             pass
@@ -2036,10 +2397,15 @@ class MainWindow(QMainWindow):
         self._desc_visible = bool(visible)
         self.notes_left.setVisible(self._desc_visible)
 
-        if hasattr(self, "btn_desc_toggle"):
-            self.btn_desc_toggle.blockSignals(True)
-            self.btn_desc_toggle.setChecked(self._desc_visible)
-            self.btn_desc_toggle.blockSignals(False)
+        # Sync both pane buttons
+        for pane in ("A", "B"):
+            ui = self._pane_ui.get(pane, {})
+            if ui and "desc_toggle" in ui:
+                btn = ui["desc_toggle"]
+                btn.blockSignals(True)
+                btn.setChecked(self._desc_visible)
+                btn.setText("Notes✓" if self._desc_visible else "Notes")
+                btn.blockSignals(False)
 
         self._update_text_area_layout()
 
@@ -2066,7 +2432,7 @@ class MainWindow(QMainWindow):
             elif self._page_split_prev_sizes and len(self._page_split_prev_sizes) == 2:
                 self.page_splitter.setSizes(self._page_split_prev_sizes)
             else:
-                self.page_splitter.setSizes([720, 680])
+                self.page_splitter.setSizes([760, 700])
 
     def _update_text_area_layout(self) -> None:
         ideas_vis = bool(self.ideas_panel.isVisible())
@@ -2074,7 +2440,6 @@ class MainWindow(QMainWindow):
 
         if not desc_vis and not ideas_vis:
             self._collapse_text_container(True)
-            QTimer.singleShot(0, self._reposition_overlay)
             return
 
         self._collapse_text_container(False)
@@ -2096,14 +2461,6 @@ class MainWindow(QMainWindow):
 
         elif (not desc_vis) and ideas_vis:
             self.notes_ideas_splitter.setSizes([0, total])
-
-        QTimer.singleShot(0, lambda: self._sync_desc_button_text())
-        QTimer.singleShot(0, self._reposition_overlay)
-
-    def _sync_desc_button_text(self) -> None:
-        if not hasattr(self, "btn_desc_toggle"):
-            return
-        self.btn_desc_toggle.setText("Notes" if not self._desc_visible else "Notes✓")
 
     # ---------------- Context menu ----------------
     def _on_tree_context_menu(self, pos) -> None:
@@ -2410,14 +2767,23 @@ class MainWindow(QMainWindow):
             try:
                 self.edit_stock_name.clear()
                 self.edit_ticker.clear()
-                self.edit_img_caption.setPlainText("")
+
+                for pane in ("A", "B"):
+                    ui = self._pane_ui.get(pane, {})
+                    if ui:
+                        ui["cap"].setPlainText("")
+                        ui["draw"].setChecked(False)
+                        ui["panel"].setVisible(False)
+                        ui["anno_toggle"].setVisible(True)
+                    viewer = self.viewer_a if pane == "A" else self.viewer_b
+                    if viewer is not None:
+                        viewer.clear_image()
+
                 for cb in self.chk_boxes:
                     cb.setChecked(False)
                 for note in self.chk_notes:
                     note.clear()
                 self.text_edit.clear()
-                self.image_viewer.clear_image()
-                self.btn_draw_mode.setChecked(False)
                 self._update_nav()
             finally:
                 self._loading_ui = False
@@ -2427,19 +2793,41 @@ class MainWindow(QMainWindow):
         try:
             self.edit_stock_name.setText(pg.stock_name or "")
             self.edit_ticker.setText(pg.ticker or "")
-            self.edit_img_caption.setPlainText(pg.image_caption or "")
 
-            if pg.image_path:
-                abs_path = _abspath_from_rel(pg.image_path)
-                if os.path.exists(abs_path):
-                    self.image_viewer.set_image_path(abs_path)
+            # Pane captions
+            capA = pg.image_a_caption or ""
+            capB = pg.image_b_caption or ""
+            if self._pane_ui.get("A"):
+                self._pane_ui["A"]["cap"].setPlainText(capA)
+            if self._pane_ui.get("B"):
+                self._pane_ui["B"]["cap"].setPlainText(capB)
+
+            # Pane images
+            if self.viewer_a is not None:
+                if pg.image_a_path:
+                    abs_a = _abspath_from_rel(pg.image_a_path)
+                    if os.path.exists(abs_a):
+                        self.viewer_a.set_image_path(abs_a)
+                    else:
+                        self.viewer_a.clear_image()
                 else:
-                    self.image_viewer.clear_image()
-            else:
-                self.image_viewer.clear_image()
+                    self.viewer_a.clear_image()
+                self.viewer_a.set_strokes(pg.strokes_a or [])
+                self.viewer_a.set_mode_pan()
 
-            self.image_viewer.set_strokes(pg.strokes or [])
+            if self.viewer_b is not None:
+                if pg.image_b_path:
+                    abs_b = _abspath_from_rel(pg.image_b_path)
+                    if os.path.exists(abs_b):
+                        self.viewer_b.set_image_path(abs_b)
+                    else:
+                        self.viewer_b.clear_image()
+                else:
+                    self.viewer_b.clear_image()
+                self.viewer_b.set_strokes(pg.strokes_b or [])
+                self.viewer_b.set_mode_pan()
 
+            # Checklist
             cl = _normalize_checklist(pg.checklist)
             for i in range(len(DEFAULT_CHECK_QUESTIONS)):
                 self.chk_boxes[i].setChecked(bool(cl[i].get("checked", False)))
@@ -2450,6 +2838,7 @@ class MainWindow(QMainWindow):
                 else:
                     self.chk_notes[i].setPlainText(val)
 
+            # Description
             val_desc = pg.note_text or ""
             val_desc = _strip_highlight_html(val_desc)
             if _looks_like_html(val_desc):
@@ -2457,8 +2846,14 @@ class MainWindow(QMainWindow):
             else:
                 self.text_edit.setPlainText(val_desc)
 
-            self.btn_draw_mode.setChecked(False)
-            self.image_viewer.set_mode_pan()
+            # close overlay panels & reset draw
+            for pane in ("A", "B"):
+                ui = self._pane_ui.get(pane, {})
+                if ui:
+                    ui["draw"].setChecked(False)
+                    ui["panel"].setVisible(False)
+                    ui["anno_toggle"].setVisible(True)
+                    self._reposition_overlay(pane)
 
             self._update_nav()
             self._set_active_rich_edit(self.text_edit)
@@ -2496,9 +2891,16 @@ class MainWindow(QMainWindow):
             self.db.global_ideas = new_global
             changed = True
 
-        new_cap = self.edit_img_caption.toPlainText()
-        if pg.image_caption != new_cap:
-            pg.image_caption = new_cap
+        # captions
+        capA = self._pane_ui.get("A", {}).get("cap")
+        capB = self._pane_ui.get("B", {}).get("cap")
+        new_cap_a = capA.toPlainText() if capA is not None else ""
+        new_cap_b = capB.toPlainText() if capB is not None else ""
+        if pg.image_a_caption != new_cap_a:
+            pg.image_a_caption = new_cap_a
+            changed = True
+        if pg.image_b_caption != new_cap_b:
+            pg.image_b_caption = new_cap_b
             changed = True
 
         new_text = _strip_highlight_html(self.text_edit.toHtml())
@@ -2516,10 +2918,18 @@ class MainWindow(QMainWindow):
             pg.ticker = new_ticker
             changed = True
 
-        new_strokes = self.image_viewer.get_strokes()
-        if pg.strokes != new_strokes:
-            pg.strokes = new_strokes
-            changed = True
+        # strokes
+        if self.viewer_a is not None:
+            new_strokes_a = self.viewer_a.get_strokes()
+            if pg.strokes_a != new_strokes_a:
+                pg.strokes_a = new_strokes_a
+                changed = True
+
+        if self.viewer_b is not None:
+            new_strokes_b = self.viewer_b.get_strokes()
+            if pg.strokes_b != new_strokes_b:
+                pg.strokes_b = new_strokes_b
+                changed = True
 
         new_checklist = self._collect_checklist_from_ui()
         if pg.checklist != new_checklist:
@@ -2605,7 +3015,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Delete Page",
-            "Delete current page?\n(This cannot be undone in v0.4.x.)",
+            "Delete current page?\n(This cannot be undone.)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -2621,70 +3031,70 @@ class MainWindow(QMainWindow):
         self._save_db_with_warning()
         self._load_current_page_to_ui()
 
-    # ---------------- Image handling ----------------
-    def reset_image_view(self) -> None:
-        self.image_viewer.fit_to_view()
-        self.image_viewer.setFocus(Qt.MouseFocusReason)
-
-    def toggle_draw_mode(self, checked: bool) -> None:
-        if checked:
-            self.image_viewer.set_mode_draw()
-        else:
-            self.image_viewer.set_mode_pan()
-        self.image_viewer.setFocus(Qt.MouseFocusReason)
-
-    def clear_lines(self) -> None:
-        pg = self.current_page()
-        if not pg:
+    # ---------------- Image handling (dual panes) ----------------
+    def reset_image_view(self, pane: str) -> None:
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
             return
-        if not self.image_viewer.get_strokes():
-            return
+        self._set_active_pane(pane)
+        viewer.fit_to_view()
+        viewer.setFocus(Qt.MouseFocusReason)
 
-        reply = QMessageBox.question(
-            self,
-            "Clear Lines",
-            "Clear all annotation lines on this page?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
+    def _on_image_dropped(self, pane: str, path: str) -> None:
+        self._set_image_from_file(pane, path)
 
-        self.image_viewer.clear_strokes()
-        self._flush_page_fields_to_model_and_save()
-        self.image_viewer.setFocus(Qt.MouseFocusReason)
-
-    def _on_image_dropped(self, path: str) -> None:
-        self._set_image_from_file(path)
-
-    def set_image_via_dialog(self) -> None:
+    def set_image_via_dialog(self, pane: str) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Chart Image",
+            f"Select Chart Image ({pane})",
             "",
             "Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*.*)",
         )
         if not file_path:
             return
-        self._set_image_from_file(file_path)
+        self._set_image_from_file(pane, file_path)
 
-    def clear_image(self) -> None:
+    def clear_image(self, pane: str) -> None:
         st = self.current_step()
         pg = self.current_page()
         if not st or not pg:
             return
+
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
+            return
+
+        self._set_active_pane(pane)
         self._flush_page_fields_to_model_and_save()
-        pg.image_path = ""
-        pg.strokes = []
+
+        if pane == "A":
+            pg.image_a_path = ""
+            pg.strokes_a = []
+            pg.image_a_caption = ""
+            if self._pane_ui.get("A"):
+                self._pane_ui["A"]["cap"].setPlainText("")
+        else:
+            pg.image_b_path = ""
+            pg.strokes_b = []
+            pg.image_b_caption = ""
+            if self._pane_ui.get("B"):
+                self._pane_ui["B"]["cap"].setPlainText("")
+
         pg.updated_at = _now_epoch()
         self._save_db_with_warning()
-        self.image_viewer.clear_image()
+        viewer.clear_image()
 
-    def paste_image_from_clipboard(self) -> None:
+    def paste_image_from_clipboard(self, pane: str) -> None:
         st = self.current_step()
         pg = self.current_page()
         if not st or not pg:
             return
+
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
+            return
+
+        self._set_active_pane(pane)
 
         cb = QApplication.clipboard()
         img: QImage = cb.image()
@@ -2698,7 +3108,7 @@ class MainWindow(QMainWindow):
         dst_dir = os.path.join(ASSETS_DIR, safe_step)
         _ensure_dir(dst_dir)
 
-        dst_name = f"{pg.id}_clip_{_now_epoch()}.png"
+        dst_name = f"{pg.id}_{pane.lower()}_clip_{_now_epoch()}.png"
         dst_rel = _relpath_norm(os.path.join(dst_dir, dst_name))
         dst_abs = _abspath_from_rel(dst_rel)
 
@@ -2707,18 +3117,23 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Paste failed", "Clipboard image could not be saved as PNG.")
             return
 
-        pg.image_path = dst_rel
-        pg.strokes = []
+        if pane == "A":
+            pg.image_a_path = dst_rel
+            pg.strokes_a = []
+        else:
+            pg.image_b_path = dst_rel
+            pg.strokes_b = []
+
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self._save_db_with_warning()
 
-        self.image_viewer.set_image_path(dst_abs)
-        self.image_viewer.set_strokes([])
-        self.image_viewer.setFocus(Qt.MouseFocusReason)
+        viewer.set_image_path(dst_abs)
+        viewer.set_strokes([])
+        viewer.setFocus(Qt.MouseFocusReason)
 
-    def _set_image_from_file(self, src_path: str) -> None:
+    def _set_image_from_file(self, pane: str, src_path: str) -> None:
         st = self.current_step()
         pg = self.current_page()
         if not st or not pg:
@@ -2726,6 +3141,11 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(src_path):
             return
 
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
+            return
+
+        self._set_active_pane(pane)
         self._flush_page_fields_to_model_and_save()
 
         ext = os.path.splitext(src_path)[1].lower()
@@ -2737,7 +3157,7 @@ class MainWindow(QMainWindow):
         dst_dir = os.path.join(ASSETS_DIR, safe_step)
         _ensure_dir(dst_dir)
 
-        dst_name = f"{pg.id}{ext}"
+        dst_name = f"{pg.id}_{pane.lower()}{ext}"
         dst_rel = _relpath_norm(os.path.join(dst_dir, dst_name))
         dst_abs = _abspath_from_rel(dst_rel)
 
@@ -2747,16 +3167,21 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Copy failed", f"Failed to copy image:\n{e}")
             return
 
-        pg.image_path = dst_rel
-        pg.strokes = []
+        if pane == "A":
+            pg.image_a_path = dst_rel
+            pg.strokes_a = []
+        else:
+            pg.image_b_path = dst_rel
+            pg.strokes_b = []
+
         pg.updated_at = _now_epoch()
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self._save_db_with_warning()
 
-        self.image_viewer.set_image_path(dst_abs)
-        self.image_viewer.set_strokes([])
-        self.image_viewer.setFocus(Qt.MouseFocusReason)
+        viewer.set_image_path(dst_abs)
+        viewer.set_strokes([])
+        viewer.setFocus(Qt.MouseFocusReason)
 
     # ---------------- Text/meta utilities ----------------
     def copy_ticker(self) -> None:
@@ -2857,180 +3282,25 @@ class MainWindow(QMainWindow):
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
 
-    # ---------------- Overlay / annotate panel ----------------
-    def _build_annotate_overlay(self) -> None:
-        vp = self.image_viewer.viewport()
-
-        self.edit_img_caption = CollapsibleCaptionEdit(vp, collapsed_h=28, expanded_h=84)
-        self.edit_img_caption.setPlaceholderTextCompat("이미지 간단 설명 (hover/클릭 시 2~3줄 확장)")
-        self.edit_img_caption.textChanged.connect(self._on_page_field_changed)
-        self.edit_img_caption.expandedChanged.connect(lambda _: self._reposition_overlay())
-
-        # Annotate floating button
-        self.btn_anno_toggle = QToolButton(vp)
-        self.btn_anno_toggle.setText("✎")
-        self.btn_anno_toggle.setToolTip("Open Annotate panel")
-        self.btn_anno_toggle.setAutoRaise(True)
-        self.btn_anno_toggle.setFixedSize(34, 30)
-        self.btn_anno_toggle.clicked.connect(self._open_annotate_panel)
-
-        # Description toggle floating button (image view side)
-        self.btn_desc_toggle = QToolButton(vp)
-        self.btn_desc_toggle.setText("Notes✓" if self._desc_visible else "Notes")
-        self.btn_desc_toggle.setToolTip("Show/Hide Description & Checklist panel")
-        self.btn_desc_toggle.setCheckable(True)
-        self.btn_desc_toggle.setChecked(bool(self._desc_visible))
-        self.btn_desc_toggle.setAutoRaise(True)
-        self.btn_desc_toggle.setFixedSize(64, 30)
-        self.btn_desc_toggle.toggled.connect(self._on_toggle_desc)
-
-        self.anno_panel = QFrame(vp)
-        self.anno_panel.setObjectName("anno_panel")
-        self.anno_panel.setFrameShape(QFrame.StyledPanel)
-        self.anno_panel.setVisible(False)
-        self.anno_panel.setFixedWidth(240)
-
-        self.anno_panel.setStyleSheet("""
-            QFrame#anno_panel {
-                background: rgba(255, 255, 255, 235);
-                border: 1px solid #9A9A9A;
-                border-radius: 10px;
-            }
-            QLabel { color: #222; }
-        """)
-
-        p_layout = QVBoxLayout(self.anno_panel)
-        p_layout.setContentsMargins(10, 10, 10, 10)
-        p_layout.setSpacing(8)
-
-        header = QWidget(self.anno_panel)
-        header_l = QHBoxLayout(header)
-        header_l.setContentsMargins(0, 0, 0, 0)
-        header_l.setSpacing(6)
-
-        lbl = QLabel("Annotate", header)
-        lbl.setStyleSheet("font-weight: 600;")
-        header_l.addWidget(lbl, 1)
-
-        self.btn_anno_close = QToolButton(header)
-        self.btn_anno_close.setText("×")
-        self.btn_anno_close.setToolTip("Close panel")
-        self.btn_anno_close.setAutoRaise(True)
-        self.btn_anno_close.setFixedSize(26, 22)
-        self.btn_anno_close.clicked.connect(self._close_annotate_panel)
-        header_l.addWidget(self.btn_anno_close)
-
-        p_layout.addWidget(header)
-
-        self.btn_draw_mode = QToolButton(self.anno_panel)
-        self.btn_draw_mode.setText("Draw")
-        self.btn_draw_mode.setCheckable(True)
-        self.btn_draw_mode.setToolTip("Toggle draw mode. Drag to draw. Hold SHIFT for straight line.")
-        self.btn_draw_mode.toggled.connect(self.toggle_draw_mode)
-        p_layout.addWidget(self.btn_draw_mode)
-
-        color_row = QWidget(self.anno_panel)
-        color_l = QHBoxLayout(color_row)
-        color_l.setContentsMargins(0, 0, 0, 0)
-        color_l.setSpacing(6)
-        color_l.addWidget(QLabel("Color"))
-        self.combo_color = QComboBox(color_row)
-        self.combo_color.addItem("Red", COLOR_RED)
-        self.combo_color.addItem("Yellow", COLOR_YELLOW)
-        self.combo_color.addItem("Cyan", "#00D5FF")
-        self.combo_color.addItem("White", "#FFFFFF")
-        self.combo_color.currentIndexChanged.connect(self._on_pen_changed)
-        color_l.addWidget(self.combo_color, 1)
-        p_layout.addWidget(color_row)
-
-        width_row = QWidget(self.anno_panel)
-        width_l = QHBoxLayout(width_row)
-        width_l.setContentsMargins(0, 0, 0, 0)
-        width_l.setSpacing(6)
-        width_l.addWidget(QLabel("Width"))
-        self.combo_width = QComboBox(width_row)
-        for w in ["2", "3", "4", "6", "8"]:
-            self.combo_width.addItem(f"{w}px", float(w))
-        self.combo_width.setCurrentIndex(1)
-        self.combo_width.currentIndexChanged.connect(self._on_pen_changed)
-        width_l.addWidget(self.combo_width, 1)
-        p_layout.addWidget(width_row)
-
-        self.btn_clear_lines = QPushButton("Clear Lines", self.anno_panel)
-        self.btn_clear_lines.clicked.connect(self.clear_lines)
-        p_layout.addWidget(self.btn_clear_lines)
-
-        help_lbl = QLabel(
-            "• Wheel: Zoom\n"
-            "• Drag: Pan (Draw OFF)\n"
-            "• Drag: Draw (Draw ON)\n"
-            "• Shift+Drag: Straight line\n"
-            "• Ctrl+V: Paste image (when viewer focused)\n"
-            "• Alt+←/→: Prev/Next\n"
-            "• Ctrl+N: Add page, Ctrl+S: Save\n"
-            "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)\n"
-            "• Text Color: Default/Red/Blue/Yellow\n"
-            "• List: Bullet/Numbered\n"
-            "• List indent: Tab / Shift+Tab\n"
-            "• Step Tree: Drag & Drop (Step move / Category reorder)\n"
-            "  - Category drag: drop above/below only\n"
-            "• Notes(차트 상단): Description 패널 숨김/표시",
-            self.anno_panel
-        )
-        help_lbl.setWordWrap(True)
-        help_lbl.setStyleSheet("color:#555; font-size: 11px;")
-        p_layout.addWidget(help_lbl)
-
-        self._apply_pen_from_ui()
-        self._reposition_overlay()
-
-    def _open_annotate_panel(self) -> None:
-        self.btn_anno_toggle.setVisible(False)
-        self.anno_panel.setVisible(True)
-        self._reposition_overlay()
-
-    def _close_annotate_panel(self) -> None:
-        if self.btn_draw_mode.isChecked():
-            self.btn_draw_mode.setChecked(False)
-            self.image_viewer.set_mode_pan()
-
-        self.anno_panel.setVisible(False)
-        self.btn_anno_toggle.setVisible(True)
-        self._reposition_overlay()
-
-    def _reposition_overlay(self) -> None:
-        vp = self.image_viewer.viewport()
-        w = vp.width()
-        margin = 10
-        gap = 6
-
-        if self.anno_panel.isVisible():
-            panel_x = max(margin, w - self.anno_panel.width() - margin)
-            self.anno_panel.move(panel_x, margin)
-            self.btn_desc_toggle.move(max(margin, panel_x - margin - self.btn_desc_toggle.width()), margin)
-        else:
-            self.btn_anno_toggle.move(max(margin, w - self.btn_anno_toggle.width() - margin), margin)
-            self.btn_desc_toggle.move(
-                max(margin, w - self.btn_desc_toggle.width() - margin),
-                margin + self.btn_anno_toggle.height() + gap
-            )
-
-        cap_min = 260
-        cap_max = 720
-
-        if self.anno_panel.isVisible():
-            cap_right_limit = self.anno_panel.x() - margin
-        else:
-            cap_right_limit = min(self.btn_anno_toggle.x(), self.btn_desc_toggle.x()) - margin
-
-        cap_w = min(cap_max, max(cap_min, cap_right_limit - margin))
-        cap_x = max(margin, cap_right_limit - cap_w)
-        self.edit_img_caption.setFixedWidth(cap_w)
-        self.edit_img_caption.move(cap_x, margin)
-
+    # ---------------- Event filter ----------------
     def eventFilter(self, obj, event) -> bool:
-        if obj is self.image_viewer.viewport() and event.type() == QEvent.Resize:
-            self._reposition_overlay()
+        va = getattr(self, "viewer_a", None)
+        vb = getattr(self, "viewer_b", None)
+
+        # Click on pane viewport -> set active pane
+        if va is not None and obj is va.viewport() and event.type() == QEvent.MouseButtonPress:
+            self._set_active_pane("A")
+            return False
+        if vb is not None and obj is vb.viewport() and event.type() == QEvent.MouseButtonPress:
+            self._set_active_pane("B")
+            return False
+
+        # Viewport resize -> reposition overlays
+        if va is not None and obj is va.viewport() and event.type() == QEvent.Resize:
+            self._reposition_overlay("A")
+            return super().eventFilter(obj, event)
+        if vb is not None and obj is vb.viewport() and event.type() == QEvent.Resize:
+            self._reposition_overlay("B")
             return super().eventFilter(obj, event)
 
         # Focus handling: set active editor
@@ -3047,30 +3317,20 @@ class MainWindow(QMainWindow):
             is_backtab = (key == Qt.Key_Backtab) or (is_tab and bool(mods & Qt.ShiftModifier))
 
             if is_backtab:
-                # Shift+Tab: outdent list if in list
+                # Shift+Tab: outdent ONLY when in list. Otherwise, default behavior.
                 if self._indent_or_outdent_list(obj, delta=-1):
                     return True
-                # outside list: ignore
-                return True
+                return False
 
             if is_tab:
                 # Tab: indent list if in list, else insert spaces
                 if self._indent_or_outdent_list(obj, delta=+1):
                     return True
-                # outside list => insert 4 spaces (configurable)
                 obj.textCursor().insertText("    ")
                 self._on_page_field_changed()
                 return True
 
         return super().eventFilter(obj, event)
-
-    def _apply_pen_from_ui(self) -> None:
-        color_hex = str(self.combo_color.currentData())
-        width = float(self.combo_width.currentData())
-        self.image_viewer.set_pen(color_hex, width)
-
-    def _on_pen_changed(self) -> None:
-        self._apply_pen_from_ui()
 
 
 def main() -> None:
