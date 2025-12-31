@@ -2,32 +2,18 @@
 """
 Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
 
-Version: 0.5.0  (2025-12-28)
+Version: 0.5.1  (2026-01-01)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.5.0):
-- (UX) Dual chart image panes (A/B) stacked vertically for 비교 분석
-  - Each page can store two images + two independent annotation stroke sets
-  - Per-pane Open / Paste / Clear / Fit
-  - Per-pane caption overlay (hover/클릭 확장)
-  - Click a pane to make it "active" (only affects which overlay is interacted with)
-- (FIX) eventFilter now references viewer_a/viewer_b safely (prevents AttributeError during init)
-- (UX) List outdent rule:
-  - Shift+Tab: outdent ONLY when cursor is inside a list
-  - Outside list: let Qt default behavior happen (focus traversal 등 기본 동작)
-
-Existing features:
-- Category → Step Tree(좌측), Category/Step Drag & Drop
-- Rich Text formatting toolbar (Bold/Italic/Underline) + Ctrl+B/I/U
-- Text Color presets (Default/Red/Blue/Yellow)
-- List (Bullet/Numbered)
-- List indentation (Tab/Shift+Tab) with the rule above
-- Description/Checklist/Ideas HTML 저장/로드(plain text 하위호환)
-- Safe JSON save (WinError 5 대응)
-- 이미지 뷰: Zoom/Pan + Draw(shift 직선) + pen color/width + Clear Lines
-- Description 패널 숨김/표시(이미지 뷰 플로팅 Notes 버튼)
-- Global Ideas 패널 토글
-- Step Tree: Step move / Category reorder(위아래만)
+Release Notes (v0.5.1):
+- (FIX) Global Ideas 패널이 "켜졌는데 안 보이는" 케이스 개선
+  - notes_ideas_splitter 저장 사이즈가 Ideas 폭을 0에 가깝게 만들면 자동으로 최소폭(>=320)으로 보정
+  - 앱 초기 구동 시(레이아웃 사이즈 미확정 구간)에서 가시성/사이즈가 꼬이는 현상을 post-init 레이아웃 보정으로 완화
+- (DEV) 하단 Trace 패널 추가 (디버깅/원인추적용)
+  - 오른쪽 영역을 Vertical Splitter로 구성하여 Trace 높이 드래그 리사이즈 가능
+  - trace_visible / right_vsplit_sizes UI state 저장/복원
+  - 주요 동작(저장, 페이지 이동, 이미지 로드/붙여넣기, 트리 선택 변경 등) Trace 출력
+  - Clear / Copy / Hide(토글) 제공, 라인 수 상한 유지(기본 1200줄)
 
 Dependencies:
   pip install PyQt5
@@ -103,7 +89,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-APP_TITLE = "Trader Chart Note (v0.5.0)"
+APP_TITLE = "Trader Chart Note (v0.5.1)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -114,7 +100,6 @@ DEFAULT_CHECK_QUESTIONS = [
     "Q. 돌아서는 구간을 찾을 수 있는가?",
 ]
 
-# Text color presets
 COLOR_DEFAULT = "#222222"
 COLOR_RED = "#FF3C3C"
 COLOR_BLUE = "#2D6BFF"
@@ -242,18 +227,15 @@ def _strip_highlight_html(html: str) -> str:
 
     s = html
 
-    # background-color / background 제거 (hex, rgb, rgba)
     s = re.sub(r'background-color\s*:\s*#[0-9a-fA-F]{3,8}\s*;?', '', s, flags=re.IGNORECASE)
     s = re.sub(r'background-color\s*:\s*rgba?\([^)]+\)\s*;?', '', s, flags=re.IGNORECASE)
     s = re.sub(r'background\s*:\s*#[0-9a-fA-F]{3,8}\s*;?', '', s, flags=re.IGNORECASE)
     s = re.sub(r'background\s*:\s*rgba?\([^)]+\)\s*;?', '', s, flags=re.IGNORECASE)
 
-    # style="" / style=" ; ; " 정리
     s = re.sub(r'style="\s*;+\s*"', '', s, flags=re.IGNORECASE)
     s = re.sub(r'style="\s*"', '', s, flags=re.IGNORECASE)
     s = re.sub(r'\sstyle=""', '', s, flags=re.IGNORECASE)
 
-    # style="...;;" → style="..."
     def _tidy_style(m: re.Match) -> str:
         inner = (m.group(1) or "").strip()
         inner = re.sub(r'\s*;+\s*', '; ', inner).strip()
@@ -261,7 +243,6 @@ def _strip_highlight_html(html: str) -> str:
         return f'style="{inner}"' if inner else ""
 
     s = re.sub(r'style="([^"]*?)"', _tidy_style, s, flags=re.IGNORECASE)
-
     return s
 
 
@@ -357,13 +338,8 @@ class FlowLayout(QLayout):
 # Step Tree with Drag & Drop + Highlight + Guide label
 # ---------------------------
 class StepTreeWidget(QTreeWidget):
-    """
-    - Step drag: reorder and move across categories
-    - Category drag: reorder top-level categories (prevent nesting by disallowing center drop)
-    - During drag: highlight target category and show guide label
-    """
-    stepStructureDropped = pyqtSignal(str)         # dragged_step_id
-    categoryOrderDropped = pyqtSignal(str)         # dragged_category_name
+    stepStructureDropped = pyqtSignal(str)      # dragged_step_id
+    categoryOrderDropped = pyqtSignal(str)      # dragged_category_name
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -372,7 +348,7 @@ class StepTreeWidget(QTreeWidget):
         self._drag_node_type: Optional[str] = None  # "step" or "category"
 
         self._hl_item: Optional[QTreeWidgetItem] = None
-        self._hl_brush = QBrush(QColor(90, 141, 255, 55))  # light blue
+        self._hl_brush = QBrush(QColor(90, 141, 255, 55))
         self._hl_clear_brush = QBrush()
 
         self._guide = QLabel(self.viewport())
@@ -671,16 +647,12 @@ def _normalize_checklist(raw: Any) -> Checklist:
 @dataclass
 class Page:
     id: str
-
-    # Dual chart panes
     image_a_path: str
     image_b_path: str
     image_a_caption: str
     image_b_caption: str
     strokes_a: Strokes
     strokes_b: Strokes
-
-    # Notes/meta
     note_text: str
     stock_name: str
     ticker: str
@@ -723,11 +695,14 @@ class NoteDB:
         if not isinstance(self.ui_state, dict):
             self.ui_state = {}
 
-        # ensure keys
         self.ui_state.setdefault("global_ideas_visible", False)
         self.ui_state.setdefault("desc_visible", True)
         self.ui_state.setdefault("page_splitter_sizes", None)
         self.ui_state.setdefault("notes_splitter_sizes", None)
+
+        # v0.5.1 trace ui state
+        self.ui_state.setdefault("trace_visible", True)
+        self.ui_state.setdefault("right_vsplit_sizes", None)
 
         self.steps = self._parse_steps(self.data.get("steps", []))
         if not self.steps:
@@ -747,7 +722,7 @@ class NoteDB:
         self._ensure_category_order_consistency()
 
     def save(self) -> bool:
-        self.data["version"] = "0.5.0"
+        self.data["version"] = "0.5.1"
         self.data["updated_at"] = _now_epoch()
         self.data["steps"] = self._serialize_steps(self.steps)
         self.data["ui_state"] = self.ui_state
@@ -762,9 +737,8 @@ class NoteDB:
 
     @staticmethod
     def _default_data() -> Dict[str, Any]:
-        step_names = ["Step 1", "Step 2", "Step 3"]
         steps = []
-        for name in step_names:
+        for name in ["Step 1", "Step 2", "Step 3"]:
             steps.append(
                 {
                     "id": _uuid(),
@@ -774,14 +748,12 @@ class NoteDB:
                     "pages": [
                         {
                             "id": _uuid(),
-
                             "image_a_path": "",
                             "image_b_path": "",
                             "image_a_caption": "",
                             "image_b_caption": "",
                             "strokes_a": [],
                             "strokes_b": [],
-
                             "note_text": "",
                             "stock_name": "",
                             "ticker": "",
@@ -793,7 +765,7 @@ class NoteDB:
                 }
             )
         return {
-            "version": "0.5.0",
+            "version": "0.5.1",
             "created_at": _now_epoch(),
             "updated_at": _now_epoch(),
             "steps": steps,
@@ -802,6 +774,8 @@ class NoteDB:
                 "desc_visible": True,
                 "page_splitter_sizes": None,
                 "notes_splitter_sizes": None,
+                "trace_visible": True,
+                "right_vsplit_sizes": None,
             },
             "category_order": ["General"],
             "global_ideas": "",
@@ -814,14 +788,10 @@ class NoteDB:
             pages_raw = s.get("pages", [])
             pages: List[Page] = []
             for p in pages_raw:
-                # Backward compatibility:
-                # - v0.4.x stored: image_path, image_caption, strokes (or annotations)
-                # - v0.5.0 stores: image_a_path/image_b_path, image_a_caption/image_b_caption, strokes_a/strokes_b
                 image_a_path = str(p.get("image_a_path", p.get("image_path", "")) or "")
-                image_b_path = str(p.get("image_b_path", "") or "")
-
+                image_b_path = str(p.get("image_b_path", "")) or ""
                 image_a_caption = str(p.get("image_a_caption", p.get("image_caption", "")) or "")
-                image_b_caption = str(p.get("image_b_caption", "") or "")
+                image_b_caption = str(p.get("image_b_caption", "")) or ""
 
                 raw_strokes_a = p.get("strokes_a", None)
                 if raw_strokes_a is None:
@@ -841,14 +811,12 @@ class NoteDB:
                 pages.append(
                     Page(
                         id=str(p.get("id", _uuid())),
-
                         image_a_path=image_a_path,
                         image_b_path=image_b_path,
                         image_a_caption=image_a_caption,
                         image_b_caption=image_b_caption,
                         strokes_a=strokes_a,
                         strokes_b=strokes_b,
-
                         note_text=str(p.get("note_text", "")),
                         stock_name=str(p.get("stock_name", "")),
                         ticker=str(p.get("ticker", "")),
@@ -859,7 +827,6 @@ class NoteDB:
                 )
 
             category = str(s.get("category", "General")).strip() or "General"
-
             steps.append(
                 Step(
                     id=str(s.get("id", _uuid())),
@@ -884,14 +851,12 @@ class NoteDB:
                     "pages": [
                         {
                             "id": pg.id,
-
                             "image_a_path": pg.image_a_path,
                             "image_b_path": pg.image_b_path,
                             "image_a_caption": pg.image_a_caption,
                             "image_b_caption": pg.image_b_caption,
                             "strokes_a": pg.strokes_a,
                             "strokes_b": pg.strokes_b,
-
                             "note_text": pg.note_text,
                             "stock_name": pg.stock_name,
                             "ticker": pg.ticker,
@@ -910,14 +875,12 @@ class NoteDB:
         now = _now_epoch()
         return Page(
             id=_uuid(),
-
             image_a_path="",
             image_b_path="",
             image_a_caption="",
             image_b_caption="",
             strokes_a=[],
             strokes_b=[],
-
             note_text="",
             stock_name="",
             ticker="",
@@ -932,11 +895,9 @@ class NoteDB:
     def _ensure_category_order_consistency(self) -> None:
         existing = set(self._current_categories_set())
         self.category_order = [c for c in self.category_order if c in existing]
-
         for c in self._current_categories_set():
             if c not in self.category_order:
                 self.category_order.append(c)
-
         if not self.category_order:
             self.category_order = ["General"]
 
@@ -970,7 +931,6 @@ class NoteDB:
         new = (new or "").strip() or "General"
         if old == new:
             return
-
         for st in self.steps:
             if (st.category or "General").strip() == old:
                 st.category = new
@@ -1313,8 +1273,10 @@ class ZoomPanAnnotateView(QGraphicsView):
 # ---------------------------
 class MainWindow(QMainWindow):
     STEP_ID_ROLE = Qt.UserRole + 101
-    NODE_TYPE_ROLE = Qt.UserRole + 102  # "category" or "step"
+    NODE_TYPE_ROLE = Qt.UserRole + 102      # "category" or "step"
     CATEGORY_NAME_ROLE = Qt.UserRole + 103
+
+    TRACE_MAX_LINES = 1200
 
     def __init__(self) -> None:
         super().__init__()
@@ -1329,16 +1291,16 @@ class MainWindow(QMainWindow):
 
         self._active_rich_edit: Optional[QTextEdit] = None
 
-        # Description visible state
         self._desc_visible: bool = bool(self.db.ui_state.get("desc_visible", True))
         self._page_split_prev_sizes: Optional[List[int]] = None
         self._notes_split_prev_sizes: Optional[List[int]] = None
 
-        # FIX: prevent eventFilter crashing during init
         self.viewer_a: Optional[ZoomPanAnnotateView] = None
         self.viewer_b: Optional[ZoomPanAnnotateView] = None
+        self._active_pane: str = "A"
 
-        self._active_pane: str = "A"  # "A" or "B"
+        self._trace_visible: bool = bool(self.db.ui_state.get("trace_visible", True))
+        self._right_vsplit_prev_sizes: Optional[List[int]] = None
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -1347,15 +1309,14 @@ class MainWindow(QMainWindow):
         self._last_save_warn_ts: float = 0.0
         self._save_warn_cooldown_sec: float = 10.0
 
-        # overlay objects per pane: {"A": {...}, "B": {...}}
         self._pane_ui: Dict[str, Dict[str, Any]] = {}
 
         self._build_ui()
         self._build_pane_overlays()
 
-        # Splitter moved save hooks
         self.page_splitter.splitterMoved.connect(self._on_page_splitter_moved)
         self.notes_ideas_splitter.splitterMoved.connect(self._on_notes_splitter_moved)
+        self.right_vsplit.splitterMoved.connect(self._on_right_vsplit_moved)
 
         self._load_ui_state_or_defaults()
         self._apply_splitter_sizes_from_state()
@@ -1364,32 +1325,137 @@ class MainWindow(QMainWindow):
         self._load_current_page_to_ui()
         self._load_global_ideas_to_ui()
 
-        # Apply panel visibilities
         ideas_vis = bool(self.db.ui_state.get("global_ideas_visible", False))
         self._set_global_ideas_visible(ideas_vis, persist=False)
         self._set_desc_visible(bool(self.db.ui_state.get("desc_visible", True)), persist=False)
+        self._set_trace_visible(self._trace_visible, persist=False)
 
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.go_prev_page)
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_page)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.force_save)
 
-        # Text formatting shortcuts (active text box)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=lambda: self.btn_fmt_bold.toggle())
         QShortcut(QKeySequence("Ctrl+I"), self, activated=lambda: self.btn_fmt_italic.toggle())
         QShortcut(QKeySequence("Ctrl+U"), self, activated=lambda: self.btn_fmt_underline.toggle())
 
-        # Viewer-specific paste shortcuts (avoid stealing paste from QTextEdit)
         if self.viewer_a is not None:
             QShortcut(QKeySequence("Ctrl+V"), self.viewer_a, activated=lambda: self.paste_image_from_clipboard("A"))
         if self.viewer_b is not None:
             QShortcut(QKeySequence("Ctrl+V"), self.viewer_b, activated=lambda: self.paste_image_from_clipboard("B"))
 
-        # After init, ensure layout is consistent with states
         self._update_text_area_layout()
+
+        # post-init layout fix (Ideas/Trace size race condition 방지)
+        QTimer.singleShot(0, self._post_init_layout_fix)
+
+        self.trace("App initialized", "INFO")
+
+    # ---------------- Trace helpers ----------------
+    def trace(self, msg: str, level: str = "INFO") -> None:
+        try:
+            if not hasattr(self, "trace_edit") or self.trace_edit is None:
+                return
+            ts = time.strftime("%H:%M:%S")
+            self.trace_edit.appendPlainText(f"[{ts}] [{level}] {msg}")
+
+            doc = self.trace_edit.document()
+            if doc.blockCount() > self.TRACE_MAX_LINES:
+                cur = self.trace_edit.textCursor()
+                cur.beginEditBlock()
+                try:
+                    while doc.blockCount() > self.TRACE_MAX_LINES:
+                        cur.movePosition(cur.Start)
+                        cur.select(cur.LineUnderCursor)
+                        cur.removeSelectedText()
+                        cur.deleteChar()
+                finally:
+                    cur.endEditBlock()
+        except Exception:
+            pass
+
+    def _copy_trace_to_clipboard(self) -> None:
+        try:
+            QApplication.clipboard().setText(self.trace_edit.toPlainText())
+            self.trace("Trace copied to clipboard", "INFO")
+        except Exception:
+            pass
+
+    def _clear_trace(self) -> None:
+        try:
+            self.trace_edit.clear()
+            self.trace("Trace cleared", "INFO")
+        except Exception:
+            pass
+
+    def _remember_right_vsplit_sizes(self) -> None:
+        try:
+            sizes = self.right_vsplit.sizes()
+            if isinstance(sizes, list) and len(sizes) == 2 and all(isinstance(x, int) for x in sizes):
+                if sizes[0] >= 0 and sizes[1] >= 0:
+                    self._right_vsplit_prev_sizes = list(sizes)
+                    self.db.ui_state["right_vsplit_sizes"] = list(sizes)
+        except Exception:
+            pass
+
+    def _apply_right_vsplit_sizes(self) -> None:
+        v = self.db.ui_state.get("right_vsplit_sizes")
+        if isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) for x in v):
+            if v[0] >= 0 and v[1] >= 0:
+                try:
+                    self._right_vsplit_prev_sizes = list(v)
+                    self.right_vsplit.setSizes(v)
+                except Exception:
+                    pass
+
+    def _set_trace_visible(self, visible: bool, persist: bool = True) -> None:
+        self._trace_visible = bool(visible)
+        self.trace_group.setVisible(self._trace_visible)
+        self.trace_show_row.setVisible(not self._trace_visible)
+
+        # adjust splitter sizes
+        try:
+            total = max(1, self.right_vsplit.height())
+            if self._trace_visible:
+                self._apply_right_vsplit_sizes()
+                # fallback if not set
+                if not self._right_vsplit_prev_sizes:
+                    trace_h = 210
+                    self.right_vsplit.setSizes([max(1, total - trace_h), trace_h])
+            else:
+                # remember sizes before collapsing trace
+                self._remember_right_vsplit_sizes()
+                self.right_vsplit.setSizes([max(1, total - 38), 38])
+        except Exception:
+            pass
+
+        if persist:
+            self.db.ui_state["trace_visible"] = bool(self._trace_visible)
+            self._save_db_with_warning()
+
+    def _on_right_vsplit_moved(self, pos: int, index: int) -> None:
+        if self._loading_ui:
+            return
+        if not self._trace_visible:
+            return
+        self._remember_right_vsplit_sizes()
+        self._save_db_with_warning()
+
+    def _post_init_layout_fix(self) -> None:
+        try:
+            self._apply_splitter_sizes_from_state()
+            self._update_text_area_layout()
+            for pane in ("A", "B"):
+                self._reposition_overlay(pane)
+            if self._trace_visible:
+                self._apply_right_vsplit_sizes()
+            self.trace("Post-init layout fix applied", "DEBUG")
+        except Exception as e:
+            self.trace(f"Post-init layout fix failed: {e}", "WARN")
 
     def closeEvent(self, event) -> None:
         try:
+            self._remember_right_vsplit_sizes()
             self._flush_page_fields_to_model_and_save()
         except Exception:
             pass
@@ -1403,6 +1469,16 @@ class MainWindow(QMainWindow):
             and all(isinstance(x, int) for x in v)
             and v[0] >= 0 and v[1] >= 0
         )
+
+    def _is_valid_notes_sizes_for_both_visible(self, v: Any) -> bool:
+        if not self._is_valid_splitter_sizes(v):
+            return False
+        left, right = int(v[0]), int(v[1])
+        if right < 120:
+            return False
+        if left < 120:
+            return False
+        return True
 
     def _remember_page_splitter_sizes(self) -> None:
         sizes = self.page_splitter.sizes()
@@ -1448,10 +1524,8 @@ class MainWindow(QMainWindow):
             ns = self.db.ui_state.get("notes_splitter_sizes")
             if self._is_valid_splitter_sizes(ns):
                 self._notes_split_prev_sizes = list(ns)
-                try:
-                    self.notes_ideas_splitter.setSizes(ns)
-                except Exception:
-                    pass
+
+            self._apply_right_vsplit_sizes()
         finally:
             self._loading_ui = False
 
@@ -1510,11 +1584,20 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(step_controls)
         left_layout.addWidget(self.steps_tree, 1)
 
-        # Right panel
+        # Right panel (Vertical splitter: main content + trace)
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 8, 8, 8)
         right_layout.setSpacing(8)
+
+        self.right_vsplit = QSplitter(Qt.Vertical)
+        self.right_vsplit.setChildrenCollapsible(False)
+
+        # --- main content widget (page_splitter) ---
+        main_content = QWidget()
+        main_content_l = QVBoxLayout(main_content)
+        main_content_l.setContentsMargins(0, 0, 0, 0)
+        main_content_l.setSpacing(8)
 
         self.page_splitter = QSplitter(Qt.Horizontal)
 
@@ -1550,7 +1633,6 @@ class MainWindow(QMainWindow):
 
         img_layout.addWidget(meta_widget)
 
-        # Dual-pane splitter
         self.dual_view_splitter = QSplitter(Qt.Vertical)
         self.dual_view_splitter.setChildrenCollapsible(False)
 
@@ -1628,7 +1710,6 @@ class MainWindow(QMainWindow):
 
         img_layout.addWidget(self.dual_view_splitter, 1)
 
-        # Page nav
         nav_widget = QWidget()
         nav_flow = FlowLayout(nav_widget, margin=0, spacing=6)
 
@@ -1666,7 +1747,6 @@ class MainWindow(QMainWindow):
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(6)
 
-        # ====== Toolbar (2 rows, compact) ======
         fmt_row = QWidget()
         fmt_outer = QVBoxLayout(fmt_row)
         fmt_outer.setContentsMargins(0, 0, 0, 0)
@@ -1680,7 +1760,6 @@ class MainWindow(QMainWindow):
             v.setFixedHeight(22)
             return v
 
-        # --- B/I/U ---
         self.btn_fmt_bold = QToolButton()
         self.btn_fmt_bold.setText("B")
         self.btn_fmt_bold.setCheckable(True)
@@ -1706,7 +1785,6 @@ class MainWindow(QMainWindow):
         self.btn_fmt_italic.toggled.connect(lambda v: self._apply_format(italic=v))
         self.btn_fmt_underline.toggled.connect(lambda v: self._apply_format(underline=v))
 
-        # --- Color buttons (exclusive) ---
         self._color_group = QButtonGroup(self)
         self._color_group.setExclusive(True)
 
@@ -1746,7 +1824,6 @@ class MainWindow(QMainWindow):
         self.btn_col_blue.toggled.connect(lambda v: v and self._apply_text_color(COLOR_BLUE))
         self.btn_col_yellow.toggled.connect(lambda v: v and self._apply_text_color(COLOR_YELLOW))
 
-        # --- List buttons ---
         self.btn_bullets = QToolButton()
         self.btn_bullets.setText("•")
         self.btn_bullets.setFixedSize(28, 26)
@@ -1759,14 +1836,12 @@ class MainWindow(QMainWindow):
         self.btn_numbered.setToolTip("Numbered List")
         self.btn_numbered.clicked.connect(lambda: self._apply_list("number"))
 
-        # Ideas toggle
         self.btn_ideas = QToolButton()
         self.btn_ideas.setText("Ideas")
         self.btn_ideas.setToolTip("Toggle Global Ideas panel (전역 아이디어)")
         self.btn_ideas.setCheckable(True)
         self.btn_ideas.toggled.connect(self._on_toggle_ideas)
 
-        # ---- Row1 ----
         row1 = QWidget()
         r1 = QHBoxLayout(row1)
         r1.setContentsMargins(0, 0, 0, 0)
@@ -1783,32 +1858,26 @@ class MainWindow(QMainWindow):
         r1.addStretch(1)
         r1.addWidget(self.btn_ideas)
 
-        # ---- Row2 ----
         row2 = QWidget()
         r2 = QHBoxLayout(row2)
         r2.setContentsMargins(0, 0, 0, 0)
         r2.setSpacing(6)
 
-        # Text color
         r2.addWidget(self.btn_col_default)
         r2.addWidget(self.btn_col_red)
         r2.addWidget(self.btn_col_blue)
         r2.addWidget(self.btn_col_yellow)
-
         r2.addWidget(_vsep())
-
-        # Lists
         r2.addWidget(self.btn_bullets)
         r2.addWidget(self.btn_numbered)
-
         r2.addStretch(1)
 
         fmt_outer.addWidget(row1)
         fmt_outer.addWidget(row2)
 
         self.notes_ideas_splitter = QSplitter(Qt.Horizontal)
+        self.notes_ideas_splitter.setChildrenCollapsible(False)
 
-        # Left: Checklist + Description
         self.notes_left = QWidget()
         notes_left_l = QVBoxLayout(self.notes_left)
         notes_left_l.setContentsMargins(0, 0, 0, 0)
@@ -1833,7 +1902,7 @@ class MainWindow(QMainWindow):
             note.textChanged.connect(self._on_page_field_changed)
             note.installEventFilter(self)
             note.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
-            note.setTabChangesFocus(False)  # IMPORTANT for Tab indentation
+            note.setTabChangesFocus(False)
             self.chk_notes.append(note)
 
             chk_layout.addWidget(cb)
@@ -1844,12 +1913,11 @@ class MainWindow(QMainWindow):
         self.text_edit.textChanged.connect(self._on_page_field_changed)
         self.text_edit.installEventFilter(self)
         self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
-        self.text_edit.setTabChangesFocus(False)  # IMPORTANT for Tab indentation
+        self.text_edit.setTabChangesFocus(False)
 
         notes_left_l.addWidget(self.chk_group)
         notes_left_l.addWidget(self.text_edit, 1)
 
-        # Right: Ideas
         self.ideas_panel = QFrame()
         self.ideas_panel.setFrameShape(QFrame.StyledPanel)
         self.ideas_panel.setMinimumWidth(320)
@@ -1865,30 +1933,20 @@ class MainWindow(QMainWindow):
         ideas_l.setContentsMargins(10, 10, 10, 10)
         ideas_l.setSpacing(6)
 
-        ideas_header = QWidget()
-        ideas_header_l = QHBoxLayout(ideas_header)
-        ideas_header_l.setContentsMargins(0, 0, 0, 0)
-        ideas_header_l.setSpacing(6)
-
         self.lbl_ideas = QLabel("Global Ideas")
         self.lbl_ideas.setStyleSheet("font-weight: 700;")
-        ideas_header_l.addWidget(self.lbl_ideas, 1)
+        ideas_l.addWidget(self.lbl_ideas)
 
         self.edit_global_ideas = QTextEdit()
         self.edit_global_ideas.setPlaceholderText("전역적으로 적용할 아이디어를 여기에 작성하세요... (서식/색상 가능)")
         self.edit_global_ideas.textChanged.connect(self._on_page_field_changed)
         self.edit_global_ideas.installEventFilter(self)
         self.edit_global_ideas.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
-        self.edit_global_ideas.setTabChangesFocus(False)  # IMPORTANT for Tab indentation
-
-        ideas_l.addWidget(ideas_header)
+        self.edit_global_ideas.setTabChangesFocus(False)
         ideas_l.addWidget(self.edit_global_ideas, 1)
 
         self.notes_ideas_splitter.addWidget(self.notes_left)
         self.notes_ideas_splitter.addWidget(self.ideas_panel)
-        self.notes_ideas_splitter.setChildrenCollapsible(False)
-        self.notes_ideas_splitter.setCollapsible(0, True)
-        self.notes_ideas_splitter.setCollapsible(1, True)
         self.notes_ideas_splitter.setStretchFactor(0, 3)
         self.notes_ideas_splitter.setStretchFactor(1, 1)
 
@@ -1900,7 +1958,76 @@ class MainWindow(QMainWindow):
         self.page_splitter.setStretchFactor(0, 1)
         self.page_splitter.setStretchFactor(1, 1)
 
-        right_layout.addWidget(self.page_splitter, 1)
+        main_content_l.addWidget(self.page_splitter, 1)
+
+        # --- trace container widget ---
+        trace_container = QWidget()
+        tc_l = QVBoxLayout(trace_container)
+        tc_l.setContentsMargins(0, 0, 0, 0)
+        tc_l.setSpacing(6)
+
+        self.trace_group = QGroupBox("Trace")
+        self.trace_group.setStyleSheet("QGroupBox { font-weight: 600; }")
+
+        trace_l = QVBoxLayout(self.trace_group)
+        trace_l.setContentsMargins(10, 10, 10, 10)
+        trace_l.setSpacing(6)
+
+        trace_bar = QWidget()
+        trace_bar_l = QHBoxLayout(trace_bar)
+        trace_bar_l.setContentsMargins(0, 0, 0, 0)
+        trace_bar_l.setSpacing(6)
+
+        self.btn_trace_clear = QPushButton("Clear")
+        self.btn_trace_copy = QPushButton("Copy")
+        self.btn_trace_hide = QPushButton("Hide")
+
+        self.btn_trace_clear.clicked.connect(self._clear_trace)
+        self.btn_trace_copy.clicked.connect(self._copy_trace_to_clipboard)
+        self.btn_trace_hide.clicked.connect(lambda: self._set_trace_visible(False, persist=True))
+
+        trace_bar_l.addWidget(QLabel("Debug output"), 1)
+        trace_bar_l.addWidget(self.btn_trace_copy)
+        trace_bar_l.addWidget(self.btn_trace_clear)
+        trace_bar_l.addWidget(self.btn_trace_hide)
+
+        self.trace_edit = QPlainTextEdit()
+        self.trace_edit.setReadOnly(True)
+        self.trace_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.trace_edit.setStyleSheet("""
+            QPlainTextEdit {
+                background: #0F1115;
+                color: #D7D7D7;
+                border: 1px solid #2A2F3A;
+                border-radius: 8px;
+                padding: 8px;
+                font-family: Consolas, 'Courier New', monospace;
+                font-size: 11px;
+            }
+        """)
+
+        trace_l.addWidget(trace_bar)
+        trace_l.addWidget(self.trace_edit, 1)
+
+        self.trace_show_row = QWidget()
+        tsr_l = QHBoxLayout(self.trace_show_row)
+        tsr_l.setContentsMargins(0, 0, 0, 0)
+        tsr_l.setSpacing(6)
+        self.btn_trace_show = QPushButton("Show Trace")
+        self.btn_trace_show.clicked.connect(lambda: self._set_trace_visible(True, persist=True))
+        tsr_l.addStretch(1)
+        tsr_l.addWidget(self.btn_trace_show)
+
+        tc_l.addWidget(self.trace_group, 1)
+        tc_l.addWidget(self.trace_show_row, 0)
+
+        self.right_vsplit.addWidget(main_content)
+        self.right_vsplit.addWidget(trace_container)
+        self.right_vsplit.setStretchFactor(0, 1)
+        self.right_vsplit.setStretchFactor(1, 0)
+        self.right_vsplit.setSizes([760, 210])
+
+        right_layout.addWidget(self.right_vsplit, 1)
 
         main_splitter.addWidget(left_panel)
         main_splitter.addWidget(right_panel)
@@ -1912,15 +2039,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(main_splitter)
 
-        # Encourage image area
         self.text_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.img_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.text_container.setMinimumWidth(440)
 
-        # Default active editor
         self._set_active_rich_edit(self.text_edit)
-
-        # Default checked states
         self.btn_col_default.setChecked(True)
 
     # ---------------- overlays for pane A/B ----------------
@@ -1928,8 +2051,6 @@ class MainWindow(QMainWindow):
         self._pane_ui = {}
         self._pane_ui["A"] = self._build_overlay_for_pane("A", self.viewer_a)
         self._pane_ui["B"] = self._build_overlay_for_pane("B", self.viewer_b)
-
-        # Initial active pane
         self._set_active_pane("A")
 
     def _build_overlay_for_pane(self, pane: str, viewer: Optional[ZoomPanAnnotateView]) -> Dict[str, Any]:
@@ -1959,7 +2080,6 @@ class MainWindow(QMainWindow):
         btn_desc_toggle.toggled.connect(self._on_toggle_desc)
 
         anno_panel = QFrame(vp)
-        anno_panel.setObjectName(f"anno_panel_{pane}")
         anno_panel.setFrameShape(QFrame.StyledPanel)
         anno_panel.setVisible(False)
         anno_panel.setFixedWidth(240)
@@ -2028,29 +2148,8 @@ class MainWindow(QMainWindow):
         btn_clear_lines = QPushButton("Clear Lines", anno_panel)
         p_layout.addWidget(btn_clear_lines)
 
-        help_lbl = QLabel(
-            "• Wheel: Zoom\n"
-            "• Drag: Pan (Draw OFF)\n"
-            "• Drag: Draw (Draw ON)\n"
-            "• Shift+Drag: Straight line\n"
-            "• Ctrl+V: Paste image (viewer focused)\n"
-            "• Alt+←/→: Prev/Next\n"
-            "• Ctrl+N: Add page, Ctrl+S: Save\n"
-            "• Ctrl+B/I/U: Text Bold/Italic/Underline (active text box)\n"
-            "• Text Color: Default/Red/Blue/Yellow\n"
-            "• List: Bullet/Numbered\n"
-            "• List indent: Tab / Shift+Tab\n"
-            "• Notes button: Description 패널 숨김/표시",
-            anno_panel
-        )
-        help_lbl.setWordWrap(True)
-        help_lbl.setStyleSheet("color:#555; font-size: 11px;")
-        p_layout.addWidget(help_lbl)
-
         def apply_pen():
-            color_hex = str(combo_color.currentData())
-            width = float(combo_width.currentData())
-            viewer.set_pen(color_hex, width)
+            viewer.set_pen(str(combo_color.currentData()), float(combo_width.currentData()))
 
         combo_color.currentIndexChanged.connect(lambda _: apply_pen())
         combo_width.currentIndexChanged.connect(lambda _: apply_pen())
@@ -2063,6 +2162,7 @@ class MainWindow(QMainWindow):
             else:
                 viewer.set_mode_pan()
             viewer.setFocus(Qt.MouseFocusReason)
+            self.trace(f"Pane {pane} draw_mode={'ON' if checked else 'OFF'}", "DEBUG")
 
         btn_draw_mode.toggled.connect(toggle_draw)
 
@@ -2085,6 +2185,7 @@ class MainWindow(QMainWindow):
             viewer.clear_strokes()
             self._flush_page_fields_to_model_and_save()
             viewer.setFocus(Qt.MouseFocusReason)
+            self.trace(f"Cleared strokes on pane {pane}", "INFO")
 
         btn_clear_lines.clicked.connect(clear_lines)
 
@@ -2093,6 +2194,7 @@ class MainWindow(QMainWindow):
             btn_anno_toggle.setVisible(False)
             anno_panel.setVisible(True)
             self._reposition_overlay(pane)
+            self.trace(f"Opened annotate panel ({pane})", "DEBUG")
 
         def close_panel():
             if btn_draw_mode.isChecked():
@@ -2101,11 +2203,11 @@ class MainWindow(QMainWindow):
             anno_panel.setVisible(False)
             btn_anno_toggle.setVisible(True)
             self._reposition_overlay(pane)
+            self.trace(f"Closed annotate panel ({pane})", "DEBUG")
 
         btn_anno_toggle.clicked.connect(open_panel)
         btn_anno_close.clicked.connect(close_panel)
 
-        # initial position
         self._reposition_overlay(pane)
 
         return {
@@ -2122,7 +2224,6 @@ class MainWindow(QMainWindow):
         if pane not in ("A", "B"):
             pane = "A"
         self._active_pane = pane
-        # Visual hint: slightly different border
         if self.viewer_a is not None:
             self.viewer_a.setStyleSheet("border: 2px solid #5A8DFF;" if pane == "A" else "border: 1px solid #D0D0D0;")
         if self.viewer_b is not None:
@@ -2150,14 +2251,10 @@ class MainWindow(QMainWindow):
             btn_desc_toggle.move(max(margin, panel_x - margin - btn_desc_toggle.width()), margin)
         else:
             btn_anno_toggle.move(max(margin, w - btn_anno_toggle.width() - margin), margin)
-            btn_desc_toggle.move(
-                max(margin, w - btn_desc_toggle.width() - margin),
-                margin + btn_anno_toggle.height() + gap
-            )
+            btn_desc_toggle.move(max(margin, w - btn_desc_toggle.width() - margin), margin + btn_anno_toggle.height() + gap)
 
         cap_min = 260
         cap_max = 720
-
         if anno_panel.isVisible():
             cap_right_limit = anno_panel.x() - margin
         else:
@@ -2168,7 +2265,7 @@ class MainWindow(QMainWindow):
         edit_cap.setFixedWidth(cap_w)
         edit_cap.move(cap_x, margin)
 
-    # ---------------- v0.4.x+: rebuild model from current tree ----------------
+    # ---------------- rebuild model from tree ----------------
     def _rebuild_db_from_tree(self) -> None:
         self._flush_page_fields_to_model_and_save()
 
@@ -2216,6 +2313,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
+        self.trace("Rebuilt DB from tree structure", "INFO")
 
     # ---------------- Rich text target / sync ----------------
     def _set_active_rich_edit(self, editor: QTextEdit) -> None:
@@ -2280,7 +2378,6 @@ class MainWindow(QMainWindow):
             return
         cur = ed.textCursor()
         style = QTextListFormat.ListDisc if kind == "bullet" else QTextListFormat.ListDecimal
-
         fmt = QTextListFormat()
         fmt.setStyle(style)
 
@@ -2300,7 +2397,6 @@ class MainWindow(QMainWindow):
             return
         cf = ed.currentCharFormat()
 
-        # B/I/U
         is_bold = cf.fontWeight() >= QFont.Bold
         is_italic = bool(cf.fontItalic())
         is_under = bool(cf.fontUnderline())
@@ -2315,7 +2411,6 @@ class MainWindow(QMainWindow):
         self.btn_fmt_italic.blockSignals(False)
         self.btn_fmt_underline.blockSignals(False)
 
-        # Text Color sync
         col = cf.foreground().color() if cf.foreground().style() != Qt.NoBrush else QColor(COLOR_DEFAULT)
         if not col.isValid():
             col = QColor(COLOR_DEFAULT)
@@ -2337,11 +2432,6 @@ class MainWindow(QMainWindow):
 
     # ---------------- List indent/outdent (Tab / Shift+Tab) ----------------
     def _indent_or_outdent_list(self, editor: QTextEdit, delta: int) -> bool:
-        """
-        Returns True if handled.
-        - If cursor is in a list: indent/outdent list level by delta
-        - Else: return False
-        """
         cur = editor.textCursor()
         lst = cur.currentList()
         if lst is None:
@@ -2385,6 +2475,7 @@ class MainWindow(QMainWindow):
         if persist:
             self.db.ui_state["global_ideas_visible"] = bool(visible)
             self._save_db_with_warning()
+            self.trace(f"Global Ideas visible={visible}", "INFO")
 
     # ---------------- Description toggle ----------------
     def _on_toggle_desc(self, checked: bool) -> None:
@@ -2397,7 +2488,6 @@ class MainWindow(QMainWindow):
         self._desc_visible = bool(visible)
         self.notes_left.setVisible(self._desc_visible)
 
-        # Sync both pane buttons
         for pane in ("A", "B"):
             ui = self._pane_ui.get(pane, {})
             if ui and "desc_toggle" in ui:
@@ -2412,20 +2502,19 @@ class MainWindow(QMainWindow):
         if persist:
             self.db.ui_state["desc_visible"] = bool(self._desc_visible)
             self._save_db_with_warning()
+            self.trace(f"Description visible={visible}", "INFO")
 
     def _collapse_text_container(self, collapse: bool) -> None:
         if collapse:
             if self.text_container.isVisible():
                 self._remember_page_splitter_sizes()
                 self._save_db_with_warning()
-
             self.text_container.setVisible(False)
             total = max(1, self.page_splitter.width())
             self.page_splitter.setSizes([total, 0])
         else:
             if not self.text_container.isVisible():
                 self.text_container.setVisible(True)
-
             ps = self.db.ui_state.get("page_splitter_sizes")
             if self._is_valid_splitter_sizes(ps):
                 self.page_splitter.setSizes(ps)
@@ -2433,6 +2522,20 @@ class MainWindow(QMainWindow):
                 self.page_splitter.setSizes(self._page_split_prev_sizes)
             else:
                 self.page_splitter.setSizes([760, 700])
+
+    def _apply_notes_splitter_sizes_both_visible(self, total: int) -> None:
+        ns = self.db.ui_state.get("notes_splitter_sizes")
+        if self._is_valid_notes_sizes_for_both_visible(ns):
+            self.notes_ideas_splitter.setSizes([int(ns[0]), int(ns[1])])
+            return
+
+        if self._notes_split_prev_sizes and self._is_valid_notes_sizes_for_both_visible(self._notes_split_prev_sizes):
+            self.notes_ideas_splitter.setSizes([int(self._notes_split_prev_sizes[0]), int(self._notes_split_prev_sizes[1])])
+            return
+
+        right = max(320, min(520, int(total * 0.34)))
+        left = max(220, total - right)
+        self.notes_ideas_splitter.setSizes([left, right])
 
     def _update_text_area_layout(self) -> None:
         ideas_vis = bool(self.ideas_panel.isVisible())
@@ -2446,23 +2549,13 @@ class MainWindow(QMainWindow):
 
         total = max(1, self.notes_ideas_splitter.width())
         if desc_vis and ideas_vis:
-            ns = self.db.ui_state.get("notes_splitter_sizes")
-            if self._is_valid_splitter_sizes(ns):
-                self.notes_ideas_splitter.setSizes(ns)
-            elif self._notes_split_prev_sizes and len(self._notes_split_prev_sizes) == 2:
-                self.notes_ideas_splitter.setSizes(self._notes_split_prev_sizes)
-            else:
-                right = max(320, min(520, int(total * 0.34)))
-                left = max(1, total - right)
-                self.notes_ideas_splitter.setSizes([left, right])
-
+            self._apply_notes_splitter_sizes_both_visible(total)
         elif desc_vis and (not ideas_vis):
             self.notes_ideas_splitter.setSizes([total, 0])
-
         elif (not desc_vis) and ideas_vis:
             self.notes_ideas_splitter.setSizes([0, total])
 
-    # ---------------- Context menu ----------------
+    # ---------------- Context menu / category ops ----------------
     def _on_tree_context_menu(self, pos) -> None:
         item = self.steps_tree.itemAt(pos)
         if not item:
@@ -2528,7 +2621,6 @@ class MainWindow(QMainWindow):
                 self.delete_step()
             return
 
-    # ---------------- Category ops ----------------
     def _ctx_add_step_in_category(self, cat: str) -> None:
         self._flush_page_fields_to_model_and_save()
         name, ok = QInputDialog.getText(self, "Add Step", f"Step name (Category: {cat}):", text="New Step")
@@ -2541,6 +2633,7 @@ class MainWindow(QMainWindow):
         self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
+        self.trace(f"Added step '{name.strip()}' in category '{cat}'", "INFO")
 
     def _ctx_rename_category(self, old_cat: str) -> None:
         new_cat, ok = QInputDialog.getText(self, "Rename Category", "New category name:", text=old_cat)
@@ -2554,6 +2647,7 @@ class MainWindow(QMainWindow):
         self.db.rename_category(old_cat, new_cat)
         self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
+        self.trace(f"Renamed category '{old_cat}' -> '{new_cat}'", "INFO")
 
     def _ctx_delete_category(self, cat: str) -> None:
         msg = QMessageBox(self)
@@ -2593,6 +2687,7 @@ class MainWindow(QMainWindow):
             self._save_db_with_warning()
             self._refresh_steps_tree(select_current=True)
             self._load_current_page_to_ui()
+            self.trace(f"Deleted category '{cat}' (moved steps to '{target}')", "INFO")
             return
 
         if clicked == btn_delete:
@@ -2611,12 +2706,14 @@ class MainWindow(QMainWindow):
             self._save_db_with_warning()
             self._refresh_steps_tree(select_current=True)
             self._load_current_page_to_ui()
+            self.trace(f"Deleted category '{cat}' and its steps", "WARN")
             return
 
     def _ctx_move_category(self, cat: str, direction: int) -> None:
         self.db.move_category(cat, direction)
         self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
+        self.trace(f"Moved category '{cat}' direction={direction}", "DEBUG")
 
     # ---------------- State helpers ----------------
     def _load_ui_state_or_defaults(self) -> None:
@@ -2653,11 +2750,14 @@ class MainWindow(QMainWindow):
         self.db.ui_state["current_page_index"] = self.current_page_index
         self.db.ui_state["desc_visible"] = bool(self._desc_visible)
         self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
+        self.db.ui_state["trace_visible"] = bool(self._trace_visible)
 
         if self.text_container.isVisible():
             self._remember_page_splitter_sizes()
         if self.notes_left.isVisible() and self.ideas_panel.isVisible():
             self._remember_notes_splitter_sizes()
+
+        self._remember_right_vsplit_sizes()
 
     # ---------------- Tree: category -> steps ----------------
     def _refresh_steps_tree(self, select_current: bool = False) -> None:
@@ -2714,7 +2814,6 @@ class MainWindow(QMainWindow):
         item = self.steps_tree.currentItem()
         if not item:
             return
-
         if item.data(0, self.NODE_TYPE_ROLE) != "step":
             return
 
@@ -2735,6 +2834,7 @@ class MainWindow(QMainWindow):
         self.current_page_index = max(0, min(st.last_page_index, len(st.pages) - 1))
         self._save_ui_state()
         self._load_current_page_to_ui()
+        self.trace(f"Selected step changed -> {st.name} (cat={st.category})", "INFO")
 
     # ---------------- Safe save wrapper ----------------
     def _save_db_with_warning(self) -> bool:
@@ -2745,6 +2845,7 @@ class MainWindow(QMainWindow):
         now = time.time()
         if (now - self._last_save_warn_ts) >= self._save_warn_cooldown_sec:
             self._last_save_warn_ts = now
+            self.trace("Save failed (possible file lock). autosave may have been created.", "WARN")
             QMessageBox.warning(
                 self,
                 "Save warning",
@@ -2767,7 +2868,6 @@ class MainWindow(QMainWindow):
             try:
                 self.edit_stock_name.clear()
                 self.edit_ticker.clear()
-
                 for pane in ("A", "B"):
                     ui = self._pane_ui.get(pane, {})
                     if ui:
@@ -2778,7 +2878,6 @@ class MainWindow(QMainWindow):
                     viewer = self.viewer_a if pane == "A" else self.viewer_b
                     if viewer is not None:
                         viewer.clear_image()
-
                 for cb in self.chk_boxes:
                     cb.setChecked(False)
                 for note in self.chk_notes:
@@ -2794,59 +2893,42 @@ class MainWindow(QMainWindow):
             self.edit_stock_name.setText(pg.stock_name or "")
             self.edit_ticker.setText(pg.ticker or "")
 
-            # Pane captions
-            capA = pg.image_a_caption or ""
-            capB = pg.image_b_caption or ""
             if self._pane_ui.get("A"):
-                self._pane_ui["A"]["cap"].setPlainText(capA)
+                self._pane_ui["A"]["cap"].setPlainText(pg.image_a_caption or "")
             if self._pane_ui.get("B"):
-                self._pane_ui["B"]["cap"].setPlainText(capB)
+                self._pane_ui["B"]["cap"].setPlainText(pg.image_b_caption or "")
 
-            # Pane images
             if self.viewer_a is not None:
-                if pg.image_a_path:
-                    abs_a = _abspath_from_rel(pg.image_a_path)
-                    if os.path.exists(abs_a):
-                        self.viewer_a.set_image_path(abs_a)
-                    else:
-                        self.viewer_a.clear_image()
+                if pg.image_a_path and os.path.exists(_abspath_from_rel(pg.image_a_path)):
+                    self.viewer_a.set_image_path(_abspath_from_rel(pg.image_a_path))
                 else:
                     self.viewer_a.clear_image()
                 self.viewer_a.set_strokes(pg.strokes_a or [])
                 self.viewer_a.set_mode_pan()
 
             if self.viewer_b is not None:
-                if pg.image_b_path:
-                    abs_b = _abspath_from_rel(pg.image_b_path)
-                    if os.path.exists(abs_b):
-                        self.viewer_b.set_image_path(abs_b)
-                    else:
-                        self.viewer_b.clear_image()
+                if pg.image_b_path and os.path.exists(_abspath_from_rel(pg.image_b_path)):
+                    self.viewer_b.set_image_path(_abspath_from_rel(pg.image_b_path))
                 else:
                     self.viewer_b.clear_image()
                 self.viewer_b.set_strokes(pg.strokes_b or [])
                 self.viewer_b.set_mode_pan()
 
-            # Checklist
             cl = _normalize_checklist(pg.checklist)
             for i in range(len(DEFAULT_CHECK_QUESTIONS)):
                 self.chk_boxes[i].setChecked(bool(cl[i].get("checked", False)))
-                val = str(cl[i].get("note", "") or "")
-                val = _strip_highlight_html(val)
+                val = _strip_highlight_html(str(cl[i].get("note", "") or ""))
                 if _looks_like_html(val):
                     self.chk_notes[i].setHtml(val)
                 else:
                     self.chk_notes[i].setPlainText(val)
 
-            # Description
-            val_desc = pg.note_text or ""
-            val_desc = _strip_highlight_html(val_desc)
+            val_desc = _strip_highlight_html(pg.note_text or "")
             if _looks_like_html(val_desc):
                 self.text_edit.setHtml(val_desc)
             else:
                 self.text_edit.setPlainText(val_desc)
 
-            # close overlay panels & reset draw
             for pane in ("A", "B"):
                 ui = self._pane_ui.get(pane, {})
                 if ui:
@@ -2860,6 +2942,8 @@ class MainWindow(QMainWindow):
             self._sync_format_buttons()
         finally:
             self._loading_ui = False
+
+        self.trace(f"Loaded page {self.current_page_index + 1}/{len(st.pages)} for step '{st.name}'", "DEBUG")
 
     def _on_page_field_changed(self) -> None:
         if self._loading_ui:
@@ -2891,7 +2975,6 @@ class MainWindow(QMainWindow):
             self.db.global_ideas = new_global
             changed = True
 
-        # captions
         capA = self._pane_ui.get("A", {}).get("cap")
         capB = self._pane_ui.get("B", {}).get("cap")
         new_cap_a = capA.toPlainText() if capA is not None else ""
@@ -2918,7 +3001,6 @@ class MainWindow(QMainWindow):
             pg.ticker = new_ticker
             changed = True
 
-        # strokes
         if self.viewer_a is not None:
             new_strokes_a = self.viewer_a.get_strokes()
             if pg.strokes_a != new_strokes_a:
@@ -2941,11 +3023,13 @@ class MainWindow(QMainWindow):
 
         if changed:
             pg.updated_at = _now_epoch()
+            self.trace(f"Auto-saved changes (step='{st.name}', page={self.current_page_index + 1})", "DEBUG")
 
         self._save_db_with_warning()
 
     def force_save(self) -> None:
         self._flush_page_fields_to_model_and_save()
+        self.trace("Force save requested", "INFO")
         QMessageBox.information(self, "Saved", "Save requested (check warnings if file is locked).")
 
     def _update_nav(self) -> None:
@@ -2958,12 +3042,10 @@ class MainWindow(QMainWindow):
         self.btn_next.setEnabled(total > 0 and self.current_page_index < total - 1)
         self.btn_del_page.setEnabled(total > 1)
 
-    # ---------------- Global ideas load ----------------
     def _load_global_ideas_to_ui(self) -> None:
         self._loading_ui = True
         try:
-            val = self.db.global_ideas or ""
-            val = _strip_highlight_html(val)
+            val = _strip_highlight_html(self.db.global_ideas or "")
             if _looks_like_html(val):
                 self.edit_global_ideas.setHtml(val)
             else:
@@ -2981,6 +3063,7 @@ class MainWindow(QMainWindow):
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self._load_current_page_to_ui()
+        self.trace("Prev page", "INFO")
 
     def go_next_page(self) -> None:
         st = self.current_step()
@@ -2991,6 +3074,7 @@ class MainWindow(QMainWindow):
         st.last_page_index = self.current_page_index
         self._save_ui_state()
         self._load_current_page_to_ui()
+        self.trace("Next page", "INFO")
 
     def add_page(self) -> None:
         st = self.current_step()
@@ -3006,6 +3090,7 @@ class MainWindow(QMainWindow):
         self._save_ui_state()
         self._save_db_with_warning()
         self._load_current_page_to_ui()
+        self.trace(f"Added page (now {self.current_page_index + 1}/{len(st.pages)})", "INFO")
 
     def delete_page(self) -> None:
         st = self.current_step()
@@ -3030,6 +3115,7 @@ class MainWindow(QMainWindow):
         self._save_ui_state()
         self._save_db_with_warning()
         self._load_current_page_to_ui()
+        self.trace(f"Deleted page (now {self.current_page_index + 1}/{len(st.pages)})", "WARN")
 
     # ---------------- Image handling (dual panes) ----------------
     def reset_image_view(self, pane: str) -> None:
@@ -3039,6 +3125,7 @@ class MainWindow(QMainWindow):
         self._set_active_pane(pane)
         viewer.fit_to_view()
         viewer.setFocus(Qt.MouseFocusReason)
+        self.trace(f"Fit view pane {pane}", "DEBUG")
 
     def _on_image_dropped(self, pane: str, path: str) -> None:
         self._set_image_from_file(pane, path)
@@ -3083,6 +3170,7 @@ class MainWindow(QMainWindow):
         pg.updated_at = _now_epoch()
         self._save_db_with_warning()
         viewer.clear_image()
+        self.trace(f"Cleared image pane {pane}", "INFO")
 
     def paste_image_from_clipboard(self, pane: str) -> None:
         st = self.current_step()
@@ -3100,6 +3188,7 @@ class MainWindow(QMainWindow):
         img: QImage = cb.image()
         if img.isNull():
             QMessageBox.information(self, "Paste Image", "Clipboard does not contain an image.")
+            self.trace(f"Paste failed (clipboard empty) pane {pane}", "WARN")
             return
 
         self._flush_page_fields_to_model_and_save()
@@ -3115,6 +3204,7 @@ class MainWindow(QMainWindow):
         ok = img.save(dst_abs, "PNG")
         if not ok:
             QMessageBox.warning(self, "Paste failed", "Clipboard image could not be saved as PNG.")
+            self.trace(f"Paste failed (save PNG) pane {pane}", "ERROR")
             return
 
         if pane == "A":
@@ -3132,6 +3222,8 @@ class MainWindow(QMainWindow):
         viewer.set_image_path(dst_abs)
         viewer.set_strokes([])
         viewer.setFocus(Qt.MouseFocusReason)
+
+        self.trace(f"Pasted image pane {pane}: {dst_rel}", "INFO")
 
     def _set_image_from_file(self, pane: str, src_path: str) -> None:
         st = self.current_step()
@@ -3151,6 +3243,7 @@ class MainWindow(QMainWindow):
         ext = os.path.splitext(src_path)[1].lower()
         if ext not in [".png", ".jpg", ".jpeg", ".bmp", ".webp"]:
             QMessageBox.warning(self, "Invalid file", "Please select an image file.")
+            self.trace(f"Invalid image extension: {ext}", "WARN")
             return
 
         safe_step = _sanitize_for_folder(st.name, st.id[:8])
@@ -3165,6 +3258,7 @@ class MainWindow(QMainWindow):
             shutil.copy2(src_path, dst_abs)
         except Exception as e:
             QMessageBox.critical(self, "Copy failed", f"Failed to copy image:\n{e}")
+            self.trace(f"Copy failed: {e}", "ERROR")
             return
 
         if pane == "A":
@@ -3183,6 +3277,8 @@ class MainWindow(QMainWindow):
         viewer.set_strokes([])
         viewer.setFocus(Qt.MouseFocusReason)
 
+        self.trace(f"Loaded image pane {pane}: {dst_rel}", "INFO")
+
     # ---------------- Text/meta utilities ----------------
     def copy_ticker(self) -> None:
         txt = self.edit_ticker.text().strip()
@@ -3190,6 +3286,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Copy Ticker", "Ticker is empty.")
             return
         QApplication.clipboard().setText(txt)
+        self.trace(f"Copied ticker: {txt}", "DEBUG")
 
     # ---------------- Step management ----------------
     def add_step(self) -> None:
@@ -3214,6 +3311,7 @@ class MainWindow(QMainWindow):
         self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
+        self.trace(f"Added step '{st.name}' (cat={st.category})", "INFO")
 
     def rename_step(self) -> None:
         st = self.current_step()
@@ -3224,9 +3322,11 @@ class MainWindow(QMainWindow):
         if not ok or not new_name.strip():
             return
 
+        old = st.name
         st.name = new_name.strip()
         self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
+        self.trace(f"Renamed step '{old}' -> '{st.name}'", "INFO")
 
     def set_step_category(self) -> None:
         st = self.current_step()
@@ -3244,11 +3344,13 @@ class MainWindow(QMainWindow):
         if not ok:
             return
 
+        old = st.category
         st.category = (new_cat or "").strip() or "General"
         if st.category not in self.db.category_order:
             self.db.category_order.append(st.category)
         self._save_db_with_warning()
         self._refresh_steps_tree(select_current=True)
+        self.trace(f"Changed step category '{st.name}': '{old}' -> '{st.category}'", "INFO")
 
     def delete_step(self) -> None:
         st = self.current_step()
@@ -3268,6 +3370,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
+        name = st.name
         ok = self.db.delete_step(st.id)
         if not ok:
             QMessageBox.warning(self, "Failed", "Cannot delete the last remaining step.")
@@ -3281,13 +3384,13 @@ class MainWindow(QMainWindow):
 
         self._refresh_steps_tree(select_current=True)
         self._load_current_page_to_ui()
+        self.trace(f"Deleted step '{name}'", "WARN")
 
     # ---------------- Event filter ----------------
     def eventFilter(self, obj, event) -> bool:
         va = getattr(self, "viewer_a", None)
         vb = getattr(self, "viewer_b", None)
 
-        # Click on pane viewport -> set active pane
         if va is not None and obj is va.viewport() and event.type() == QEvent.MouseButtonPress:
             self._set_active_pane("A")
             return False
@@ -3295,7 +3398,6 @@ class MainWindow(QMainWindow):
             self._set_active_pane("B")
             return False
 
-        # Viewport resize -> reposition overlays
         if va is not None and obj is va.viewport() and event.type() == QEvent.Resize:
             self._reposition_overlay("A")
             return super().eventFilter(obj, event)
@@ -3303,12 +3405,10 @@ class MainWindow(QMainWindow):
             self._reposition_overlay("B")
             return super().eventFilter(obj, event)
 
-        # Focus handling: set active editor
         if isinstance(obj, QTextEdit) and event.type() == QEvent.FocusIn:
             self._set_active_rich_edit(obj)
             return super().eventFilter(obj, event)
 
-        # Key handling: Tab / Shift+Tab list indent/outdent
         if isinstance(obj, QTextEdit) and event.type() == QEvent.KeyPress:
             key = event.key()
             mods = event.modifiers()
@@ -3317,13 +3417,11 @@ class MainWindow(QMainWindow):
             is_backtab = (key == Qt.Key_Backtab) or (is_tab and bool(mods & Qt.ShiftModifier))
 
             if is_backtab:
-                # Shift+Tab: outdent ONLY when in list. Otherwise, default behavior.
                 if self._indent_or_outdent_list(obj, delta=-1):
                     return True
                 return False
 
             if is_tab:
-                # Tab: indent list if in list, else insert spaces
                 if self._indent_or_outdent_list(obj, delta=+1):
                     return True
                 obj.textCursor().insertText("    ")
@@ -3345,3 +3443,18 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ============================================================
+# Release History (append-only)
+# ------------------------------------------------------------
+# v0.5.1 (2026-01-01)
+# - (FIX) Global Ideas 패널 표시/폭 0 문제 보정 + post-init 레이아웃 보정
+# - (DEV) Trace 패널(하단) 추가: Vertical Splitter로 높이 조절 + 상태 저장
+#
+# v0.5.0 (2025-12-28)
+# - (UX) Dual chart image panes (A/B) stacked vertically for 비교 분석
+#   - Each page can store two images + two independent annotation stroke sets
+#   - Per-pane Open / Paste / Clear / Fit
+#   - Per-pane caption overlay (hover/클릭 확장)
+# ============================================================
