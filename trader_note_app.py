@@ -1,19 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-Trader Chart Note App (PyQt5) - OneNote-style Step/Page Navigator
+Trader Chart Note App (PyQt5) - Folder(Category) + Item 구조
 
-Version: 0.5.1  (2026-01-01)
+Version: 0.6.0  (2026-01-01)
 Versioning: MAJOR.MINOR.PATCH (SemVer)
 
-Release Notes (v0.5.1):
-- (FIX) Global Ideas 패널이 "켜졌는데 안 보이는" 케이스 개선
-  - notes_ideas_splitter 저장 사이즈가 Ideas 폭을 0에 가깝게 만들면 자동으로 최소폭(>=320)으로 보정
-  - 앱 초기 구동 시(레이아웃 사이즈 미확정 구간)에서 가시성/사이즈가 꼬이는 현상을 post-init 레이아웃 보정으로 완화
-- (DEV) 하단 Trace 패널 추가 (디버깅/원인추적용)
-  - 오른쪽 영역을 Vertical Splitter로 구성하여 Trace 높이 드래그 리사이즈 가능
-  - trace_visible / right_vsplit_sizes UI state 저장/복원
-  - 주요 동작(저장, 페이지 이동, 이미지 로드/붙여넣기, 트리 선택 변경 등) Trace 출력
-  - Clear / Copy / Hide(토글) 제공, 라인 수 상한 유지(기본 1200줄)
+Release Notes (v0.6.0):
+- (ARCH) 좌측 트리 구조를 "Folder(Category) / Item"으로 재구성
+  - Category는 폴더(서브 폴더 가능)
+  - Item만이 실제 데이터(Chart A/B, Annotation, Caption, Description/Checklist, Page)를 보유
+  - "Add Folder"는 현재 선택된 Category 하위에 서브 폴더를 추가
+    * Item이 선택되어 있으면 그 부모 Category 하위에 폴더 추가
+  - "Add Item"은 현재 Category 하위에 Item 추가
+- (UX) Drag & Drop 제거
+  - Folder/Item 위치 변경은 "Move Up / Move Down" 버튼으로만 지원
+  - 구조적으로 안정적인 재빌드/저장 방식 적용
+- (UI) 중앙 레이아웃 원복/유지
+  - Chart A/B는 Vertical(위/아래)
+  - Description/Checklist + Global Ideas는 차트 오른쪽(수평 분리)
+- (DEV) Debug output(Trace) 패널 유지 (v0.5.1 기능 유지)
+  - Show/Hide, Clear/Copy, 라인수 상한, Splitter 상태 저장/복원
 
 Dependencies:
   pip install PyQt5
@@ -89,7 +95,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-APP_TITLE = "Trader Chart Note (v0.5.1)"
+APP_TITLE = "Trader Chart Note (v0.6.0)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -104,6 +110,8 @@ COLOR_DEFAULT = "#222222"
 COLOR_RED = "#FF3C3C"
 COLOR_BLUE = "#2D6BFF"
 COLOR_YELLOW = "#FFD400"
+
+ROOT_CATEGORY_ID = "root"
 
 
 def _now_epoch() -> int:
@@ -226,7 +234,6 @@ def _strip_highlight_html(html: str) -> str:
         return html
 
     s = html
-
     s = re.sub(r'background-color\s*:\s*#[0-9a-fA-F]{3,8}\s*;?', '', s, flags=re.IGNORECASE)
     s = re.sub(r'background-color\s*:\s*rgba?\([^)]+\)\s*;?', '', s, flags=re.IGNORECASE)
     s = re.sub(r'background\s*:\s*#[0-9a-fA-F]{3,8}\s*;?', '', s, flags=re.IGNORECASE)
@@ -332,183 +339,6 @@ class FlowLayout(QLayout):
             line_height = max(line_height, item_size.height())
 
         return (y + line_height - rect.y()) + bottom
-
-
-# ---------------------------
-# Step Tree with Drag & Drop + Highlight + Guide label
-# ---------------------------
-class StepTreeWidget(QTreeWidget):
-    stepStructureDropped = pyqtSignal(str)      # dragged_step_id
-    categoryOrderDropped = pyqtSignal(str)      # dragged_category_name
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._drag_step_id: Optional[str] = None
-        self._drag_category_name: Optional[str] = None
-        self._drag_node_type: Optional[str] = None  # "step" or "category"
-
-        self._hl_item: Optional[QTreeWidgetItem] = None
-        self._hl_brush = QBrush(QColor(90, 141, 255, 55))
-        self._hl_clear_brush = QBrush()
-
-        self._guide = QLabel(self.viewport())
-        self._guide.setVisible(False)
-        self._guide.setStyleSheet("""
-            QLabel {
-                background: rgba(20,20,20,170);
-                color: white;
-                padding: 6px 10px;
-                border-radius: 10px;
-                font-size: 11px;
-            }
-        """)
-
-    def _set_guide(self, text: str, pos: QPoint) -> None:
-        if not text:
-            self._guide.setVisible(False)
-            return
-        self._guide.setText(text)
-        self._guide.adjustSize()
-
-        x = pos.x() + 14
-        y = pos.y() + 14
-        vw = self.viewport().width()
-        vh = self.viewport().height()
-        gw = self._guide.width()
-        gh = self._guide.height()
-        x = max(6, min(vw - gw - 6, x))
-        y = max(6, min(vh - gh - 6, y))
-        self._guide.move(x, y)
-        self._guide.setVisible(True)
-
-    def _clear_guide(self) -> None:
-        self._guide.setVisible(False)
-
-    def _set_highlight_category_item(self, cat_item: Optional[QTreeWidgetItem]) -> None:
-        if self._hl_item is cat_item:
-            return
-        if self._hl_item is not None:
-            self._hl_item.setBackground(0, self._hl_clear_brush)
-        self._hl_item = cat_item
-        if self._hl_item is not None:
-            self._hl_item.setBackground(0, self._hl_brush)
-
-    def _clear_highlight(self) -> None:
-        self._set_highlight_category_item(None)
-
-    def startDrag(self, supportedActions):
-        item = self.currentItem()
-        if not item:
-            return
-
-        node_type = item.data(0, MainWindow.NODE_TYPE_ROLE)
-        if node_type not in ("step", "category"):
-            return
-
-        self._drag_node_type = str(node_type)
-        self._drag_step_id = None
-        self._drag_category_name = None
-
-        if node_type == "step":
-            sid = item.data(0, MainWindow.STEP_ID_ROLE)
-            self._drag_step_id = str(sid) if sid else None
-        else:
-            cat = item.data(0, MainWindow.CATEGORY_NAME_ROLE)
-            if not cat:
-                cat = item.text(0)
-            self._drag_category_name = str(cat).strip() if cat else None
-
-        super().startDrag(supportedActions)
-
-    def dragEnterEvent(self, event) -> None:
-        super().dragEnterEvent(event)
-        self._clear_highlight()
-        self._clear_guide()
-
-    def dragLeaveEvent(self, event) -> None:
-        super().dragLeaveEvent(event)
-        self._clear_highlight()
-        self._clear_guide()
-
-    def _resolve_target_category_item(self, pos: QPoint) -> Tuple[Optional[QTreeWidgetItem], str]:
-        it = self.itemAt(pos)
-        if not it:
-            return None, ""
-        ntype = it.data(0, MainWindow.NODE_TYPE_ROLE)
-        if ntype == "category":
-            return it, (it.text(0) or "").strip()
-        if ntype == "step":
-            parent = it.parent()
-            if parent:
-                return parent, (parent.text(0) or "").strip()
-        return None, ""
-
-    def dragMoveEvent(self, event) -> None:
-        pos = event.pos()
-
-        if self._drag_node_type == "category":
-            it = self.itemAt(pos)
-            if it is None:
-                self._clear_highlight()
-                self._clear_guide()
-                event.ignore()
-                return
-
-            ntype = it.data(0, MainWindow.NODE_TYPE_ROLE)
-            if ntype == "step" and it.parent() is not None:
-                it = it.parent()
-
-            if it.data(0, MainWindow.NODE_TYPE_ROLE) != "category":
-                self._clear_highlight()
-                self._clear_guide()
-                event.ignore()
-                return
-
-            rect = self.visualItemRect(it)
-            y = pos.y()
-            top_band = rect.top() + int(rect.height() * 0.33)
-            bottom_band = rect.bottom() - int(rect.height() * 0.33)
-
-            if top_band <= y <= bottom_band:
-                self._set_highlight_category_item(it)
-                self._set_guide(f"Reorder Category ↕ (drop above/below): {it.text(0)}", pos)
-                event.ignore()
-                return
-
-            self._set_highlight_category_item(it)
-            self._set_guide(f"Reorder Category ↕ : {it.text(0)}", pos)
-            event.accept()
-            super().dragMoveEvent(event)
-            return
-
-        if self._drag_node_type == "step":
-            cat_item, cat_name = self._resolve_target_category_item(pos)
-            if cat_item is not None and cat_name:
-                self._set_highlight_category_item(cat_item)
-                self._set_guide(f"Move Step → {cat_name}", pos)
-                event.accept()
-            else:
-                self._clear_highlight()
-                self._clear_guide()
-            super().dragMoveEvent(event)
-            return
-
-        super().dragMoveEvent(event)
-
-    def dropEvent(self, event) -> None:
-        super().dropEvent(event)
-
-        self._clear_highlight()
-        self._clear_guide()
-
-        if self._drag_node_type == "step" and self._drag_step_id:
-            self.stepStructureDropped.emit(self._drag_step_id)
-        elif self._drag_node_type == "category" and self._drag_category_name:
-            self.categoryOrderDropped.emit(self._drag_category_name)
-
-        self._drag_node_type = None
-        self._drag_step_id = None
-        self._drag_category_name = None
 
 
 # ---------------------------
@@ -662,213 +492,42 @@ class Page:
 
 
 @dataclass
-class Step:
+class Item:
     id: str
     name: str
-    category: str
     pages: List[Page]
     last_page_index: int = 0
+    created_at: int = 0
+    updated_at: int = 0
+
+
+@dataclass
+class Category:
+    id: str
+    name: str
+    categories: List["Category"]
+    items: List[Item]
+    created_at: int = 0
+    updated_at: int = 0
 
 
 class NoteDB:
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
         self.db_path = db_path
         self.data: Dict[str, Any] = {}
-        self.steps: List[Step] = []
         self.ui_state: Dict[str, Any] = {}
-        self.category_order: List[str] = []
         self.global_ideas: str = ""  # HTML
+        self.root: Category = self._default_root()
         self.load()
 
-    def load(self) -> None:
-        if os.path.exists(self.db_path):
-            try:
-                with open(self.db_path, "r", encoding="utf-8") as f:
-                    self.data = json.load(f)
-            except Exception:
-                self.data = {}
-
-        if not self.data:
-            self.data = self._default_data()
-
-        self.ui_state = self.data.get("ui_state", {})
-        if not isinstance(self.ui_state, dict):
-            self.ui_state = {}
-
-        self.ui_state.setdefault("global_ideas_visible", False)
-        self.ui_state.setdefault("desc_visible", True)
-        self.ui_state.setdefault("page_splitter_sizes", None)
-        self.ui_state.setdefault("notes_splitter_sizes", None)
-
-        # v0.5.1 trace ui state
-        self.ui_state.setdefault("trace_visible", True)
-        self.ui_state.setdefault("right_vsplit_sizes", None)
-
-        self.steps = self._parse_steps(self.data.get("steps", []))
-        if not self.steps:
-            self.steps = self._parse_steps(self._default_data()["steps"])
-
-        for st in self.steps:
-            if not st.pages:
-                st.pages.append(self.new_page())
-
-        raw_order = self.data.get("category_order", [])
-        if isinstance(raw_order, list):
-            self.category_order = [str(x).strip() for x in raw_order if str(x).strip()]
-        else:
-            self.category_order = []
-
-        self.global_ideas = str(self.data.get("global_ideas", "") or "")
-        self._ensure_category_order_consistency()
-
-    def save(self) -> bool:
-        self.data["version"] = "0.5.1"
-        self.data["updated_at"] = _now_epoch()
-        self.data["steps"] = self._serialize_steps(self.steps)
-        self.data["ui_state"] = self.ui_state
-        self.data["category_order"] = self.category_order
-        self.data["global_ideas"] = self.global_ideas
-
-        ok = _safe_write_json(self.db_path, self.data)
-        self.data["_last_save_ok"] = bool(ok)
-        if not ok:
-            self.data["_last_save_failed_at"] = _now_epoch()
-        return ok
-
-    @staticmethod
-    def _default_data() -> Dict[str, Any]:
-        steps = []
-        for name in ["Step 1", "Step 2", "Step 3"]:
-            steps.append(
-                {
-                    "id": _uuid(),
-                    "name": name,
-                    "category": "General",
-                    "last_page_index": 0,
-                    "pages": [
-                        {
-                            "id": _uuid(),
-                            "image_a_path": "",
-                            "image_b_path": "",
-                            "image_a_caption": "",
-                            "image_b_caption": "",
-                            "strokes_a": [],
-                            "strokes_b": [],
-                            "note_text": "",
-                            "stock_name": "",
-                            "ticker": "",
-                            "checklist": _default_checklist(),
-                            "created_at": _now_epoch(),
-                            "updated_at": _now_epoch(),
-                        }
-                    ],
-                }
-            )
-        return {
-            "version": "0.5.1",
-            "created_at": _now_epoch(),
-            "updated_at": _now_epoch(),
-            "steps": steps,
-            "ui_state": {
-                "global_ideas_visible": False,
-                "desc_visible": True,
-                "page_splitter_sizes": None,
-                "notes_splitter_sizes": None,
-                "trace_visible": True,
-                "right_vsplit_sizes": None,
-            },
-            "category_order": ["General"],
-            "global_ideas": "",
-        }
-
-    @staticmethod
-    def _parse_steps(steps_raw: List[Dict[str, Any]]) -> List[Step]:
-        steps: List[Step] = []
-        for s in steps_raw:
-            pages_raw = s.get("pages", [])
-            pages: List[Page] = []
-            for p in pages_raw:
-                image_a_path = str(p.get("image_a_path", p.get("image_path", "")) or "")
-                image_b_path = str(p.get("image_b_path", "")) or ""
-                image_a_caption = str(p.get("image_a_caption", p.get("image_caption", "")) or "")
-                image_b_caption = str(p.get("image_b_caption", "")) or ""
-
-                raw_strokes_a = p.get("strokes_a", None)
-                if raw_strokes_a is None:
-                    raw_strokes_a = p.get("strokes", None)
-                if raw_strokes_a is None:
-                    raw_strokes_a = p.get("annotations", [])
-
-                raw_strokes_b = p.get("strokes_b", None)
-                if raw_strokes_b is None:
-                    raw_strokes_b = []
-
-                strokes_a = _normalize_strokes(raw_strokes_a)
-                strokes_b = _normalize_strokes(raw_strokes_b)
-
-                checklist = _normalize_checklist(p.get("checklist", None))
-
-                pages.append(
-                    Page(
-                        id=str(p.get("id", _uuid())),
-                        image_a_path=image_a_path,
-                        image_b_path=image_b_path,
-                        image_a_caption=image_a_caption,
-                        image_b_caption=image_b_caption,
-                        strokes_a=strokes_a,
-                        strokes_b=strokes_b,
-                        note_text=str(p.get("note_text", "")),
-                        stock_name=str(p.get("stock_name", "")),
-                        ticker=str(p.get("ticker", "")),
-                        checklist=checklist,
-                        created_at=int(p.get("created_at", _now_epoch())),
-                        updated_at=int(p.get("updated_at", _now_epoch())),
-                    )
-                )
-
-            category = str(s.get("category", "General")).strip() or "General"
-            steps.append(
-                Step(
-                    id=str(s.get("id", _uuid())),
-                    name=str(s.get("name", "Untitled Step")),
-                    category=category,
-                    pages=pages,
-                    last_page_index=int(s.get("last_page_index", 0)),
-                )
-            )
-        return steps
-
-    @staticmethod
-    def _serialize_steps(steps: List[Step]) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
-        for st in steps:
-            out.append(
-                {
-                    "id": st.id,
-                    "name": st.name,
-                    "category": st.category,
-                    "last_page_index": st.last_page_index,
-                    "pages": [
-                        {
-                            "id": pg.id,
-                            "image_a_path": pg.image_a_path,
-                            "image_b_path": pg.image_b_path,
-                            "image_a_caption": pg.image_a_caption,
-                            "image_b_caption": pg.image_b_caption,
-                            "strokes_a": pg.strokes_a,
-                            "strokes_b": pg.strokes_b,
-                            "note_text": pg.note_text,
-                            "stock_name": pg.stock_name,
-                            "ticker": pg.ticker,
-                            "checklist": pg.checklist,
-                            "created_at": pg.created_at,
-                            "updated_at": pg.updated_at,
-                        }
-                        for pg in st.pages
-                    ],
-                }
-            )
-        return out
+    # ---------------- Default / Migration ----------------
+    def _default_root(self) -> Category:
+        now = _now_epoch()
+        # Default: root -> General -> Item 1
+        pg = self.new_page()
+        it = Item(id=_uuid(), name="Item 1", pages=[pg], last_page_index=0, created_at=now, updated_at=now)
+        gen = Category(id=_uuid(), name="General", categories=[], items=[it], created_at=now, updated_at=now)
+        return Category(id=ROOT_CATEGORY_ID, name="ROOT", categories=[gen], items=[], created_at=now, updated_at=now)
 
     @staticmethod
     def new_page() -> Page:
@@ -889,96 +548,444 @@ class NoteDB:
             updated_at=now,
         )
 
-    def _current_categories_set(self) -> List[str]:
-        return sorted({(s.category or "General").strip() or "General" for s in self.steps})
+    def _default_data(self) -> Dict[str, Any]:
+        now = _now_epoch()
+        root = self._serialize_category(self._default_root())
+        return {
+            "version": "0.6.0",
+            "created_at": now,
+            "updated_at": now,
+            "root": root,
+            "global_ideas": "",
+            "ui_state": {
+                "selected_category_id": "",   # optional
+                "selected_item_id": "",       # optional
+                "current_page_index": 0,
+                "desc_visible": True,
+                "global_ideas_visible": False,
+                "trace_visible": True,
+                "page_splitter_sizes": None,      # (charts vs notes)
+                "notes_splitter_sizes": None,     # (notes vs ideas) - within notes
+                "img_vsplit_sizes": None,         # (A vs B)
+                "main_splitter_sizes": None,      # (left tree vs right)
+                "right_vsplit_sizes": None,       # (main vs trace)
+            },
+        }
 
-    def _ensure_category_order_consistency(self) -> None:
-        existing = set(self._current_categories_set())
-        self.category_order = [c for c in self.category_order if c in existing]
-        for c in self._current_categories_set():
-            if c not in self.category_order:
-                self.category_order.append(c)
-        if not self.category_order:
-            self.category_order = ["General"]
+    def load(self) -> None:
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, "r", encoding="utf-8") as f:
+                    self.data = json.load(f)
+            except Exception:
+                self.data = {}
 
-    def list_categories(self) -> List[str]:
-        self._ensure_category_order_consistency()
-        return list(self.category_order)
+        if not self.data:
+            self.data = self._default_data()
 
-    def get_step_by_id(self, step_id: str) -> Optional[Step]:
-        for st in self.steps:
-            if st.id == step_id:
-                return st
+        # Migration: v0.5.x "steps" -> v0.6.0 structure
+        if "root" not in self.data and isinstance(self.data.get("steps", None), list):
+            self.data = self._migrate_from_steps(self.data)
+
+        self.ui_state = self.data.get("ui_state", {})
+        if not isinstance(self.ui_state, dict):
+            self.ui_state = {}
+
+        self.ui_state.setdefault("desc_visible", True)
+        self.ui_state.setdefault("global_ideas_visible", False)
+        self.ui_state.setdefault("trace_visible", True)
+        self.ui_state.setdefault("current_page_index", 0)
+
+        self.global_ideas = str(self.data.get("global_ideas", "") or "")
+
+        root_raw = self.data.get("root", None)
+        if isinstance(root_raw, dict):
+            self.root = self._parse_category(root_raw, force_root=True)
+        else:
+            self.root = self._default_root()
+
+        # ensure at least one item exists
+        if not self._any_item_exists():
+            self.root = self._default_root()
+
+    def save(self) -> bool:
+        self.data["version"] = "0.6.0"
+        self.data["updated_at"] = _now_epoch()
+        self.data["root"] = self._serialize_category(self.root)
+        self.data["ui_state"] = self.ui_state
+        self.data["global_ideas"] = self.global_ideas
+
+        ok = _safe_write_json(self.db_path, self.data)
+        self.data["_last_save_ok"] = bool(ok)
+        if not ok:
+            self.data["_last_save_failed_at"] = _now_epoch()
+        return ok
+
+    # ---------------- Migration from v0.5.x ----------------
+    def _migrate_from_steps(self, old: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        v0.5.x format:
+          steps: [{id,name,category,last_page_index,pages:[...]}]
+        -> v0.6.0 root/categories/items
+        """
+        now = _now_epoch()
+        steps = old.get("steps", [])
+        if not isinstance(steps, list):
+            steps = []
+
+        # create root
+        root = Category(id=ROOT_CATEGORY_ID, name="ROOT", categories=[], items=[], created_at=now, updated_at=now)
+
+        # categories by name at root level
+        cat_map: Dict[str, Category] = {}
+
+        def get_or_create_cat(cat_name: str) -> Category:
+            cat_name = (cat_name or "").strip() or "General"
+            if cat_name in cat_map:
+                return cat_map[cat_name]
+            c = Category(id=_uuid(), name=cat_name, categories=[], items=[], created_at=now, updated_at=now)
+            cat_map[cat_name] = c
+            root.categories.append(c)
+            return c
+
+        for s in steps:
+            try:
+                cat_name = str(s.get("category", "General") or "General").strip() or "General"
+                item_name = str(s.get("name", "Item") or "Item")
+                item_id = str(s.get("id", _uuid()))
+                last_idx = int(s.get("last_page_index", 0))
+
+                pages_raw = s.get("pages", [])
+                if not isinstance(pages_raw, list):
+                    pages_raw = []
+
+                pages: List[Page] = []
+                for p in pages_raw:
+                    image_a_path = str(p.get("image_a_path", p.get("image_path", "")) or "")
+                    image_b_path = str(p.get("image_b_path", "")) or ""
+                    image_a_caption = str(p.get("image_a_caption", p.get("image_caption", "")) or "")
+                    image_b_caption = str(p.get("image_b_caption", "")) or ""
+
+                    raw_strokes_a = p.get("strokes_a", None)
+                    if raw_strokes_a is None:
+                        raw_strokes_a = p.get("strokes", None)
+                    if raw_strokes_a is None:
+                        raw_strokes_a = p.get("annotations", [])
+
+                    raw_strokes_b = p.get("strokes_b", None)
+                    if raw_strokes_b is None:
+                        raw_strokes_b = []
+
+                    strokes_a = _normalize_strokes(raw_strokes_a)
+                    strokes_b = _normalize_strokes(raw_strokes_b)
+                    checklist = _normalize_checklist(p.get("checklist", None))
+
+                    pages.append(
+                        Page(
+                            id=str(p.get("id", _uuid())),
+                            image_a_path=image_a_path,
+                            image_b_path=image_b_path,
+                            image_a_caption=image_a_caption,
+                            image_b_caption=image_b_caption,
+                            strokes_a=strokes_a,
+                            strokes_b=strokes_b,
+                            note_text=str(p.get("note_text", "")),
+                            stock_name=str(p.get("stock_name", "")),
+                            ticker=str(p.get("ticker", "")),
+                            checklist=checklist,
+                            created_at=int(p.get("created_at", now)),
+                            updated_at=int(p.get("updated_at", now)),
+                        )
+                    )
+
+                if not pages:
+                    pages = [self.new_page()]
+
+                it = Item(
+                    id=item_id,
+                    name=item_name,
+                    pages=pages,
+                    last_page_index=max(0, min(last_idx, len(pages) - 1)),
+                    created_at=now,
+                    updated_at=now,
+                )
+                get_or_create_cat(cat_name).items.append(it)
+            except Exception:
+                continue
+
+        # ui_state carry-over (best-effort)
+        ui = old.get("ui_state", {})
+        if not isinstance(ui, dict):
+            ui = {}
+        new_ui = {
+            "selected_category_id": "",
+            "selected_item_id": "",
+            "current_page_index": int(ui.get("current_page_index", 0)) if isinstance(ui.get("current_page_index", 0), int) else 0,
+            "desc_visible": bool(ui.get("desc_visible", True)),
+            "global_ideas_visible": bool(ui.get("global_ideas_visible", False)),
+            "trace_visible": bool(ui.get("trace_visible", True)),
+            "page_splitter_sizes": ui.get("page_splitter_sizes", None),
+            "notes_splitter_sizes": ui.get("notes_splitter_sizes", None),
+            "img_vsplit_sizes": None,
+            "main_splitter_sizes": None,
+            "right_vsplit_sizes": ui.get("right_vsplit_sizes", None),
+        }
+
+        # pick first item as selection
+        first_item_id = ""
+        first_cat_id = ""
+        for c in root.categories:
+            if c.items:
+                first_cat_id = c.id
+                first_item_id = c.items[0].id
+                break
+        new_ui["selected_category_id"] = first_cat_id
+        new_ui["selected_item_id"] = first_item_id
+
+        return {
+            "version": "0.6.0",
+            "created_at": int(old.get("created_at", now)) if isinstance(old.get("created_at", now), int) else now,
+            "updated_at": now,
+            "root": self._serialize_category(root),
+            "global_ideas": str(old.get("global_ideas", "") or ""),
+            "ui_state": new_ui,
+        }
+
+    # ---------------- Serialize/Parse ----------------
+    def _parse_category(self, raw: Dict[str, Any], force_root: bool = False) -> Category:
+        now = _now_epoch()
+        cid = str(raw.get("id", _uuid()))
+        if force_root:
+            cid = ROOT_CATEGORY_ID
+        name = str(raw.get("name", "Category") or "Category")
+        cats_raw = raw.get("categories", [])
+        items_raw = raw.get("items", [])
+
+        cats: List[Category] = []
+        if isinstance(cats_raw, list):
+            for c in cats_raw:
+                if isinstance(c, dict):
+                    cats.append(self._parse_category(c, force_root=False))
+
+        items: List[Item] = []
+        if isinstance(items_raw, list):
+            for it in items_raw:
+                if not isinstance(it, dict):
+                    continue
+                pages_raw = it.get("pages", [])
+                pages: List[Page] = []
+                if isinstance(pages_raw, list):
+                    for p in pages_raw:
+                        if not isinstance(p, dict):
+                            continue
+                        pages.append(
+                            Page(
+                                id=str(p.get("id", _uuid())),
+                                image_a_path=str(p.get("image_a_path", "") or ""),
+                                image_b_path=str(p.get("image_b_path", "") or ""),
+                                image_a_caption=str(p.get("image_a_caption", "") or ""),
+                                image_b_caption=str(p.get("image_b_caption", "") or ""),
+                                strokes_a=_normalize_strokes(p.get("strokes_a", [])),
+                                strokes_b=_normalize_strokes(p.get("strokes_b", [])),
+                                note_text=str(p.get("note_text", "") or ""),
+                                stock_name=str(p.get("stock_name", "") or ""),
+                                ticker=str(p.get("ticker", "") or ""),
+                                checklist=_normalize_checklist(p.get("checklist", None)),
+                                created_at=int(p.get("created_at", now)),
+                                updated_at=int(p.get("updated_at", now)),
+                            )
+                        )
+                if not pages:
+                    pages = [self.new_page()]
+                items.append(
+                    Item(
+                        id=str(it.get("id", _uuid())),
+                        name=str(it.get("name", "Item") or "Item"),
+                        pages=pages,
+                        last_page_index=int(it.get("last_page_index", 0)),
+                        created_at=int(it.get("created_at", now)),
+                        updated_at=int(it.get("updated_at", now)),
+                    )
+                )
+
+        return Category(
+            id=cid,
+            name=name,
+            categories=cats,
+            items=items,
+            created_at=int(raw.get("created_at", now)),
+            updated_at=int(raw.get("updated_at", now)),
+        )
+
+    def _serialize_category(self, cat: Category) -> Dict[str, Any]:
+        return {
+            "id": cat.id,
+            "name": cat.name,
+            "created_at": int(cat.created_at or 0),
+            "updated_at": int(cat.updated_at or 0),
+            "categories": [self._serialize_category(c) for c in cat.categories],
+            "items": [self._serialize_item(it) for it in cat.items],
+        }
+
+    def _serialize_item(self, it: Item) -> Dict[str, Any]:
+        return {
+            "id": it.id,
+            "name": it.name,
+            "last_page_index": int(it.last_page_index),
+            "created_at": int(it.created_at or 0),
+            "updated_at": int(it.updated_at or 0),
+            "pages": [
+                {
+                    "id": pg.id,
+                    "image_a_path": pg.image_a_path,
+                    "image_b_path": pg.image_b_path,
+                    "image_a_caption": pg.image_a_caption,
+                    "image_b_caption": pg.image_b_caption,
+                    "strokes_a": pg.strokes_a,
+                    "strokes_b": pg.strokes_b,
+                    "note_text": pg.note_text,
+                    "stock_name": pg.stock_name,
+                    "ticker": pg.ticker,
+                    "checklist": pg.checklist,
+                    "created_at": int(pg.created_at),
+                    "updated_at": int(pg.updated_at),
+                }
+                for pg in it.pages
+            ],
+        }
+
+    # ---------------- Find / Ops ----------------
+    def _any_item_exists(self) -> bool:
+        return self._find_first_item(self.root) is not None
+
+    def _find_first_item(self, cat: Category) -> Optional[Tuple[Item, Category]]:
+        for it in cat.items:
+            return it, cat
+        for c in cat.categories:
+            r = self._find_first_item(c)
+            if r is not None:
+                return r
         return None
 
-    def add_step(self, name: str, category: str) -> Step:
-        category = (category or "").strip() or "General"
-        st = Step(id=_uuid(), name=name, category=category, pages=[self.new_page()], last_page_index=0)
-        self.steps.append(st)
-        if category not in self.category_order:
-            self.category_order.append(category)
-        return st
+    def find_category(self, category_id: str) -> Optional[Category]:
+        if not category_id:
+            return None
+        return self._find_category_rec(self.root, category_id)
 
-    def delete_step(self, step_id: str) -> bool:
-        if len(self.steps) <= 1:
+    def _find_category_rec(self, cat: Category, category_id: str) -> Optional[Category]:
+        if cat.id == category_id:
+            return cat
+        for c in cat.categories:
+            r = self._find_category_rec(c, category_id)
+            if r is not None:
+                return r
+        return None
+
+    def find_item(self, item_id: str) -> Optional[Tuple[Item, Category]]:
+        if not item_id:
+            return None
+        return self._find_item_rec(self.root, item_id)
+
+    def _find_item_rec(self, cat: Category, item_id: str) -> Optional[Tuple[Item, Category]]:
+        for it in cat.items:
+            if it.id == item_id:
+                return it, cat
+        for c in cat.categories:
+            r = self._find_item_rec(c, item_id)
+            if r is not None:
+                return r
+        return None
+
+    def find_parent_of_category(self, category_id: str) -> Optional[Category]:
+        if category_id == ROOT_CATEGORY_ID:
+            return None
+        return self._find_parent_cat_rec(self.root, category_id)
+
+    def _find_parent_cat_rec(self, cat: Category, target_id: str) -> Optional[Category]:
+        for c in cat.categories:
+            if c.id == target_id:
+                return cat
+        for c in cat.categories:
+            r = self._find_parent_cat_rec(c, target_id)
+            if r is not None:
+                return r
+        return None
+
+    def add_category(self, parent_category_id: str, name: str) -> Category:
+        now = _now_epoch()
+        parent = self.find_category(parent_category_id) or self.root
+        new_cat = Category(id=_uuid(), name=name, categories=[], items=[], created_at=now, updated_at=now)
+        parent.categories.append(new_cat)
+        parent.updated_at = now
+        return new_cat
+
+    def add_item(self, parent_category_id: str, name: str) -> Item:
+        now = _now_epoch()
+        parent = self.find_category(parent_category_id) or self.root
+        it = Item(id=_uuid(), name=name, pages=[self.new_page()], last_page_index=0, created_at=now, updated_at=now)
+        parent.items.append(it)
+        parent.updated_at = now
+        return it
+
+    def delete_item(self, item_id: str) -> bool:
+        found = self.find_item(item_id)
+        if not found:
             return False
-        self.steps = [s for s in self.steps if s.id != step_id]
-        self._ensure_category_order_consistency()
+        it, parent = found
+        if len(parent.items) <= 0:
+            return False
+        parent.items = [x for x in parent.items if x.id != it.id]
+        parent.updated_at = _now_epoch()
         return True
 
-    def rename_category(self, old: str, new: str) -> None:
-        old = (old or "").strip() or "General"
-        new = (new or "").strip() or "General"
-        if old == new:
-            return
-        for st in self.steps:
-            if (st.category or "General").strip() == old:
-                st.category = new
-
-        if old in self.category_order:
-            if new in self.category_order:
-                self.category_order = [c for c in self.category_order if c != old]
-            else:
-                self.category_order = [new if c == old else c for c in self.category_order]
-        else:
-            if new not in self.category_order:
-                self.category_order.append(new)
-
-        self._ensure_category_order_consistency()
-
-    def delete_category_move_steps(self, cat: str, move_to: str) -> None:
-        cat = (cat or "").strip() or "General"
-        move_to = (move_to or "").strip() or "General"
-        if cat == move_to:
-            return
-        for st in self.steps:
-            if (st.category or "General").strip() == cat:
-                st.category = move_to
-        self.category_order = [c for c in self.category_order if c != cat]
-        if move_to not in self.category_order:
-            self.category_order.append(move_to)
-        self._ensure_category_order_consistency()
-
-    def delete_category_and_steps(self, cat: str) -> bool:
-        cat = (cat or "").strip() or "General"
-        remaining = [s for s in self.steps if (s.category or "General").strip() != cat]
-        if not remaining:
+    def delete_category_recursive(self, category_id: str) -> bool:
+        if category_id == ROOT_CATEGORY_ID:
             return False
-        self.steps = remaining
-        self.category_order = [c for c in self.category_order if c != cat]
-        self._ensure_category_order_consistency()
+        parent = self.find_parent_of_category(category_id)
+        if parent is None:
+            return False
+        parent.categories = [c for c in parent.categories if c.id != category_id]
+        parent.updated_at = _now_epoch()
         return True
 
-    def move_category(self, cat: str, direction: int) -> None:
-        cat = (cat or "").strip() or "General"
-        self._ensure_category_order_consistency()
-        if cat not in self.category_order:
-            return
-        idx = self.category_order.index(cat)
+    def move_item(self, item_id: str, direction: int) -> bool:
+        found = self.find_item(item_id)
+        if not found:
+            return False
+        it, parent = found
+        idx = -1
+        for i, x in enumerate(parent.items):
+            if x.id == it.id:
+                idx = i
+                break
+        if idx < 0:
+            return False
         new_idx = idx + direction
-        if new_idx < 0 or new_idx >= len(self.category_order):
-            return
-        self.category_order[idx], self.category_order[new_idx] = self.category_order[new_idx], self.category_order[idx]
+        if new_idx < 0 or new_idx >= len(parent.items):
+            return False
+        parent.items[idx], parent.items[new_idx] = parent.items[new_idx], parent.items[idx]
+        parent.updated_at = _now_epoch()
+        return True
+
+    def move_category(self, category_id: str, direction: int) -> bool:
+        if category_id == ROOT_CATEGORY_ID:
+            return False
+        parent = self.find_parent_of_category(category_id)
+        if parent is None:
+            return False
+        idx = -1
+        for i, c in enumerate(parent.categories):
+            if c.id == category_id:
+                idx = i
+                break
+        if idx < 0:
+            return False
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(parent.categories):
+            return False
+        parent.categories[idx], parent.categories[new_idx] = parent.categories[new_idx], parent.categories[idx]
+        parent.updated_at = _now_epoch()
+        return True
 
 
 # ---------------------------
@@ -1272,9 +1279,9 @@ class ZoomPanAnnotateView(QGraphicsView):
 # Main Window
 # ---------------------------
 class MainWindow(QMainWindow):
-    STEP_ID_ROLE = Qt.UserRole + 101
-    NODE_TYPE_ROLE = Qt.UserRole + 102      # "category" or "step"
-    CATEGORY_NAME_ROLE = Qt.UserRole + 103
+    NODE_TYPE_ROLE = Qt.UserRole + 2001   # "category" or "item"
+    CATEGORY_ID_ROLE = Qt.UserRole + 2002
+    ITEM_ID_ROLE = Qt.UserRole + 2003
 
     TRACE_MAX_LINES = 1200
 
@@ -1285,22 +1292,20 @@ class MainWindow(QMainWindow):
 
         self.db = NoteDB(DEFAULT_DB_PATH)
 
-        self.current_step_id: Optional[str] = None
-        self.current_page_index: int = 0
-        self._loading_ui: bool = False
+        self.current_category_id: str = self.db.ui_state.get("selected_category_id", "") or ""
+        self.current_item_id: str = self.db.ui_state.get("selected_item_id", "") or ""
+        self.current_page_index: int = int(self.db.ui_state.get("current_page_index", 0) or 0)
 
+        self._loading_ui: bool = False
         self._active_rich_edit: Optional[QTextEdit] = None
 
         self._desc_visible: bool = bool(self.db.ui_state.get("desc_visible", True))
-        self._page_split_prev_sizes: Optional[List[int]] = None
-        self._notes_split_prev_sizes: Optional[List[int]] = None
+        self._trace_visible: bool = bool(self.db.ui_state.get("trace_visible", True))
 
         self.viewer_a: Optional[ZoomPanAnnotateView] = None
         self.viewer_b: Optional[ZoomPanAnnotateView] = None
         self._active_pane: str = "A"
-
-        self._trace_visible: bool = bool(self.db.ui_state.get("trace_visible", True))
-        self._right_vsplit_prev_sizes: Optional[List[int]] = None
+        self._pane_ui: Dict[str, Dict[str, Any]] = {}
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -1309,27 +1314,25 @@ class MainWindow(QMainWindow):
         self._last_save_warn_ts: float = 0.0
         self._save_warn_cooldown_sec: float = 10.0
 
-        self._pane_ui: Dict[str, Dict[str, Any]] = {}
-
         self._build_ui()
         self._build_pane_overlays()
 
-        self.page_splitter.splitterMoved.connect(self._on_page_splitter_moved)
-        self.notes_ideas_splitter.splitterMoved.connect(self._on_notes_splitter_moved)
-        self.right_vsplit.splitterMoved.connect(self._on_right_vsplit_moved)
+        # Restore selection to a valid item
+        self._ensure_valid_selection()
 
-        self._load_ui_state_or_defaults()
+        # Apply UI state
         self._apply_splitter_sizes_from_state()
 
-        self._refresh_steps_tree(select_current=True)
-        self._load_current_page_to_ui()
+        self._refresh_tree(select_current=True)
+        self._load_current_item_page_to_ui()
         self._load_global_ideas_to_ui()
 
         ideas_vis = bool(self.db.ui_state.get("global_ideas_visible", False))
         self._set_global_ideas_visible(ideas_vis, persist=False)
         self._set_desc_visible(bool(self.db.ui_state.get("desc_visible", True)), persist=False)
-        self._set_trace_visible(self._trace_visible, persist=False)
+        self._set_trace_visible(bool(self.db.ui_state.get("trace_visible", True)), persist=False)
 
+        # Shortcuts
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.go_prev_page)
         QShortcut(QKeySequence("Alt+Right"), self, activated=self.go_next_page)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.add_page)
@@ -1345,11 +1348,9 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence("Ctrl+V"), self.viewer_b, activated=lambda: self.paste_image_from_clipboard("B"))
 
         self._update_text_area_layout()
-
-        # post-init layout fix (Ideas/Trace size race condition 방지)
         QTimer.singleShot(0, self._post_init_layout_fix)
 
-        self.trace("App initialized", "INFO")
+        self.trace("App initialized (v0.6.0)", "INFO")
 
     # ---------------- Trace helpers ----------------
     def trace(self, msg: str, level: str = "INFO") -> None:
@@ -1388,203 +1389,86 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _remember_right_vsplit_sizes(self) -> None:
-        try:
-            sizes = self.right_vsplit.sizes()
-            if isinstance(sizes, list) and len(sizes) == 2 and all(isinstance(x, int) for x in sizes):
-                if sizes[0] >= 0 and sizes[1] >= 0:
-                    self._right_vsplit_prev_sizes = list(sizes)
-                    self.db.ui_state["right_vsplit_sizes"] = list(sizes)
-        except Exception:
-            pass
-
-    def _apply_right_vsplit_sizes(self) -> None:
-        v = self.db.ui_state.get("right_vsplit_sizes")
-        if isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) for x in v):
-            if v[0] >= 0 and v[1] >= 0:
-                try:
-                    self._right_vsplit_prev_sizes = list(v)
-                    self.right_vsplit.setSizes(v)
-                except Exception:
-                    pass
-
-    def _set_trace_visible(self, visible: bool, persist: bool = True) -> None:
-        self._trace_visible = bool(visible)
-        self.trace_group.setVisible(self._trace_visible)
-        self.trace_show_row.setVisible(not self._trace_visible)
-
-        # adjust splitter sizes
-        try:
-            total = max(1, self.right_vsplit.height())
-            if self._trace_visible:
-                self._apply_right_vsplit_sizes()
-                # fallback if not set
-                if not self._right_vsplit_prev_sizes:
-                    trace_h = 210
-                    self.right_vsplit.setSizes([max(1, total - trace_h), trace_h])
+    # ---------------- Selection validity ----------------
+    def _ensure_valid_selection(self) -> None:
+        # If current item missing, select first item in tree
+        found = self.db.find_item(self.current_item_id)
+        if found is None:
+            first = self.db._find_first_item(self.db.root)
+            if first is not None:
+                it, parent = first
+                self.current_item_id = it.id
+                self.current_category_id = parent.id
+                self.current_page_index = max(0, min(it.last_page_index, len(it.pages) - 1))
             else:
-                # remember sizes before collapsing trace
-                self._remember_right_vsplit_sizes()
-                self.right_vsplit.setSizes([max(1, total - 38), 38])
-        except Exception:
-            pass
+                # fallback: reset to default
+                self.db.root = self.db._default_root()
+                it, parent = self.db._find_first_item(self.db.root)
+                self.current_item_id = it.id
+                self.current_category_id = parent.id
+                self.current_page_index = 0
 
-        if persist:
-            self.db.ui_state["trace_visible"] = bool(self._trace_visible)
-            self._save_db_with_warning()
-
-    def _on_right_vsplit_moved(self, pos: int, index: int) -> None:
-        if self._loading_ui:
-            return
-        if not self._trace_visible:
-            return
-        self._remember_right_vsplit_sizes()
-        self._save_db_with_warning()
-
-    def _post_init_layout_fix(self) -> None:
-        try:
-            self._apply_splitter_sizes_from_state()
-            self._update_text_area_layout()
-            for pane in ("A", "B"):
-                self._reposition_overlay(pane)
-            if self._trace_visible:
-                self._apply_right_vsplit_sizes()
-            self.trace("Post-init layout fix applied", "DEBUG")
-        except Exception as e:
-            self.trace(f"Post-init layout fix failed: {e}", "WARN")
-
-    def closeEvent(self, event) -> None:
-        try:
-            self._remember_right_vsplit_sizes()
-            self._flush_page_fields_to_model_and_save()
-        except Exception:
-            pass
-        super().closeEvent(event)
-
-    # ---------------- Splitter persistence helpers ----------------
-    def _is_valid_splitter_sizes(self, v: Any) -> bool:
-        return (
-            isinstance(v, list)
-            and len(v) == 2
-            and all(isinstance(x, int) for x in v)
-            and v[0] >= 0 and v[1] >= 0
-        )
-
-    def _is_valid_notes_sizes_for_both_visible(self, v: Any) -> bool:
-        if not self._is_valid_splitter_sizes(v):
-            return False
-        left, right = int(v[0]), int(v[1])
-        if right < 120:
-            return False
-        if left < 120:
-            return False
-        return True
-
-    def _remember_page_splitter_sizes(self) -> None:
-        sizes = self.page_splitter.sizes()
-        if self._is_valid_splitter_sizes(sizes):
-            self._page_split_prev_sizes = list(sizes)
-            self.db.ui_state["page_splitter_sizes"] = list(sizes)
-
-    def _remember_notes_splitter_sizes(self) -> None:
-        sizes = self.notes_ideas_splitter.sizes()
-        if self._is_valid_splitter_sizes(sizes):
-            self._notes_split_prev_sizes = list(sizes)
-            self.db.ui_state["notes_splitter_sizes"] = list(sizes)
-
-    def _on_page_splitter_moved(self, pos: int, index: int) -> None:
-        if self._loading_ui:
-            return
-        if not self.text_container.isVisible():
-            return
-        self._remember_page_splitter_sizes()
-        self._save_db_with_warning()
-
-    def _on_notes_splitter_moved(self, pos: int, index: int) -> None:
-        if self._loading_ui:
-            return
-        if not self.notes_left.isVisible():
-            return
-        if not self.ideas_panel.isVisible():
-            return
-        self._remember_notes_splitter_sizes()
-        self._save_db_with_warning()
-
-    def _apply_splitter_sizes_from_state(self) -> None:
-        self._loading_ui = True
-        try:
-            ps = self.db.ui_state.get("page_splitter_sizes")
-            if self._is_valid_splitter_sizes(ps):
-                self._page_split_prev_sizes = list(ps)
-                try:
-                    self.page_splitter.setSizes(ps)
-                except Exception:
-                    pass
-
-            ns = self.db.ui_state.get("notes_splitter_sizes")
-            if self._is_valid_splitter_sizes(ns):
-                self._notes_split_prev_sizes = list(ns)
-
-            self._apply_right_vsplit_sizes()
-        finally:
-            self._loading_ui = False
-
-    # ---------------- UI ----------------
+    # ---------------- UI building ----------------
     def _build_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        main_splitter = QSplitter(Qt.Horizontal, root)
+        # Main: left tree / right content (inside right_vsplit with trace)
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
 
-        # Left: category tree
+        # Left panel
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.setSpacing(8)
 
-        step_controls = QWidget()
-        step_controls_layout = FlowLayout(step_controls, margin=0, spacing=6)
+        controls = QWidget()
+        cl = FlowLayout(controls, margin=0, spacing=6)
 
-        self.btn_add_step = QToolButton()
-        self.btn_add_step.setText("+ Step")
-        self.btn_rename_step = QToolButton()
-        self.btn_rename_step.setText("Rename Step")
-        self.btn_set_category = QToolButton()
-        self.btn_set_category.setText("Set Category")
-        self.btn_del_step = QToolButton()
-        self.btn_del_step.setText("Del Step")
+        self.btn_add_folder = QToolButton()
+        self.btn_add_folder.setText("+ Folder")
+        self.btn_add_item = QToolButton()
+        self.btn_add_item.setText("+ Item")
+        self.btn_rename_node = QToolButton()
+        self.btn_rename_node.setText("Rename")
+        self.btn_delete_node = QToolButton()
+        self.btn_delete_node.setText("Delete")
+        self.btn_move_up = QToolButton()
+        self.btn_move_up.setText("↑")
+        self.btn_move_up.setToolTip("Move Up")
+        self.btn_move_down = QToolButton()
+        self.btn_move_down.setText("↓")
+        self.btn_move_down.setToolTip("Move Down")
 
-        self.btn_add_step.clicked.connect(self.add_step)
-        self.btn_rename_step.clicked.connect(self.rename_step)
-        self.btn_set_category.clicked.connect(self.set_step_category)
-        self.btn_del_step.clicked.connect(self.delete_step)
+        self.btn_add_folder.clicked.connect(self.add_folder)
+        self.btn_add_item.clicked.connect(self.add_item)
+        self.btn_rename_node.clicked.connect(self.rename_node)
+        self.btn_delete_node.clicked.connect(self.delete_node)
+        self.btn_move_up.clicked.connect(lambda: self.move_node(-1))
+        self.btn_move_down.clicked.connect(lambda: self.move_node(+1))
 
-        step_controls_layout.addWidget(self.btn_add_step)
-        step_controls_layout.addWidget(self.btn_rename_step)
-        step_controls_layout.addWidget(self.btn_set_category)
-        step_controls_layout.addWidget(self.btn_del_step)
+        cl.addWidget(self.btn_add_folder)
+        cl.addWidget(self.btn_add_item)
+        cl.addWidget(self.btn_rename_node)
+        cl.addWidget(self.btn_delete_node)
+        cl.addWidget(self.btn_move_up)
+        cl.addWidget(self.btn_move_down)
 
-        self.steps_tree = StepTreeWidget()
-        self.steps_tree.setHeaderHidden(True)
-        self.steps_tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
-        self.steps_tree.setUniformRowHeights(True)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
 
-        self.steps_tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.steps_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
-        self.steps_tree.setDragEnabled(True)
-        self.steps_tree.setAcceptDrops(True)
-        self.steps_tree.setDropIndicatorShown(True)
-        self.steps_tree.setDefaultDropAction(Qt.MoveAction)
-        self.steps_tree.setDragDropMode(QAbstractItemView.InternalMove)
+        left_layout.addWidget(controls)
+        left_layout.addWidget(self.tree, 1)
 
-        self.steps_tree.stepStructureDropped.connect(lambda _: self._rebuild_db_from_tree())
-        self.steps_tree.categoryOrderDropped.connect(lambda _: self._rebuild_db_from_tree())
-
-        left_layout.addWidget(step_controls)
-        left_layout.addWidget(self.steps_tree, 1)
-
-        # Right panel (Vertical splitter: main content + trace)
+        # Right: vertical split (main content / trace)
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 8, 8, 8)
@@ -1593,17 +1477,19 @@ class MainWindow(QMainWindow):
         self.right_vsplit = QSplitter(Qt.Vertical)
         self.right_vsplit.setChildrenCollapsible(False)
 
-        # --- main content widget (page_splitter) ---
+        # Main content widget
         main_content = QWidget()
         main_content_l = QVBoxLayout(main_content)
         main_content_l.setContentsMargins(0, 0, 0, 0)
         main_content_l.setSpacing(8)
 
+        # page_splitter: charts(left) vs notes(right)
         self.page_splitter = QSplitter(Qt.Horizontal)
+        self.page_splitter.setChildrenCollapsible(False)
 
-        # ---------------- Image section (dual panes) ----------------
-        self.img_container = QWidget()
-        img_layout = QVBoxLayout(self.img_container)
+        # ---------------- Charts panel (left): Vertical A/B ----------------
+        self.img_panel = QWidget()
+        img_layout = QVBoxLayout(self.img_panel)
         img_layout.setContentsMargins(0, 0, 0, 0)
         img_layout.setSpacing(6)
 
@@ -1633,8 +1519,9 @@ class MainWindow(QMainWindow):
 
         img_layout.addWidget(meta_widget)
 
-        self.dual_view_splitter = QSplitter(Qt.Vertical)
-        self.dual_view_splitter.setChildrenCollapsible(False)
+        # Chart controls A/B (top rows inside each pane)
+        self.img_vsplit = QSplitter(Qt.Vertical)
+        self.img_vsplit.setChildrenCollapsible(False)
 
         # Pane A
         paneA = QWidget()
@@ -1656,11 +1543,11 @@ class MainWindow(QMainWindow):
         self.btn_paste_a.clicked.connect(lambda: self.paste_image_from_clipboard("A"))
         self.btn_clear_a.clicked.connect(lambda: self.clear_image("A"))
         self.btn_fit_a.clicked.connect(lambda: self.reset_image_view("A"))
+
         barA_l.addWidget(self.btn_open_a)
         barA_l.addWidget(self.btn_paste_a)
         barA_l.addWidget(self.btn_clear_a)
         barA_l.addWidget(self.btn_fit_a)
-
         paneA_l.addWidget(barA)
 
         self.viewer_a = ZoomPanAnnotateView()
@@ -1689,11 +1576,11 @@ class MainWindow(QMainWindow):
         self.btn_paste_b.clicked.connect(lambda: self.paste_image_from_clipboard("B"))
         self.btn_clear_b.clicked.connect(lambda: self.clear_image("B"))
         self.btn_fit_b.clicked.connect(lambda: self.reset_image_view("B"))
+
         barB_l.addWidget(self.btn_open_b)
         barB_l.addWidget(self.btn_paste_b)
         barB_l.addWidget(self.btn_clear_b)
         barB_l.addWidget(self.btn_fit_b)
-
         paneB_l.addWidget(barB)
 
         self.viewer_b = ZoomPanAnnotateView()
@@ -1702,14 +1589,15 @@ class MainWindow(QMainWindow):
         self.viewer_b.viewport().installEventFilter(self)
         paneB_l.addWidget(self.viewer_b, 1)
 
-        self.dual_view_splitter.addWidget(paneA)
-        self.dual_view_splitter.addWidget(paneB)
-        self.dual_view_splitter.setStretchFactor(0, 1)
-        self.dual_view_splitter.setStretchFactor(1, 1)
-        self.dual_view_splitter.setSizes([420, 420])
+        self.img_vsplit.addWidget(paneA)
+        self.img_vsplit.addWidget(paneB)
+        self.img_vsplit.setStretchFactor(0, 1)
+        self.img_vsplit.setStretchFactor(1, 1)
+        self.img_vsplit.setSizes([420, 420])
 
-        img_layout.addWidget(self.dual_view_splitter, 1)
+        img_layout.addWidget(self.img_vsplit, 1)
 
+        # Page navigation row
         nav_widget = QWidget()
         nav_flow = FlowLayout(nav_widget, margin=0, spacing=6)
 
@@ -1741,7 +1629,7 @@ class MainWindow(QMainWindow):
 
         img_layout.addWidget(nav_widget)
 
-        # ---------------- Text section ----------------
+        # ---------------- Notes panel (right): Description/Checklist + Ideas ----------------
         self.text_container = QWidget()
         text_layout = QVBoxLayout(self.text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
@@ -1953,14 +1841,15 @@ class MainWindow(QMainWindow):
         text_layout.addWidget(fmt_row)
         text_layout.addWidget(self.notes_ideas_splitter, 1)
 
-        self.page_splitter.addWidget(self.img_container)
+        # Assemble page_splitter (Charts left, Notes right)
+        self.page_splitter.addWidget(self.img_panel)
         self.page_splitter.addWidget(self.text_container)
-        self.page_splitter.setStretchFactor(0, 1)
+        self.page_splitter.setStretchFactor(0, 2)
         self.page_splitter.setStretchFactor(1, 1)
 
         main_content_l.addWidget(self.page_splitter, 1)
 
-        # --- trace container widget ---
+        # Trace panel (bottom inside right_vsplit)
         trace_container = QWidget()
         tc_l = QVBoxLayout(trace_container)
         tc_l.setContentsMargins(0, 0, 0, 0)
@@ -2029,18 +1918,16 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(self.right_vsplit, 1)
 
-        main_splitter.addWidget(left_panel)
-        main_splitter.addWidget(right_panel)
-        main_splitter.setStretchFactor(0, 0)
-        main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([340, 1120])
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(right_panel)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([360, 1100])
 
-        layout = QVBoxLayout(root)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(main_splitter)
+        layout.addWidget(self.main_splitter, 1)
 
         self.text_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self.img_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.img_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.text_container.setMinimumWidth(440)
 
         self._set_active_rich_edit(self.text_edit)
@@ -2265,55 +2152,1064 @@ class MainWindow(QMainWindow):
         edit_cap.setFixedWidth(cap_w)
         edit_cap.move(cap_x, margin)
 
-    # ---------------- rebuild model from tree ----------------
-    def _rebuild_db_from_tree(self) -> None:
+    # ---------------- Splitter persistence ----------------
+    def _is_valid_splitter_sizes(self, v: Any) -> bool:
+        return (
+            isinstance(v, list)
+            and len(v) == 2
+            and all(isinstance(x, int) for x in v)
+            and v[0] >= 0 and v[1] >= 0
+        )
+
+    def _apply_splitter_sizes_from_state(self) -> None:
+        self._loading_ui = True
+        try:
+            ms = self.db.ui_state.get("main_splitter_sizes")
+            if self._is_valid_splitter_sizes(ms):
+                try:
+                    self.main_splitter.setSizes(ms)
+                except Exception:
+                    pass
+
+            ps = self.db.ui_state.get("page_splitter_sizes")
+            if self._is_valid_splitter_sizes(ps):
+                try:
+                    self.page_splitter.setSizes(ps)
+                except Exception:
+                    pass
+
+            ns = self.db.ui_state.get("notes_splitter_sizes")
+            if self._is_valid_splitter_sizes(ns):
+                try:
+                    self.notes_ideas_splitter.setSizes(ns)
+                except Exception:
+                    pass
+
+            vs = self.db.ui_state.get("img_vsplit_sizes")
+            if self._is_valid_splitter_sizes(vs):
+                try:
+                    self.img_vsplit.setSizes(vs)
+                except Exception:
+                    pass
+
+            rvs = self.db.ui_state.get("right_vsplit_sizes")
+            if self._is_valid_splitter_sizes(rvs):
+                try:
+                    self.right_vsplit.setSizes(rvs)
+                except Exception:
+                    pass
+        finally:
+            self._loading_ui = False
+
+    def _remember_splitter_sizes(self) -> None:
+        try:
+            ms = self.main_splitter.sizes()
+            if self._is_valid_splitter_sizes(ms):
+                self.db.ui_state["main_splitter_sizes"] = [int(ms[0]), int(ms[1])]
+        except Exception:
+            pass
+        try:
+            ps = self.page_splitter.sizes()
+            if self._is_valid_splitter_sizes(ps):
+                self.db.ui_state["page_splitter_sizes"] = [int(ps[0]), int(ps[1])]
+        except Exception:
+            pass
+        try:
+            ns = self.notes_ideas_splitter.sizes()
+            if self._is_valid_splitter_sizes(ns):
+                self.db.ui_state["notes_splitter_sizes"] = [int(ns[0]), int(ns[1])]
+        except Exception:
+            pass
+        try:
+            vs = self.img_vsplit.sizes()
+            if self._is_valid_splitter_sizes(vs):
+                self.db.ui_state["img_vsplit_sizes"] = [int(vs[0]), int(vs[1])]
+        except Exception:
+            pass
+        try:
+            rvs = self.right_vsplit.sizes()
+            if self._is_valid_splitter_sizes(rvs):
+                self.db.ui_state["right_vsplit_sizes"] = [int(rvs[0]), int(rvs[1])]
+        except Exception:
+            pass
+
+    def _post_init_layout_fix(self) -> None:
+        try:
+            self._apply_splitter_sizes_from_state()
+            self._update_text_area_layout()
+            for pane in ("A", "B"):
+                self._reposition_overlay(pane)
+            self.trace("Post-init layout fix applied", "DEBUG")
+        except Exception as e:
+            self.trace(f"Post-init layout fix failed: {e}", "WARN")
+
+    def closeEvent(self, event) -> None:
+        try:
+            self._flush_page_fields_to_model_and_save()
+            self._save_ui_state()
+            self._remember_splitter_sizes()
+            self.db.save()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    # ---------------- Tree build/refresh ----------------
+    def _refresh_tree(self, select_current: bool = False) -> None:
+        self.tree.blockSignals(True)
+        self.tree.clear()
+
+        def add_cat(parent_item: Optional[QTreeWidgetItem], cat: Category) -> QTreeWidgetItem:
+            it = QTreeWidgetItem([cat.name])
+            it.setData(0, self.NODE_TYPE_ROLE, "category")
+            it.setData(0, self.CATEGORY_ID_ROLE, cat.id)
+            flags = it.flags()
+            flags |= Qt.ItemIsSelectable | Qt.ItemIsEnabled
+            it.setFlags(flags)
+            if parent_item is None:
+                self.tree.addTopLevelItem(it)
+            else:
+                parent_item.addChild(it)
+
+            # children categories first
+            for sub in cat.categories:
+                add_cat(it, sub)
+            # then items
+            for item in cat.items:
+                child = QTreeWidgetItem([item.name])
+                child.setData(0, self.NODE_TYPE_ROLE, "item")
+                child.setData(0, self.ITEM_ID_ROLE, item.id)
+                flags2 = child.flags()
+                flags2 |= Qt.ItemIsSelectable | Qt.ItemIsEnabled
+                child.setFlags(flags2)
+                it.addChild(child)
+
+            it.setExpanded(True)
+            return it
+
+        # render root categories as top-level folders
+        selected_qitem: Optional[QTreeWidgetItem] = None
+        for c in self.db.root.categories:
+            top = add_cat(None, c)
+            if select_current and self.current_category_id and c.id == self.current_category_id:
+                selected_qitem = top
+
+        # If current item exists, prefer selecting the item
+        if select_current and self.current_item_id:
+            item_q = self._find_tree_item_by_item_id(self.current_item_id)
+            if item_q is not None:
+                selected_qitem = item_q
+
+        if selected_qitem is not None:
+            self.tree.setCurrentItem(selected_qitem)
+
+        self.tree.blockSignals(False)
+
+    def _find_tree_item_by_item_id(self, item_id: str) -> Optional[QTreeWidgetItem]:
+        def walk(q: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+            ntype = q.data(0, self.NODE_TYPE_ROLE)
+            if ntype == "item" and str(q.data(0, self.ITEM_ID_ROLE) or "") == item_id:
+                return q
+            for i in range(q.childCount()):
+                r = walk(q.child(i))
+                if r is not None:
+                    return r
+            return None
+
+        for i in range(self.tree.topLevelItemCount()):
+            r = walk(self.tree.topLevelItem(i))
+            if r is not None:
+                return r
+        return None
+
+    def _on_tree_selection_changed(self) -> None:
+        item = self.tree.currentItem()
+        if not item:
+            return
+
+        node_type = item.data(0, self.NODE_TYPE_ROLE)
+        if node_type == "category":
+            cid = str(item.data(0, self.CATEGORY_ID_ROLE) or "")
+            if cid and cid != self.current_category_id:
+                self._flush_page_fields_to_model_and_save()
+                self.current_category_id = cid
+                # selecting category does not imply selecting item
+                self.current_item_id = ""
+                self.current_page_index = 0
+                self._save_ui_state()
+                self._load_current_item_page_to_ui(clear_only=True)
+                self.trace(f"Selected folder: {item.text(0)}", "INFO")
+            return
+
+        if node_type == "item":
+            iid = str(item.data(0, self.ITEM_ID_ROLE) or "")
+            if not iid or iid == self.current_item_id:
+                return
+
+            self._flush_page_fields_to_model_and_save()
+            found = self.db.find_item(iid)
+            if not found:
+                return
+            it, parent = found
+            self.current_item_id = it.id
+            self.current_category_id = parent.id
+            self.current_page_index = max(0, min(it.last_page_index, len(it.pages) - 1))
+            self._save_ui_state()
+            self._load_current_item_page_to_ui()
+            self.trace(f"Selected item: {it.name}", "INFO")
+
+    # ---------------- Context menu ----------------
+    def _on_tree_context_menu(self, pos) -> None:
+        item = self.tree.itemAt(pos)
+        if not item:
+            return
+        node_type = item.data(0, self.NODE_TYPE_ROLE)
+
+        menu = QMenu(self)
+        act_add_folder = menu.addAction("+ Folder")
+        act_add_item = menu.addAction("+ Item")
+        menu.addSeparator()
+        act_rename = menu.addAction("Rename")
+        act_delete = menu.addAction("Delete")
+        menu.addSeparator()
+        act_up = menu.addAction("Move Up")
+        act_down = menu.addAction("Move Down")
+
+        if node_type == "category":
+            # ok
+            pass
+        elif node_type == "item":
+            # ok
+            pass
+        else:
+            return
+
+        chosen = menu.exec_(self.tree.viewport().mapToGlobal(pos))
+        if not chosen:
+            return
+        if chosen == act_add_folder:
+            self.add_folder()
+        elif chosen == act_add_item:
+            self.add_item()
+        elif chosen == act_rename:
+            self.rename_node()
+        elif chosen == act_delete:
+            self.delete_node()
+        elif chosen == act_up:
+            self.move_node(-1)
+        elif chosen == act_down:
+            self.move_node(+1)
+
+    # ---------------- Node operations ----------------
+    def _effective_selected_category_id(self) -> str:
+        """
+        Category selected: itself
+        Item selected: its parent category
+        None: root
+        """
+        cur = self.tree.currentItem()
+        if cur:
+            ntype = cur.data(0, self.NODE_TYPE_ROLE)
+            if ntype == "category":
+                cid = str(cur.data(0, self.CATEGORY_ID_ROLE) or "")
+                if cid:
+                    return cid
+            if ntype == "item":
+                iid = str(cur.data(0, self.ITEM_ID_ROLE) or "")
+                found = self.db.find_item(iid)
+                if found:
+                    _, parent = found
+                    return parent.id
+        if self.current_category_id:
+            return self.current_category_id
+        return ROOT_CATEGORY_ID
+
+    def add_folder(self) -> None:
+        parent_id = self._effective_selected_category_id()
+        base_name = "New Folder"
+        name, ok = QInputDialog.getText(self, "Add Folder", "Folder name:", text=base_name)
+        if not ok or not name.strip():
+            return
+        self._flush_page_fields_to_model_and_save()
+        new_cat = self.db.add_category(parent_id, name.strip())
+        self.current_category_id = new_cat.id
+        self.current_item_id = ""
+        self.current_page_index = 0
+        self._save_ui_state()
+        self._save_db_with_warning()
+        self._refresh_tree(select_current=True)
+        self.trace(f"Added folder '{new_cat.name}' under parent={parent_id}", "INFO")
+
+    def add_item(self) -> None:
+        parent_id = self._effective_selected_category_id()
+        name, ok = QInputDialog.getText(self, "Add Item", "Item name:", text="New Item")
+        if not ok or not name.strip():
+            return
+        self._flush_page_fields_to_model_and_save()
+        it = self.db.add_item(parent_id, name.strip())
+        self.current_item_id = it.id
+        self.current_category_id = parent_id if parent_id != ROOT_CATEGORY_ID else ""
+        self.current_page_index = 0
+        self._save_ui_state()
+        self._save_db_with_warning()
+        self._refresh_tree(select_current=True)
+        self._load_current_item_page_to_ui()
+        self.trace(f"Added item '{it.name}' under category={parent_id}", "INFO")
+
+    def rename_node(self) -> None:
+        cur = self.tree.currentItem()
+        if not cur:
+            return
+        ntype = cur.data(0, self.NODE_TYPE_ROLE)
+        if ntype == "category":
+            cid = str(cur.data(0, self.CATEGORY_ID_ROLE) or "")
+            cat = self.db.find_category(cid)
+            if not cat or cid == ROOT_CATEGORY_ID:
+                return
+            new_name, ok = QInputDialog.getText(self, "Rename Folder", "New name:", text=cat.name)
+            if not ok or not new_name.strip():
+                return
+            self._flush_page_fields_to_model_and_save()
+            old = cat.name
+            cat.name = new_name.strip()
+            cat.updated_at = _now_epoch()
+            self._save_db_with_warning()
+            self._refresh_tree(select_current=True)
+            self.trace(f"Renamed folder '{old}' -> '{cat.name}'", "INFO")
+            return
+
+        if ntype == "item":
+            iid = str(cur.data(0, self.ITEM_ID_ROLE) or "")
+            found = self.db.find_item(iid)
+            if not found:
+                return
+            it, _ = found
+            new_name, ok = QInputDialog.getText(self, "Rename Item", "New name:", text=it.name)
+            if not ok or not new_name.strip():
+                return
+            self._flush_page_fields_to_model_and_save()
+            old = it.name
+            it.name = new_name.strip()
+            it.updated_at = _now_epoch()
+            self._save_db_with_warning()
+            self._refresh_tree(select_current=True)
+            self.trace(f"Renamed item '{old}' -> '{it.name}'", "INFO")
+
+    def delete_node(self) -> None:
+        cur = self.tree.currentItem()
+        if not cur:
+            return
+        ntype = cur.data(0, self.NODE_TYPE_ROLE)
+
+        if ntype == "category":
+            cid = str(cur.data(0, self.CATEGORY_ID_ROLE) or "")
+            if not cid or cid == ROOT_CATEGORY_ID:
+                return
+            cat = self.db.find_category(cid)
+            if not cat:
+                return
+
+            # confirm (recursive)
+            has_children = bool(cat.categories) or bool(cat.items)
+            msg = f"Delete folder '{cat.name}'?"
+            if has_children:
+                msg += "\n\nThis folder contains subfolders/items.\nDeleting will remove everything under it."
+            reply = QMessageBox.question(
+                self,
+                "Delete Folder",
+                msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            self._flush_page_fields_to_model_and_save()
+            ok = self.db.delete_category_recursive(cid)
+            if not ok:
+                return
+
+            # fix selection
+            if self.current_category_id == cid:
+                self.current_category_id = ""
+            if self.current_item_id and self.db.find_item(self.current_item_id) is None:
+                self.current_item_id = ""
+
+            self._ensure_valid_selection()
+            self._save_ui_state()
+            self._save_db_with_warning()
+            self._refresh_tree(select_current=True)
+            self._load_current_item_page_to_ui()
+            self.trace(f"Deleted folder '{cat.name}'", "WARN")
+            return
+
+        if ntype == "item":
+            iid = str(cur.data(0, self.ITEM_ID_ROLE) or "")
+            found = self.db.find_item(iid)
+            if not found:
+                return
+            it, _ = found
+
+            reply = QMessageBox.question(
+                self,
+                "Delete Item",
+                f"Delete item '{it.name}' and all its pages?\n(This cannot be undone.)",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            # prevent deleting last remaining item
+            # Count all items
+            if self._count_items(self.db.root) <= 1:
+                QMessageBox.warning(self, "Not allowed", "At least one item must remain.")
+                return
+
+            self._flush_page_fields_to_model_and_save()
+            self.db.delete_item(iid)
+
+            if self.current_item_id == iid:
+                self.current_item_id = ""
+            self._ensure_valid_selection()
+            self._save_ui_state()
+            self._save_db_with_warning()
+            self._refresh_tree(select_current=True)
+            self._load_current_item_page_to_ui()
+            self.trace(f"Deleted item '{it.name}'", "WARN")
+
+    def _count_items(self, cat: Category) -> int:
+        n = len(cat.items)
+        for c in cat.categories:
+            n += self._count_items(c)
+        return n
+
+    def move_node(self, direction: int) -> None:
+        cur = self.tree.currentItem()
+        if not cur:
+            return
+        ntype = cur.data(0, self.NODE_TYPE_ROLE)
+
         self._flush_page_fields_to_model_and_save()
 
-        by_id: Dict[str, Step] = {s.id: s for s in self.db.steps}
+        if ntype == "category":
+            cid = str(cur.data(0, self.CATEGORY_ID_ROLE) or "")
+            if not cid or cid == ROOT_CATEGORY_ID:
+                return
+            ok = self.db.move_category(cid, direction)
+            if ok:
+                self._save_db_with_warning()
+                self._refresh_tree(select_current=True)
+                self.trace(f"Moved folder (dir={direction})", "DEBUG")
+            return
 
-        new_cat_order: List[str] = []
-        new_steps: List[Step] = []
-        seen: set = set()
+        if ntype == "item":
+            iid = str(cur.data(0, self.ITEM_ID_ROLE) or "")
+            if not iid:
+                return
+            ok = self.db.move_item(iid, direction)
+            if ok:
+                self._save_db_with_warning()
+                self._refresh_tree(select_current=True)
+                self.trace(f"Moved item (dir={direction})", "DEBUG")
 
-        for ti in range(self.steps_tree.topLevelItemCount()):
-            cat_item = self.steps_tree.topLevelItem(ti)
-            cat_name = str(cat_item.text(0)).strip() or "General"
-            if cat_name not in new_cat_order:
-                new_cat_order.append(cat_name)
+    # ---------------- Current item/page access ----------------
+    def current_item(self) -> Optional[Item]:
+        found = self.db.find_item(self.current_item_id)
+        if not found:
+            return None
+        it, _ = found
+        return it
 
-            for ci in range(cat_item.childCount()):
-                step_item = cat_item.child(ci)
-                sid = step_item.data(0, self.STEP_ID_ROLE)
-                if not sid:
-                    continue
-                sid = str(sid)
-                st = by_id.get(sid)
-                if not st:
-                    continue
-                st.category = cat_name
-                new_steps.append(st)
-                seen.add(sid)
+    def current_page(self) -> Optional[Page]:
+        it = self.current_item()
+        if not it or not it.pages:
+            return None
+        idx = max(0, min(self.current_page_index, len(it.pages) - 1))
+        return it.pages[idx]
 
-        for st in self.db.steps:
-            if st.id not in seen:
-                new_steps.append(st)
-                if st.category and st.category not in new_cat_order:
-                    new_cat_order.append(st.category)
+    # ---------------- Save ui state ----------------
+    def _save_ui_state(self) -> None:
+        self.db.ui_state["selected_category_id"] = self.current_category_id
+        self.db.ui_state["selected_item_id"] = self.current_item_id
+        self.db.ui_state["current_page_index"] = int(self.current_page_index)
+        self.db.ui_state["desc_visible"] = bool(self._desc_visible)
+        self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
+        self.db.ui_state["trace_visible"] = bool(self._trace_visible)
 
-        self.db.steps = new_steps
-        self.db.category_order = new_cat_order
-        self.db._ensure_category_order_consistency()
+    # ---------------- Safe save wrapper ----------------
+    def _save_db_with_warning(self) -> bool:
+        ok = self.db.save()
+        if ok:
+            return True
 
-        if self.current_step_id and not self.db.get_step_by_id(self.current_step_id):
-            self.current_step_id = self.db.steps[0].id if self.db.steps else None
-            self.current_page_index = 0
+        now = time.time()
+        if (now - self._last_save_warn_ts) >= self._save_warn_cooldown_sec:
+            self._last_save_warn_ts = now
+            self.trace("Save failed (possible file lock). autosave may have been created.", "WARN")
+            QMessageBox.warning(
+                self,
+                "Save warning",
+                "JSON 저장에 실패했습니다(파일이 다른 프로그램에 의해 잠겼을 수 있습니다).\n\n"
+                "조치:\n"
+                "- VS Code에서 data/notes_db.json 탭을 닫거나 JSON Viewer/Preview 확장이 파일을 잡고 있지 않은지 확인\n"
+                "- 앱이 2개 실행 중인지 확인\n"
+                "- OneDrive/백신 실시간 감시가 잠깐 락을 거는 경우 잠시 후 자동 저장 재시도\n\n"
+                "데이터 보호:\n"
+                "- data 폴더에 notes_db.json.autosave.<timestamp>.json 파일이 생성되었을 수 있습니다."
+            )
+        return False
+
+    # ---------------- Page load/save ----------------
+    def _load_current_item_page_to_ui(self, clear_only: bool = False) -> None:
+        it = self.current_item()
+        pg = self.current_page()
+
+        if clear_only or not it or not pg:
+            self._loading_ui = True
+            try:
+                self.edit_stock_name.clear()
+                self.edit_ticker.clear()
+
+                for pane in ("A", "B"):
+                    ui = self._pane_ui.get(pane, {})
+                    if ui:
+                        ui["cap"].setPlainText("")
+                        ui["draw"].setChecked(False)
+                        ui["panel"].setVisible(False)
+                        ui["anno_toggle"].setVisible(True)
+                    viewer = self.viewer_a if pane == "A" else self.viewer_b
+                    if viewer is not None:
+                        viewer.clear_image()
+
+                for cb in self.chk_boxes:
+                    cb.setChecked(False)
+                for note in self.chk_notes:
+                    note.clear()
+                self.text_edit.clear()
+                self._update_nav(0, 0)
+            finally:
+                self._loading_ui = False
+            return
+
+        self._loading_ui = True
+        try:
+            # clamp page index
+            self.current_page_index = max(0, min(self.current_page_index, len(it.pages) - 1))
+            pg = it.pages[self.current_page_index]
+
+            self.edit_stock_name.setText(pg.stock_name or "")
+            self.edit_ticker.setText(pg.ticker or "")
+
+            if self._pane_ui.get("A"):
+                self._pane_ui["A"]["cap"].setPlainText(pg.image_a_caption or "")
+            if self._pane_ui.get("B"):
+                self._pane_ui["B"]["cap"].setPlainText(pg.image_b_caption or "")
+
+            if self.viewer_a is not None:
+                if pg.image_a_path and os.path.exists(_abspath_from_rel(pg.image_a_path)):
+                    self.viewer_a.set_image_path(_abspath_from_rel(pg.image_a_path))
+                else:
+                    self.viewer_a.clear_image()
+                self.viewer_a.set_strokes(pg.strokes_a or [])
+                self.viewer_a.set_mode_pan()
+
+            if self.viewer_b is not None:
+                if pg.image_b_path and os.path.exists(_abspath_from_rel(pg.image_b_path)):
+                    self.viewer_b.set_image_path(_abspath_from_rel(pg.image_b_path))
+                else:
+                    self.viewer_b.clear_image()
+                self.viewer_b.set_strokes(pg.strokes_b or [])
+                self.viewer_b.set_mode_pan()
+
+            cl = _normalize_checklist(pg.checklist)
+            for i in range(len(DEFAULT_CHECK_QUESTIONS)):
+                self.chk_boxes[i].setChecked(bool(cl[i].get("checked", False)))
+                val = _strip_highlight_html(str(cl[i].get("note", "") or ""))
+                if _looks_like_html(val):
+                    self.chk_notes[i].setHtml(val)
+                else:
+                    self.chk_notes[i].setPlainText(val)
+
+            val_desc = _strip_highlight_html(pg.note_text or "")
+            if _looks_like_html(val_desc):
+                self.text_edit.setHtml(val_desc)
+            else:
+                self.text_edit.setPlainText(val_desc)
+
+            for pane in ("A", "B"):
+                ui = self._pane_ui.get(pane, {})
+                if ui:
+                    ui["draw"].setChecked(False)
+                    ui["panel"].setVisible(False)
+                    ui["anno_toggle"].setVisible(True)
+                    self._reposition_overlay(pane)
+
+            self._update_nav(self.current_page_index + 1, len(it.pages))
+            self._set_active_rich_edit(self.text_edit)
+            self._sync_format_buttons()
+        finally:
+            self._loading_ui = False
+
+        self.trace(f"Loaded page {self.current_page_index + 1}/{len(it.pages)} for item '{it.name}'", "DEBUG")
+
+    def _on_page_field_changed(self) -> None:
+        if self._loading_ui:
+            return
+        # no item selected => ignore
+        if not self.current_item_id:
+            return
+        self._save_timer.start(450)
+
+    def _collect_checklist_from_ui(self) -> Checklist:
+        out: Checklist = []
+        for i, q in enumerate(DEFAULT_CHECK_QUESTIONS):
+            out.append(
+                {
+                    "q": q,
+                    "checked": bool(self.chk_boxes[i].isChecked()),
+                    "note": _strip_highlight_html(self.chk_notes[i].toHtml()),
+                }
+            )
+        return out
+
+    def _flush_page_fields_to_model_and_save(self) -> None:
+        it = self.current_item()
+        pg = self.current_page()
+        if not it or not pg or self._loading_ui:
+            # still save global ideas / ui state
+            self._save_ui_state()
+            self._remember_splitter_sizes()
+            self._save_db_with_warning()
+            return
+
+        changed = False
+
+        new_global = _strip_highlight_html(self.edit_global_ideas.toHtml())
+        if self.db.global_ideas != new_global:
+            self.db.global_ideas = new_global
+            changed = True
+
+        capA = self._pane_ui.get("A", {}).get("cap")
+        capB = self._pane_ui.get("B", {}).get("cap")
+        new_cap_a = capA.toPlainText() if capA is not None else ""
+        new_cap_b = capB.toPlainText() if capB is not None else ""
+        if pg.image_a_caption != new_cap_a:
+            pg.image_a_caption = new_cap_a
+            changed = True
+        if pg.image_b_caption != new_cap_b:
+            pg.image_b_caption = new_cap_b
+            changed = True
+
+        new_text = _strip_highlight_html(self.text_edit.toHtml())
+        if pg.note_text != new_text:
+            pg.note_text = new_text
+            changed = True
+
+        new_name = self.edit_stock_name.text()
+        if pg.stock_name != new_name:
+            pg.stock_name = new_name
+            changed = True
+
+        new_ticker = self.edit_ticker.text()
+        if pg.ticker != new_ticker:
+            pg.ticker = new_ticker
+            changed = True
+
+        if self.viewer_a is not None:
+            new_strokes_a = self.viewer_a.get_strokes()
+            if pg.strokes_a != new_strokes_a:
+                pg.strokes_a = new_strokes_a
+                changed = True
+
+        if self.viewer_b is not None:
+            new_strokes_b = self.viewer_b.get_strokes()
+            if pg.strokes_b != new_strokes_b:
+                pg.strokes_b = new_strokes_b
+                changed = True
+
+        new_checklist = self._collect_checklist_from_ui()
+        if pg.checklist != new_checklist:
+            pg.checklist = new_checklist
+            changed = True
+
+        it.last_page_index = self.current_page_index
+        it.updated_at = _now_epoch()
+        self._save_ui_state()
+        self._remember_splitter_sizes()
+
+        if changed:
+            pg.updated_at = _now_epoch()
+            self.trace(f"Auto-saved changes (item='{it.name}', page={self.current_page_index + 1})", "DEBUG")
+
+        self._save_db_with_warning()
+
+    def force_save(self) -> None:
+        self._flush_page_fields_to_model_and_save()
+        self.trace("Force save requested", "INFO")
+        QMessageBox.information(self, "Saved", "Save requested (check warnings if file is locked).")
+
+    def _update_nav(self, cur: int, total: int) -> None:
+        self.lbl_page.setText(f"{cur} / {total}")
+        self.btn_prev.setEnabled(total > 0 and self.current_page_index > 0)
+        self.btn_next.setEnabled(total > 0 and self.current_page_index < total - 1)
+        self.btn_del_page.setEnabled(total > 1)
+
+    def _load_global_ideas_to_ui(self) -> None:
+        self._loading_ui = True
+        try:
+            val = _strip_highlight_html(self.db.global_ideas or "")
+            if _looks_like_html(val):
+                self.edit_global_ideas.setHtml(val)
+            else:
+                self.edit_global_ideas.setPlainText(val)
+        finally:
+            self._loading_ui = False
+
+    # ---------------- Page navigation ----------------
+    def go_prev_page(self) -> None:
+        it = self.current_item()
+        if not it or self.current_page_index <= 0:
+            return
+        self._flush_page_fields_to_model_and_save()
+        self.current_page_index -= 1
+        it.last_page_index = self.current_page_index
+        self._save_ui_state()
+        self._load_current_item_page_to_ui()
+        self.trace("Prev page", "INFO")
+
+    def go_next_page(self) -> None:
+        it = self.current_item()
+        if not it or self.current_page_index >= len(it.pages) - 1:
+            return
+        self._flush_page_fields_to_model_and_save()
+        self.current_page_index += 1
+        it.last_page_index = self.current_page_index
+        self._save_ui_state()
+        self._load_current_item_page_to_ui()
+        self.trace("Next page", "INFO")
+
+    def add_page(self) -> None:
+        it = self.current_item()
+        if not it:
+            return
+        self._flush_page_fields_to_model_and_save()
+
+        insert_at = self.current_page_index + 1
+        it.pages.insert(insert_at, self.db.new_page())
+        self.current_page_index = insert_at
+        it.last_page_index = self.current_page_index
+        it.updated_at = _now_epoch()
 
         self._save_ui_state()
         self._save_db_with_warning()
+        self._load_current_item_page_to_ui()
+        self.trace(f"Added page (now {self.current_page_index + 1}/{len(it.pages)})", "INFO")
 
-        self._refresh_steps_tree(select_current=True)
-        self._load_current_page_to_ui()
-        self.trace("Rebuilt DB from tree structure", "INFO")
+    def delete_page(self) -> None:
+        it = self.current_item()
+        if not it or len(it.pages) <= 1:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Page",
+            "Delete current page?\n(This cannot be undone.)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._flush_page_fields_to_model_and_save()
+        del it.pages[self.current_page_index]
+        self.current_page_index = max(0, min(self.current_page_index, len(it.pages) - 1))
+        it.last_page_index = self.current_page_index
+        it.updated_at = _now_epoch()
+
+        self._save_ui_state()
+        self._save_db_with_warning()
+        self._load_current_item_page_to_ui()
+        self.trace(f"Deleted page (now {self.current_page_index + 1}/{len(it.pages)})", "WARN")
+
+    # ---------------- Image handling (dual panes) ----------------
+    def reset_image_view(self, pane: str) -> None:
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
+            return
+        self._set_active_pane(pane)
+        viewer.fit_to_view()
+        viewer.setFocus(Qt.MouseFocusReason)
+        self.trace(f"Fit view pane {pane}", "DEBUG")
+
+    def _on_image_dropped(self, pane: str, path: str) -> None:
+        self._set_image_from_file(pane, path)
+
+    def set_image_via_dialog(self, pane: str) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Select Chart Image ({pane})",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+        self._set_image_from_file(pane, file_path)
+
+    def clear_image(self, pane: str) -> None:
+        it = self.current_item()
+        pg = self.current_page()
+        if not it or not pg:
+            return
+
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
+            return
+
+        self._set_active_pane(pane)
+        self._flush_page_fields_to_model_and_save()
+
+        if pane == "A":
+            pg.image_a_path = ""
+            pg.strokes_a = []
+            pg.image_a_caption = ""
+            if self._pane_ui.get("A"):
+                self._pane_ui["A"]["cap"].setPlainText("")
+        else:
+            pg.image_b_path = ""
+            pg.strokes_b = []
+            pg.image_b_caption = ""
+            if self._pane_ui.get("B"):
+                self._pane_ui["B"]["cap"].setPlainText("")
+
+        pg.updated_at = _now_epoch()
+        it.updated_at = _now_epoch()
+        self._save_db_with_warning()
+        viewer.clear_image()
+        self.trace(f"Cleared image pane {pane}", "INFO")
+
+    def paste_image_from_clipboard(self, pane: str) -> None:
+        it = self.current_item()
+        pg = self.current_page()
+        if not it or not pg:
+            return
+
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
+            return
+
+        self._set_active_pane(pane)
+
+        cb = QApplication.clipboard()
+        img: QImage = cb.image()
+        if img.isNull():
+            QMessageBox.information(self, "Paste Image", "Clipboard does not contain an image.")
+            self.trace(f"Paste failed (clipboard empty) pane {pane}", "WARN")
+            return
+
+        self._flush_page_fields_to_model_and_save()
+
+        safe_item = _sanitize_for_folder(it.name, it.id[:8])
+        dst_dir = os.path.join(ASSETS_DIR, safe_item)
+        _ensure_dir(dst_dir)
+
+        dst_name = f"{pg.id}_{pane.lower()}_clip_{_now_epoch()}.png"
+        dst_rel = _relpath_norm(os.path.join(dst_dir, dst_name))
+        dst_abs = _abspath_from_rel(dst_rel)
+
+        ok = img.save(dst_abs, "PNG")
+        if not ok:
+            QMessageBox.warning(self, "Paste failed", "Clipboard image could not be saved as PNG.")
+            self.trace(f"Paste failed (save PNG) pane {pane}", "ERROR")
+            return
+
+        if pane == "A":
+            pg.image_a_path = dst_rel
+            pg.strokes_a = []
+        else:
+            pg.image_b_path = dst_rel
+            pg.strokes_b = []
+
+        pg.updated_at = _now_epoch()
+        it.updated_at = _now_epoch()
+        it.last_page_index = self.current_page_index
+        self._save_ui_state()
+        self._save_db_with_warning()
+
+        viewer.set_image_path(dst_abs)
+        viewer.set_strokes([])
+        viewer.setFocus(Qt.MouseFocusReason)
+
+        self.trace(f"Pasted image pane {pane}: {dst_rel}", "INFO")
+
+    def _set_image_from_file(self, pane: str, src_path: str) -> None:
+        it = self.current_item()
+        pg = self.current_page()
+        if not it or not pg:
+            return
+        if not os.path.isfile(src_path):
+            return
+
+        viewer = self.viewer_a if pane == "A" else self.viewer_b
+        if viewer is None:
+            return
+
+        self._set_active_pane(pane)
+        self._flush_page_fields_to_model_and_save()
+
+        ext = os.path.splitext(src_path)[1].lower()
+        if ext not in [".png", ".jpg", ".jpeg", ".bmp", ".webp"]:
+            QMessageBox.warning(self, "Invalid file", "Please select an image file.")
+            self.trace(f"Invalid image extension: {ext}", "WARN")
+            return
+
+        safe_item = _sanitize_for_folder(it.name, it.id[:8])
+        dst_dir = os.path.join(ASSETS_DIR, safe_item)
+        _ensure_dir(dst_dir)
+
+        dst_name = f"{pg.id}_{pane.lower()}{ext}"
+        dst_rel = _relpath_norm(os.path.join(dst_dir, dst_name))
+        dst_abs = _abspath_from_rel(dst_rel)
+
+        try:
+            shutil.copy2(src_path, dst_abs)
+        except Exception as e:
+            QMessageBox.critical(self, "Copy failed", f"Failed to copy image:\n{e}")
+            self.trace(f"Copy failed: {e}", "ERROR")
+            return
+
+        if pane == "A":
+            pg.image_a_path = dst_rel
+            pg.strokes_a = []
+        else:
+            pg.image_b_path = dst_rel
+            pg.strokes_b = []
+
+        pg.updated_at = _now_epoch()
+        it.updated_at = _now_epoch()
+        it.last_page_index = self.current_page_index
+        self._save_ui_state()
+        self._save_db_with_warning()
+
+        viewer.set_image_path(dst_abs)
+        viewer.set_strokes([])
+        viewer.setFocus(Qt.MouseFocusReason)
+
+        self.trace(f"Loaded image pane {pane}: {dst_rel}", "INFO")
+
+    # ---------------- Text/meta utilities ----------------
+    def copy_ticker(self) -> None:
+        txt = self.edit_ticker.text().strip()
+        if not txt:
+            QMessageBox.information(self, "Copy Ticker", "Ticker is empty.")
+            return
+        QApplication.clipboard().setText(txt)
+        self.trace(f"Copied ticker: {txt}", "DEBUG")
+
+    # ---------------- Ideas panel toggle ----------------
+    def _on_toggle_ideas(self, checked: bool) -> None:
+        self._set_global_ideas_visible(checked, persist=True)
+
+    def _set_global_ideas_visible(self, visible: bool, persist: bool = True) -> None:
+        self.ideas_panel.setVisible(bool(visible))
+
+        self.btn_ideas.blockSignals(True)
+        self.btn_ideas.setChecked(bool(visible))
+        self.btn_ideas.blockSignals(False)
+
+        self._update_text_area_layout()
+
+        if persist:
+            self.db.ui_state["global_ideas_visible"] = bool(visible)
+            self._save_db_with_warning()
+            self.trace(f"Global Ideas visible={visible}", "INFO")
+
+    # ---------------- Description toggle ----------------
+    def _on_toggle_desc(self, checked: bool) -> None:
+        self._set_desc_visible(bool(checked), persist=True)
+
+    def _set_desc_visible(self, visible: bool, persist: bool = True) -> None:
+        self._desc_visible = bool(visible)
+        self.notes_left.setVisible(self._desc_visible)
+
+        for pane in ("A", "B"):
+            ui = self._pane_ui.get(pane, {})
+            if ui and "desc_toggle" in ui:
+                btn = ui["desc_toggle"]
+                btn.blockSignals(True)
+                btn.setChecked(self._desc_visible)
+                btn.setText("Notes✓" if self._desc_visible else "Notes")
+                btn.blockSignals(False)
+
+        self._update_text_area_layout()
+
+        if persist:
+            self.db.ui_state["desc_visible"] = bool(self._desc_visible)
+            self._save_db_with_warning()
+            self.trace(f"Description visible={visible}", "INFO")
+
+    # ---------------- Trace visible toggle ----------------
+    def _set_trace_visible(self, visible: bool, persist: bool = True) -> None:
+        self._trace_visible = bool(visible)
+        self.trace_group.setVisible(self._trace_visible)
+        self.trace_show_row.setVisible(not self._trace_visible)
+
+        try:
+            total = max(1, self.right_vsplit.height())
+            if self._trace_visible:
+                rvs = self.db.ui_state.get("right_vsplit_sizes")
+                if self._is_valid_splitter_sizes(rvs):
+                    self.right_vsplit.setSizes(rvs)
+                else:
+                    trace_h = 210
+                    self.right_vsplit.setSizes([max(1, total - trace_h), trace_h])
+            else:
+                self.db.ui_state["right_vsplit_sizes"] = self.right_vsplit.sizes()
+                self.right_vsplit.setSizes([max(1, total - 38), 38])
+        except Exception:
+            pass
+
+        if persist:
+            self.db.ui_state["trace_visible"] = bool(self._trace_visible)
+            self._save_db_with_warning()
+
+    # ---------------- Layout logic (notes/ideas) ----------------
+    def _collapse_text_container(self, collapse: bool) -> None:
+        if collapse:
+            if self.text_container.isVisible():
+                self._remember_splitter_sizes()
+                self._save_db_with_warning()
+            self.text_container.setVisible(False)
+            total = max(1, self.page_splitter.width())
+            self.page_splitter.setSizes([total, 0])
+        else:
+            if not self.text_container.isVisible():
+                self.text_container.setVisible(True)
+            ps = self.db.ui_state.get("page_splitter_sizes")
+            if self._is_valid_splitter_sizes(ps):
+                self.page_splitter.setSizes(ps)
+            else:
+                self.page_splitter.setSizes([760, 700])
+
+    def _update_text_area_layout(self) -> None:
+        ideas_vis = bool(self.ideas_panel.isVisible())
+        desc_vis = bool(self._desc_visible)
+
+        if not desc_vis and not ideas_vis:
+            self._collapse_text_container(True)
+            return
+
+        self._collapse_text_container(False)
+
+        total = max(1, self.notes_ideas_splitter.width())
+        if desc_vis and ideas_vis:
+            # split reasonable
+            right = max(320, min(520, int(total * 0.34)))
+            left = max(220, total - right)
+            self.notes_ideas_splitter.setSizes([left, right])
+        elif desc_vis and (not ideas_vis):
+            self.notes_ideas_splitter.setSizes([total, 0])
+        elif (not desc_vis) and ideas_vis:
+            self.notes_ideas_splitter.setSizes([0, total])
 
     # ---------------- Rich text target / sync ----------------
     def _set_active_rich_edit(self, editor: QTextEdit) -> None:
@@ -2456,936 +3352,6 @@ class MainWindow(QMainWindow):
         self._on_page_field_changed()
         return True
 
-    # ---------------- Ideas panel toggle ----------------
-    def _on_toggle_ideas(self, checked: bool) -> None:
-        self._set_global_ideas_visible(checked, persist=True)
-
-    def _set_global_ideas_visible(self, visible: bool, persist: bool = True) -> None:
-        if (not visible) and self.notes_left.isVisible() and self.ideas_panel.isVisible():
-            self._remember_notes_splitter_sizes()
-
-        self.ideas_panel.setVisible(bool(visible))
-
-        self.btn_ideas.blockSignals(True)
-        self.btn_ideas.setChecked(bool(visible))
-        self.btn_ideas.blockSignals(False)
-
-        self._update_text_area_layout()
-
-        if persist:
-            self.db.ui_state["global_ideas_visible"] = bool(visible)
-            self._save_db_with_warning()
-            self.trace(f"Global Ideas visible={visible}", "INFO")
-
-    # ---------------- Description toggle ----------------
-    def _on_toggle_desc(self, checked: bool) -> None:
-        self._set_desc_visible(bool(checked), persist=True)
-
-    def _set_desc_visible(self, visible: bool, persist: bool = True) -> None:
-        if (not visible) and self.notes_left.isVisible() and self.ideas_panel.isVisible():
-            self._remember_notes_splitter_sizes()
-
-        self._desc_visible = bool(visible)
-        self.notes_left.setVisible(self._desc_visible)
-
-        for pane in ("A", "B"):
-            ui = self._pane_ui.get(pane, {})
-            if ui and "desc_toggle" in ui:
-                btn = ui["desc_toggle"]
-                btn.blockSignals(True)
-                btn.setChecked(self._desc_visible)
-                btn.setText("Notes✓" if self._desc_visible else "Notes")
-                btn.blockSignals(False)
-
-        self._update_text_area_layout()
-
-        if persist:
-            self.db.ui_state["desc_visible"] = bool(self._desc_visible)
-            self._save_db_with_warning()
-            self.trace(f"Description visible={visible}", "INFO")
-
-    def _collapse_text_container(self, collapse: bool) -> None:
-        if collapse:
-            if self.text_container.isVisible():
-                self._remember_page_splitter_sizes()
-                self._save_db_with_warning()
-            self.text_container.setVisible(False)
-            total = max(1, self.page_splitter.width())
-            self.page_splitter.setSizes([total, 0])
-        else:
-            if not self.text_container.isVisible():
-                self.text_container.setVisible(True)
-            ps = self.db.ui_state.get("page_splitter_sizes")
-            if self._is_valid_splitter_sizes(ps):
-                self.page_splitter.setSizes(ps)
-            elif self._page_split_prev_sizes and len(self._page_split_prev_sizes) == 2:
-                self.page_splitter.setSizes(self._page_split_prev_sizes)
-            else:
-                self.page_splitter.setSizes([760, 700])
-
-    def _apply_notes_splitter_sizes_both_visible(self, total: int) -> None:
-        ns = self.db.ui_state.get("notes_splitter_sizes")
-        if self._is_valid_notes_sizes_for_both_visible(ns):
-            self.notes_ideas_splitter.setSizes([int(ns[0]), int(ns[1])])
-            return
-
-        if self._notes_split_prev_sizes and self._is_valid_notes_sizes_for_both_visible(self._notes_split_prev_sizes):
-            self.notes_ideas_splitter.setSizes([int(self._notes_split_prev_sizes[0]), int(self._notes_split_prev_sizes[1])])
-            return
-
-        right = max(320, min(520, int(total * 0.34)))
-        left = max(220, total - right)
-        self.notes_ideas_splitter.setSizes([left, right])
-
-    def _update_text_area_layout(self) -> None:
-        ideas_vis = bool(self.ideas_panel.isVisible())
-        desc_vis = bool(self._desc_visible)
-
-        if not desc_vis and not ideas_vis:
-            self._collapse_text_container(True)
-            return
-
-        self._collapse_text_container(False)
-
-        total = max(1, self.notes_ideas_splitter.width())
-        if desc_vis and ideas_vis:
-            self._apply_notes_splitter_sizes_both_visible(total)
-        elif desc_vis and (not ideas_vis):
-            self.notes_ideas_splitter.setSizes([total, 0])
-        elif (not desc_vis) and ideas_vis:
-            self.notes_ideas_splitter.setSizes([0, total])
-
-    # ---------------- Context menu / category ops ----------------
-    def _on_tree_context_menu(self, pos) -> None:
-        item = self.steps_tree.itemAt(pos)
-        if not item:
-            return
-
-        node_type = item.data(0, self.NODE_TYPE_ROLE)
-
-        if node_type == "category":
-            cat = str(item.data(0, self.CATEGORY_NAME_ROLE) or "").strip() or "General"
-
-            menu = QMenu(self)
-            act_add_step = menu.addAction("+ Step in this Category")
-            act_rename_cat = menu.addAction("Rename Category")
-            act_delete_cat = menu.addAction("Delete Category")
-            menu.addSeparator()
-            act_move_up = menu.addAction("Move Category Up")
-            act_move_down = menu.addAction("Move Category Down")
-
-            cats = self.db.list_categories()
-            try:
-                idx = cats.index(cat)
-            except ValueError:
-                idx = -1
-            act_move_up.setEnabled(idx > 0)
-            act_move_down.setEnabled(0 <= idx < len(cats) - 1)
-
-            chosen = menu.exec_(self.steps_tree.viewport().mapToGlobal(pos))
-            if not chosen:
-                return
-
-            if chosen == act_add_step:
-                self._ctx_add_step_in_category(cat)
-            elif chosen == act_rename_cat:
-                self._ctx_rename_category(cat)
-            elif chosen == act_delete_cat:
-                self._ctx_delete_category(cat)
-            elif chosen == act_move_up:
-                self._ctx_move_category(cat, -1)
-            elif chosen == act_move_down:
-                self._ctx_move_category(cat, +1)
-            return
-
-        if node_type == "step":
-            sid = str(item.data(0, self.STEP_ID_ROLE) or "")
-            st = self.db.get_step_by_id(sid)
-            if not st:
-                return
-
-            menu = QMenu(self)
-            act_rename = menu.addAction("Rename Step")
-            act_set_cat = menu.addAction("Set Category")
-            act_delete = menu.addAction("Delete Step")
-
-            chosen = menu.exec_(self.steps_tree.viewport().mapToGlobal(pos))
-            if not chosen:
-                return
-
-            if chosen == act_rename:
-                self.rename_step()
-            elif chosen == act_set_cat:
-                self.set_step_category()
-            elif chosen == act_delete:
-                self.delete_step()
-            return
-
-    def _ctx_add_step_in_category(self, cat: str) -> None:
-        self._flush_page_fields_to_model_and_save()
-        name, ok = QInputDialog.getText(self, "Add Step", f"Step name (Category: {cat}):", text="New Step")
-        if not ok or not name.strip():
-            return
-        st = self.db.add_step(name.strip(), cat)
-        self.current_step_id = st.id
-        self.current_page_index = 0
-        self._save_ui_state()
-        self._save_db_with_warning()
-        self._refresh_steps_tree(select_current=True)
-        self._load_current_page_to_ui()
-        self.trace(f"Added step '{name.strip()}' in category '{cat}'", "INFO")
-
-    def _ctx_rename_category(self, old_cat: str) -> None:
-        new_cat, ok = QInputDialog.getText(self, "Rename Category", "New category name:", text=old_cat)
-        if not ok:
-            return
-        new_cat = (new_cat or "").strip()
-        if not new_cat:
-            return
-
-        self._flush_page_fields_to_model_and_save()
-        self.db.rename_category(old_cat, new_cat)
-        self._save_db_with_warning()
-        self._refresh_steps_tree(select_current=True)
-        self.trace(f"Renamed category '{old_cat}' -> '{new_cat}'", "INFO")
-
-    def _ctx_delete_category(self, cat: str) -> None:
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Delete Category")
-        msg.setText(f"Category '{cat}' 처리 방식을 선택하세요.")
-        btn_move = msg.addButton("Move Steps to Another Category", QMessageBox.ActionRole)
-        btn_delete = msg.addButton("Delete Steps in This Category", QMessageBox.DestructiveRole)
-        btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
-        msg.setDefaultButton(btn_cancel)
-        msg.exec_()
-
-        clicked = msg.clickedButton()
-        if clicked == btn_cancel:
-            return
-
-        self._flush_page_fields_to_model_and_save()
-
-        if clicked == btn_move:
-            cats = [c for c in self.db.list_categories() if c != cat]
-            hint = ", ".join(cats) if cats else "General"
-            target, ok = QInputDialog.getText(
-                self,
-                "Move Steps",
-                f"Move steps to category (existing: {hint}):",
-                text=(cats[0] if cats else "General"),
-            )
-            if not ok:
-                return
-            target = (target or "").strip() or "General"
-
-            self.db.delete_category_move_steps(cat, target)
-            if self.current_step_id and not self.db.get_step_by_id(self.current_step_id):
-                self.current_step_id = self.db.steps[0].id
-                self.current_page_index = 0
-
-            self._save_ui_state()
-            self._save_db_with_warning()
-            self._refresh_steps_tree(select_current=True)
-            self._load_current_page_to_ui()
-            self.trace(f"Deleted category '{cat}' (moved steps to '{target}')", "INFO")
-            return
-
-        if clicked == btn_delete:
-            ok = self.db.delete_category_and_steps(cat)
-            if not ok:
-                QMessageBox.warning(self, "Not allowed", "이 Category 삭제는 모든 Step을 제거하게 되어 허용되지 않습니다.")
-                return
-
-            if self.current_step_id and not self.db.get_step_by_id(self.current_step_id):
-                self.current_step_id = self.db.steps[0].id
-                self.current_page_index = max(
-                    0, min(self.db.steps[0].last_page_index, len(self.db.steps[0].pages) - 1)
-                )
-
-            self._save_ui_state()
-            self._save_db_with_warning()
-            self._refresh_steps_tree(select_current=True)
-            self._load_current_page_to_ui()
-            self.trace(f"Deleted category '{cat}' and its steps", "WARN")
-            return
-
-    def _ctx_move_category(self, cat: str, direction: int) -> None:
-        self.db.move_category(cat, direction)
-        self._save_db_with_warning()
-        self._refresh_steps_tree(select_current=True)
-        self.trace(f"Moved category '{cat}' direction={direction}", "DEBUG")
-
-    # ---------------- State helpers ----------------
-    def _load_ui_state_or_defaults(self) -> None:
-        step_id = self.db.ui_state.get("selected_step_id")
-        page_idx = self.db.ui_state.get("current_page_index", 0)
-
-        if step_id and self.db.get_step_by_id(step_id):
-            self.current_step_id = step_id
-        else:
-            self.current_step_id = self.db.steps[0].id if self.db.steps else None
-
-        self.current_page_index = int(page_idx) if isinstance(page_idx, int) else 0
-
-        st = self.current_step()
-        if st and st.pages:
-            self.current_page_index = max(0, min(self.current_page_index, len(st.pages) - 1))
-        else:
-            self.current_page_index = 0
-
-    def current_step(self) -> Optional[Step]:
-        if not self.current_step_id:
-            return None
-        return self.db.get_step_by_id(self.current_step_id)
-
-    def current_page(self) -> Optional[Page]:
-        st = self.current_step()
-        if not st or not st.pages:
-            return None
-        idx = max(0, min(self.current_page_index, len(st.pages) - 1))
-        return st.pages[idx]
-
-    def _save_ui_state(self) -> None:
-        self.db.ui_state["selected_step_id"] = self.current_step_id
-        self.db.ui_state["current_page_index"] = self.current_page_index
-        self.db.ui_state["desc_visible"] = bool(self._desc_visible)
-        self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
-        self.db.ui_state["trace_visible"] = bool(self._trace_visible)
-
-        if self.text_container.isVisible():
-            self._remember_page_splitter_sizes()
-        if self.notes_left.isVisible() and self.ideas_panel.isVisible():
-            self._remember_notes_splitter_sizes()
-
-        self._remember_right_vsplit_sizes()
-
-    # ---------------- Tree: category -> steps ----------------
-    def _refresh_steps_tree(self, select_current: bool = False) -> None:
-        self.steps_tree.blockSignals(True)
-        self.steps_tree.clear()
-
-        cats = self.db.list_categories()
-        cat_nodes: Dict[str, QTreeWidgetItem] = {}
-
-        for cat in cats:
-            top = QTreeWidgetItem([cat])
-            top.setData(0, self.NODE_TYPE_ROLE, "category")
-            top.setData(0, self.CATEGORY_NAME_ROLE, cat)
-            flags = top.flags()
-            flags |= Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
-            top.setFlags(flags)
-            self.steps_tree.addTopLevelItem(top)
-            cat_nodes[cat] = top
-
-        selected_item: Optional[QTreeWidgetItem] = None
-        for st in self.db.steps:
-            cat = (st.category or "General").strip() or "General"
-            if cat not in cat_nodes:
-                top = QTreeWidgetItem([cat])
-                top.setData(0, self.NODE_TYPE_ROLE, "category")
-                top.setData(0, self.CATEGORY_NAME_ROLE, cat)
-                flags = top.flags()
-                flags |= Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
-                top.setFlags(flags)
-                self.steps_tree.addTopLevelItem(top)
-                cat_nodes[cat] = top
-
-            child = QTreeWidgetItem([st.name])
-            child.setData(0, self.NODE_TYPE_ROLE, "step")
-            child.setData(0, self.STEP_ID_ROLE, st.id)
-            flags = child.flags()
-            flags |= Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
-            child.setFlags(flags)
-
-            cat_nodes[cat].addChild(child)
-
-            if select_current and st.id == self.current_step_id:
-                selected_item = child
-
-        for i in range(self.steps_tree.topLevelItemCount()):
-            self.steps_tree.topLevelItem(i).setExpanded(True)
-
-        if selected_item:
-            self.steps_tree.setCurrentItem(selected_item)
-
-        self.steps_tree.blockSignals(False)
-
-    def _on_tree_selection_changed(self) -> None:
-        item = self.steps_tree.currentItem()
-        if not item:
-            return
-        if item.data(0, self.NODE_TYPE_ROLE) != "step":
-            return
-
-        step_id = item.data(0, self.STEP_ID_ROLE)
-        if not step_id:
-            return
-
-        if str(step_id) == self.current_step_id:
-            return
-
-        self._flush_page_fields_to_model_and_save()
-
-        self.current_step_id = str(step_id)
-        st = self.current_step()
-        if not st:
-            return
-
-        self.current_page_index = max(0, min(st.last_page_index, len(st.pages) - 1))
-        self._save_ui_state()
-        self._load_current_page_to_ui()
-        self.trace(f"Selected step changed -> {st.name} (cat={st.category})", "INFO")
-
-    # ---------------- Safe save wrapper ----------------
-    def _save_db_with_warning(self) -> bool:
-        ok = self.db.save()
-        if ok:
-            return True
-
-        now = time.time()
-        if (now - self._last_save_warn_ts) >= self._save_warn_cooldown_sec:
-            self._last_save_warn_ts = now
-            self.trace("Save failed (possible file lock). autosave may have been created.", "WARN")
-            QMessageBox.warning(
-                self,
-                "Save warning",
-                "JSON 저장에 실패했습니다(파일이 다른 프로그램에 의해 잠겼을 수 있습니다).\n\n"
-                "조치:\n"
-                "- VS Code에서 data/notes_db.json 탭을 닫거나 JSON Viewer/Preview 확장이 파일을 잡고 있지 않은지 확인\n"
-                "- 앱이 2개 실행 중인지 확인\n"
-                "- OneDrive/백신 실시간 감시가 잠깐 락을 거는 경우 잠시 후 자동 저장 재시도\n\n"
-                "데이터 보호:\n"
-                "- data 폴더에 notes_db.json.autosave.<timestamp>.json 파일이 생성되었을 수 있습니다."
-            )
-        return False
-
-    # ---------------- Page load/save ----------------
-    def _load_current_page_to_ui(self) -> None:
-        st = self.current_step()
-        pg = self.current_page()
-        if not st or not pg:
-            self._loading_ui = True
-            try:
-                self.edit_stock_name.clear()
-                self.edit_ticker.clear()
-                for pane in ("A", "B"):
-                    ui = self._pane_ui.get(pane, {})
-                    if ui:
-                        ui["cap"].setPlainText("")
-                        ui["draw"].setChecked(False)
-                        ui["panel"].setVisible(False)
-                        ui["anno_toggle"].setVisible(True)
-                    viewer = self.viewer_a if pane == "A" else self.viewer_b
-                    if viewer is not None:
-                        viewer.clear_image()
-                for cb in self.chk_boxes:
-                    cb.setChecked(False)
-                for note in self.chk_notes:
-                    note.clear()
-                self.text_edit.clear()
-                self._update_nav()
-            finally:
-                self._loading_ui = False
-            return
-
-        self._loading_ui = True
-        try:
-            self.edit_stock_name.setText(pg.stock_name or "")
-            self.edit_ticker.setText(pg.ticker or "")
-
-            if self._pane_ui.get("A"):
-                self._pane_ui["A"]["cap"].setPlainText(pg.image_a_caption or "")
-            if self._pane_ui.get("B"):
-                self._pane_ui["B"]["cap"].setPlainText(pg.image_b_caption or "")
-
-            if self.viewer_a is not None:
-                if pg.image_a_path and os.path.exists(_abspath_from_rel(pg.image_a_path)):
-                    self.viewer_a.set_image_path(_abspath_from_rel(pg.image_a_path))
-                else:
-                    self.viewer_a.clear_image()
-                self.viewer_a.set_strokes(pg.strokes_a or [])
-                self.viewer_a.set_mode_pan()
-
-            if self.viewer_b is not None:
-                if pg.image_b_path and os.path.exists(_abspath_from_rel(pg.image_b_path)):
-                    self.viewer_b.set_image_path(_abspath_from_rel(pg.image_b_path))
-                else:
-                    self.viewer_b.clear_image()
-                self.viewer_b.set_strokes(pg.strokes_b or [])
-                self.viewer_b.set_mode_pan()
-
-            cl = _normalize_checklist(pg.checklist)
-            for i in range(len(DEFAULT_CHECK_QUESTIONS)):
-                self.chk_boxes[i].setChecked(bool(cl[i].get("checked", False)))
-                val = _strip_highlight_html(str(cl[i].get("note", "") or ""))
-                if _looks_like_html(val):
-                    self.chk_notes[i].setHtml(val)
-                else:
-                    self.chk_notes[i].setPlainText(val)
-
-            val_desc = _strip_highlight_html(pg.note_text or "")
-            if _looks_like_html(val_desc):
-                self.text_edit.setHtml(val_desc)
-            else:
-                self.text_edit.setPlainText(val_desc)
-
-            for pane in ("A", "B"):
-                ui = self._pane_ui.get(pane, {})
-                if ui:
-                    ui["draw"].setChecked(False)
-                    ui["panel"].setVisible(False)
-                    ui["anno_toggle"].setVisible(True)
-                    self._reposition_overlay(pane)
-
-            self._update_nav()
-            self._set_active_rich_edit(self.text_edit)
-            self._sync_format_buttons()
-        finally:
-            self._loading_ui = False
-
-        self.trace(f"Loaded page {self.current_page_index + 1}/{len(st.pages)} for step '{st.name}'", "DEBUG")
-
-    def _on_page_field_changed(self) -> None:
-        if self._loading_ui:
-            return
-        self._save_timer.start(450)
-
-    def _collect_checklist_from_ui(self) -> Checklist:
-        out: Checklist = []
-        for i, q in enumerate(DEFAULT_CHECK_QUESTIONS):
-            out.append(
-                {
-                    "q": q,
-                    "checked": bool(self.chk_boxes[i].isChecked()),
-                    "note": _strip_highlight_html(self.chk_notes[i].toHtml()),
-                }
-            )
-        return out
-
-    def _flush_page_fields_to_model_and_save(self) -> None:
-        st = self.current_step()
-        pg = self.current_page()
-        if not st or not pg or self._loading_ui:
-            return
-
-        changed = False
-
-        new_global = _strip_highlight_html(self.edit_global_ideas.toHtml())
-        if self.db.global_ideas != new_global:
-            self.db.global_ideas = new_global
-            changed = True
-
-        capA = self._pane_ui.get("A", {}).get("cap")
-        capB = self._pane_ui.get("B", {}).get("cap")
-        new_cap_a = capA.toPlainText() if capA is not None else ""
-        new_cap_b = capB.toPlainText() if capB is not None else ""
-        if pg.image_a_caption != new_cap_a:
-            pg.image_a_caption = new_cap_a
-            changed = True
-        if pg.image_b_caption != new_cap_b:
-            pg.image_b_caption = new_cap_b
-            changed = True
-
-        new_text = _strip_highlight_html(self.text_edit.toHtml())
-        if pg.note_text != new_text:
-            pg.note_text = new_text
-            changed = True
-
-        new_name = self.edit_stock_name.text()
-        if pg.stock_name != new_name:
-            pg.stock_name = new_name
-            changed = True
-
-        new_ticker = self.edit_ticker.text()
-        if pg.ticker != new_ticker:
-            pg.ticker = new_ticker
-            changed = True
-
-        if self.viewer_a is not None:
-            new_strokes_a = self.viewer_a.get_strokes()
-            if pg.strokes_a != new_strokes_a:
-                pg.strokes_a = new_strokes_a
-                changed = True
-
-        if self.viewer_b is not None:
-            new_strokes_b = self.viewer_b.get_strokes()
-            if pg.strokes_b != new_strokes_b:
-                pg.strokes_b = new_strokes_b
-                changed = True
-
-        new_checklist = self._collect_checklist_from_ui()
-        if pg.checklist != new_checklist:
-            pg.checklist = new_checklist
-            changed = True
-
-        st.last_page_index = self.current_page_index
-        self._save_ui_state()
-
-        if changed:
-            pg.updated_at = _now_epoch()
-            self.trace(f"Auto-saved changes (step='{st.name}', page={self.current_page_index + 1})", "DEBUG")
-
-        self._save_db_with_warning()
-
-    def force_save(self) -> None:
-        self._flush_page_fields_to_model_and_save()
-        self.trace("Force save requested", "INFO")
-        QMessageBox.information(self, "Saved", "Save requested (check warnings if file is locked).")
-
-    def _update_nav(self) -> None:
-        st = self.current_step()
-        total = len(st.pages) if st else 0
-        cur = (self.current_page_index + 1) if total > 0 else 0
-        self.lbl_page.setText(f"{cur} / {total}")
-
-        self.btn_prev.setEnabled(total > 0 and self.current_page_index > 0)
-        self.btn_next.setEnabled(total > 0 and self.current_page_index < total - 1)
-        self.btn_del_page.setEnabled(total > 1)
-
-    def _load_global_ideas_to_ui(self) -> None:
-        self._loading_ui = True
-        try:
-            val = _strip_highlight_html(self.db.global_ideas or "")
-            if _looks_like_html(val):
-                self.edit_global_ideas.setHtml(val)
-            else:
-                self.edit_global_ideas.setPlainText(val)
-        finally:
-            self._loading_ui = False
-
-    # ---------------- Page navigation ----------------
-    def go_prev_page(self) -> None:
-        st = self.current_step()
-        if not st or self.current_page_index <= 0:
-            return
-        self._flush_page_fields_to_model_and_save()
-        self.current_page_index -= 1
-        st.last_page_index = self.current_page_index
-        self._save_ui_state()
-        self._load_current_page_to_ui()
-        self.trace("Prev page", "INFO")
-
-    def go_next_page(self) -> None:
-        st = self.current_step()
-        if not st or self.current_page_index >= len(st.pages) - 1:
-            return
-        self._flush_page_fields_to_model_and_save()
-        self.current_page_index += 1
-        st.last_page_index = self.current_page_index
-        self._save_ui_state()
-        self._load_current_page_to_ui()
-        self.trace("Next page", "INFO")
-
-    def add_page(self) -> None:
-        st = self.current_step()
-        if not st:
-            return
-        self._flush_page_fields_to_model_and_save()
-
-        insert_at = self.current_page_index + 1
-        st.pages.insert(insert_at, self.db.new_page())
-        self.current_page_index = insert_at
-        st.last_page_index = self.current_page_index
-
-        self._save_ui_state()
-        self._save_db_with_warning()
-        self._load_current_page_to_ui()
-        self.trace(f"Added page (now {self.current_page_index + 1}/{len(st.pages)})", "INFO")
-
-    def delete_page(self) -> None:
-        st = self.current_step()
-        if not st or len(st.pages) <= 1:
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "Delete Page",
-            "Delete current page?\n(This cannot be undone.)",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        self._flush_page_fields_to_model_and_save()
-        del st.pages[self.current_page_index]
-        self.current_page_index = max(0, min(self.current_page_index, len(st.pages) - 1))
-        st.last_page_index = self.current_page_index
-
-        self._save_ui_state()
-        self._save_db_with_warning()
-        self._load_current_page_to_ui()
-        self.trace(f"Deleted page (now {self.current_page_index + 1}/{len(st.pages)})", "WARN")
-
-    # ---------------- Image handling (dual panes) ----------------
-    def reset_image_view(self, pane: str) -> None:
-        viewer = self.viewer_a if pane == "A" else self.viewer_b
-        if viewer is None:
-            return
-        self._set_active_pane(pane)
-        viewer.fit_to_view()
-        viewer.setFocus(Qt.MouseFocusReason)
-        self.trace(f"Fit view pane {pane}", "DEBUG")
-
-    def _on_image_dropped(self, pane: str, path: str) -> None:
-        self._set_image_from_file(pane, path)
-
-    def set_image_via_dialog(self, pane: str) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            f"Select Chart Image ({pane})",
-            "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*.*)",
-        )
-        if not file_path:
-            return
-        self._set_image_from_file(pane, file_path)
-
-    def clear_image(self, pane: str) -> None:
-        st = self.current_step()
-        pg = self.current_page()
-        if not st or not pg:
-            return
-
-        viewer = self.viewer_a if pane == "A" else self.viewer_b
-        if viewer is None:
-            return
-
-        self._set_active_pane(pane)
-        self._flush_page_fields_to_model_and_save()
-
-        if pane == "A":
-            pg.image_a_path = ""
-            pg.strokes_a = []
-            pg.image_a_caption = ""
-            if self._pane_ui.get("A"):
-                self._pane_ui["A"]["cap"].setPlainText("")
-        else:
-            pg.image_b_path = ""
-            pg.strokes_b = []
-            pg.image_b_caption = ""
-            if self._pane_ui.get("B"):
-                self._pane_ui["B"]["cap"].setPlainText("")
-
-        pg.updated_at = _now_epoch()
-        self._save_db_with_warning()
-        viewer.clear_image()
-        self.trace(f"Cleared image pane {pane}", "INFO")
-
-    def paste_image_from_clipboard(self, pane: str) -> None:
-        st = self.current_step()
-        pg = self.current_page()
-        if not st or not pg:
-            return
-
-        viewer = self.viewer_a if pane == "A" else self.viewer_b
-        if viewer is None:
-            return
-
-        self._set_active_pane(pane)
-
-        cb = QApplication.clipboard()
-        img: QImage = cb.image()
-        if img.isNull():
-            QMessageBox.information(self, "Paste Image", "Clipboard does not contain an image.")
-            self.trace(f"Paste failed (clipboard empty) pane {pane}", "WARN")
-            return
-
-        self._flush_page_fields_to_model_and_save()
-
-        safe_step = _sanitize_for_folder(st.name, st.id[:8])
-        dst_dir = os.path.join(ASSETS_DIR, safe_step)
-        _ensure_dir(dst_dir)
-
-        dst_name = f"{pg.id}_{pane.lower()}_clip_{_now_epoch()}.png"
-        dst_rel = _relpath_norm(os.path.join(dst_dir, dst_name))
-        dst_abs = _abspath_from_rel(dst_rel)
-
-        ok = img.save(dst_abs, "PNG")
-        if not ok:
-            QMessageBox.warning(self, "Paste failed", "Clipboard image could not be saved as PNG.")
-            self.trace(f"Paste failed (save PNG) pane {pane}", "ERROR")
-            return
-
-        if pane == "A":
-            pg.image_a_path = dst_rel
-            pg.strokes_a = []
-        else:
-            pg.image_b_path = dst_rel
-            pg.strokes_b = []
-
-        pg.updated_at = _now_epoch()
-        st.last_page_index = self.current_page_index
-        self._save_ui_state()
-        self._save_db_with_warning()
-
-        viewer.set_image_path(dst_abs)
-        viewer.set_strokes([])
-        viewer.setFocus(Qt.MouseFocusReason)
-
-        self.trace(f"Pasted image pane {pane}: {dst_rel}", "INFO")
-
-    def _set_image_from_file(self, pane: str, src_path: str) -> None:
-        st = self.current_step()
-        pg = self.current_page()
-        if not st or not pg:
-            return
-        if not os.path.isfile(src_path):
-            return
-
-        viewer = self.viewer_a if pane == "A" else self.viewer_b
-        if viewer is None:
-            return
-
-        self._set_active_pane(pane)
-        self._flush_page_fields_to_model_and_save()
-
-        ext = os.path.splitext(src_path)[1].lower()
-        if ext not in [".png", ".jpg", ".jpeg", ".bmp", ".webp"]:
-            QMessageBox.warning(self, "Invalid file", "Please select an image file.")
-            self.trace(f"Invalid image extension: {ext}", "WARN")
-            return
-
-        safe_step = _sanitize_for_folder(st.name, st.id[:8])
-        dst_dir = os.path.join(ASSETS_DIR, safe_step)
-        _ensure_dir(dst_dir)
-
-        dst_name = f"{pg.id}_{pane.lower()}{ext}"
-        dst_rel = _relpath_norm(os.path.join(dst_dir, dst_name))
-        dst_abs = _abspath_from_rel(dst_rel)
-
-        try:
-            shutil.copy2(src_path, dst_abs)
-        except Exception as e:
-            QMessageBox.critical(self, "Copy failed", f"Failed to copy image:\n{e}")
-            self.trace(f"Copy failed: {e}", "ERROR")
-            return
-
-        if pane == "A":
-            pg.image_a_path = dst_rel
-            pg.strokes_a = []
-        else:
-            pg.image_b_path = dst_rel
-            pg.strokes_b = []
-
-        pg.updated_at = _now_epoch()
-        st.last_page_index = self.current_page_index
-        self._save_ui_state()
-        self._save_db_with_warning()
-
-        viewer.set_image_path(dst_abs)
-        viewer.set_strokes([])
-        viewer.setFocus(Qt.MouseFocusReason)
-
-        self.trace(f"Loaded image pane {pane}: {dst_rel}", "INFO")
-
-    # ---------------- Text/meta utilities ----------------
-    def copy_ticker(self) -> None:
-        txt = self.edit_ticker.text().strip()
-        if not txt:
-            QMessageBox.information(self, "Copy Ticker", "Ticker is empty.")
-            return
-        QApplication.clipboard().setText(txt)
-        self.trace(f"Copied ticker: {txt}", "DEBUG")
-
-    # ---------------- Step management ----------------
-    def add_step(self) -> None:
-        self._flush_page_fields_to_model_and_save()
-
-        name, ok = QInputDialog.getText(self, "Add Step", "Step name:", text="New Step")
-        if not ok or not name.strip():
-            return
-
-        cats = self.db.list_categories()
-        hint = ", ".join(cats) if cats else "General"
-        cat_text, ok2 = QInputDialog.getText(self, "Category", f"Category tag (existing: {hint}):", text="General")
-        if not ok2:
-            return
-
-        category = (cat_text or "").strip() or "General"
-        st = self.db.add_step(name.strip(), category)
-        self.current_step_id = st.id
-        self.current_page_index = 0
-
-        self._save_ui_state()
-        self._save_db_with_warning()
-        self._refresh_steps_tree(select_current=True)
-        self._load_current_page_to_ui()
-        self.trace(f"Added step '{st.name}' (cat={st.category})", "INFO")
-
-    def rename_step(self) -> None:
-        st = self.current_step()
-        if not st:
-            return
-
-        new_name, ok = QInputDialog.getText(self, "Rename Step", "New name:", text=st.name)
-        if not ok or not new_name.strip():
-            return
-
-        old = st.name
-        st.name = new_name.strip()
-        self._save_db_with_warning()
-        self._refresh_steps_tree(select_current=True)
-        self.trace(f"Renamed step '{old}' -> '{st.name}'", "INFO")
-
-    def set_step_category(self) -> None:
-        st = self.current_step()
-        if not st:
-            return
-
-        cats = self.db.list_categories()
-        hint = ", ".join(cats) if cats else "General"
-        new_cat, ok = QInputDialog.getText(
-            self,
-            "Set Category",
-            f"Category tag (existing: {hint}):",
-            text=(st.category or "General"),
-        )
-        if not ok:
-            return
-
-        old = st.category
-        st.category = (new_cat or "").strip() or "General"
-        if st.category not in self.db.category_order:
-            self.db.category_order.append(st.category)
-        self._save_db_with_warning()
-        self._refresh_steps_tree(select_current=True)
-        self.trace(f"Changed step category '{st.name}': '{old}' -> '{st.category}'", "INFO")
-
-    def delete_step(self) -> None:
-        st = self.current_step()
-        if not st:
-            return
-        if len(self.db.steps) <= 1:
-            QMessageBox.warning(self, "Not allowed", "At least one step must remain.")
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "Delete Step",
-            f"Delete step '{st.name}' (Category: {st.category}) and all its pages?\n(This cannot be undone.)",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        name = st.name
-        ok = self.db.delete_step(st.id)
-        if not ok:
-            QMessageBox.warning(self, "Failed", "Cannot delete the last remaining step.")
-            return
-
-        self.current_step_id = self.db.steps[0].id
-        first = self.db.steps[0]
-        self.current_page_index = max(0, min(first.last_page_index, len(first.pages) - 1))
-        self._save_ui_state()
-        self._save_db_with_warning()
-
-        self._refresh_steps_tree(select_current=True)
-        self._load_current_page_to_ui()
-        self.trace(f"Deleted step '{name}'", "WARN")
-
     # ---------------- Event filter ----------------
     def eventFilter(self, obj, event) -> bool:
         va = getattr(self, "viewer_a", None)
@@ -3448,13 +3414,12 @@ if __name__ == "__main__":
 # ============================================================
 # Release History (append-only)
 # ------------------------------------------------------------
+# v0.6.0 (2026-01-01)
+# - (ARCH) Folder(Category)/Item 구조로 트리 재구성 + Item만 실제 데이터 보유
+# - (UX) Drag&Drop 제거, Move Up/Down으로만 순서 변경
+# - (UI) Chart A/B Vertical(원복), Notes는 오른쪽(수평) + Trace 유지
+#
 # v0.5.1 (2026-01-01)
 # - (FIX) Global Ideas 패널 표시/폭 0 문제 보정 + post-init 레이아웃 보정
 # - (DEV) Trace 패널(하단) 추가: Vertical Splitter로 높이 조절 + 상태 저장
-#
-# v0.5.0 (2025-12-28)
-# - (UX) Dual chart image panes (A/B) stacked vertically for 비교 분석
-#   - Each page can store two images + two independent annotation stroke sets
-#   - Per-pane Open / Paste / Clear / Fit
-#   - Per-pane caption overlay (hover/클릭 확장)
 # ============================================================
