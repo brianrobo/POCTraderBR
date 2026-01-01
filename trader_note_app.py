@@ -2129,6 +2129,11 @@ class MainWindow(QMainWindow):
             # ✅ Folder icon
             q.setIcon(0, folder_icon)
             
+            # ✅ Category(폴더)만 Bold
+            f = q.font(0)
+            f.setBold(True)
+            q.setFont(0, f)
+            
             if parent_q is None:
                 self.nav_tree.addTopLevelItem(q)
             else:
