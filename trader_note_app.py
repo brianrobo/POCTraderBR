@@ -2,21 +2,31 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.7.5  (2026-01-01)
+Version: 0.8.0  (2026-01-01)
 
-v0.7.5 변경 사항:
-- Description 숨김 시 Chart 영역 우측 끝까지 확장 개선
-  AS-IS: Description 숨김 시 Chart 영역이 우측으로 넓어지지만 윈도우 끝까지 확장되지 않음
+v0.8.0 변경 사항:
+- 리스트 기능 개선
+  AS-IS: 리스트 생성만 가능, 상태 표시 없음, 제거 기능 없음
   TO-BE:
-    - Description 영역의 최소 크기를 0으로 설정하여 완전히 접을 수 있도록
-    - 핸들 너비를 8px에서 5px로 줄여 Chart가 더 넓게 차지하도록
-    - 재시도 횟수 증가 (300ms 추가) 및 크기 검증 로직 개선
-    - Description 표시 시 최소 크기(440px) 복원
+    - 리스트 버튼을 checkable로 변경하여 현재 리스트 상태 표시
+    - 리스트 토글 기능: 리스트 안에 있으면 제거, 없으면 생성
+    - 리스트 제거 버튼 추가 (×)
+    - 리스트 들여쓰기/내어쓰기 버튼 추가 (→/←)
+    - Tab/Shift+Tab 키로 리스트 들여쓰기/내어쓰기 지원
+    - _sync_format_buttons에 리스트 상태 동기화 추가
+    - 커서 위치에 따라 리스트 버튼 자동 활성화/비활성화
+    - 리스트 들여쓰기 간격을 15px로 축소 (기존보다 작게)
+    - 개별 리스트 항목만 들여쓰기되도록 개선 (같은 리스트의 다른 항목 영향 없음)
 
-v0.7.4 변경 사항:
-- Description 숨김 시 Chart 영역 확장
-  AS-IS: Description 숨김 시에도 Description 영역이 10px로 유지되어 Chart 영역이 제한됨
-  TO-BE: Description 숨김 시 Chart 영역이 거의 전체를 차지하도록 확장 (splitter 핸들만 8px 유지)
+v0.7.9 변경 사항:
+- Custom Checklist 탭 추가
+  AS-IS: 기본 Checklist만 존재 (고정된 4개 질문)
+  TO-BE:
+    - QTabWidget으로 "기본 Checklist"와 "Custom Checklist" 탭 분리
+    - Custom Checklist에서 사용자가 자유롭게 항목 추가/삭제/편집 가능
+    - 각 Custom 항목마다 체크박스, 질문 입력, 설명 입력, 삭제 버튼 제공
+    - Custom Checklist 데이터는 페이지별로 독립적으로 저장
+    - 스크롤 가능한 영역으로 많은 항목 관리 가능
 """
 
 import json
@@ -32,7 +42,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QRect, QPoint, QEvent, QSize
 from PyQt5.QtGui import (
     QImage, QPixmap, QPainterPath, QPen, QColor, QPainter, QIcon,
-    QTextCharFormat, QTextListFormat, QFont, QBrush, QKeySequence
+    QTextCharFormat, QTextListFormat, QTextBlockFormat, QTextCursor, QFont, QBrush, QKeySequence
 )
 from PyQt5.QtWidgets import (
     QApplication, QFileDialog, QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView,
@@ -40,10 +50,10 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QWidget, QInputDialog, QComboBox, QCheckBox, QGroupBox, QPushButton,
     QLayout, QWidgetItem, QFrame, QTreeWidget, QTreeWidgetItem, QMenu, QPlainTextEdit,
     QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
-    QStyleOptionViewItem, QSplitterHandle
+    QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea
 )
 
-APP_TITLE = "Trader Chart Note (v0.7.5)"
+APP_TITLE = "Trader Chart Note (v0.8.0)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -460,6 +470,7 @@ class CollapsibleCaptionEdit(QPlainTextEdit):
 # ---------------------------
 Strokes = List[Dict[str, Any]]
 Checklist = List[Dict[str, Any]]
+CustomChecklist = List[Dict[str, Any]]  # [{"q": str, "checked": bool, "note": str}, ...]
 
 
 def _normalize_strokes(raw: Any) -> Strokes:
@@ -504,6 +515,25 @@ def _normalize_checklist(raw: Any) -> Checklist:
     return base
 
 
+def _default_custom_checklist() -> CustomChecklist:
+    return []
+
+
+def _normalize_custom_checklist(raw: Any) -> CustomChecklist:
+    """Custom Checklist 정규화"""
+    if not isinstance(raw, list):
+        return []
+    out: CustomChecklist = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append({
+                "q": str(item.get("q", "")).strip() or "새 항목",
+                "checked": bool(item.get("checked", False)),
+                "note": str(item.get("note", "") or "")
+            })
+    return out
+
+
 @dataclass
 class Page:
     id: str
@@ -517,6 +547,7 @@ class Page:
     stock_name: str
     ticker: str
     checklist: Checklist
+    custom_checklist: CustomChecklist
     created_at: int
     updated_at: int
 
@@ -565,6 +596,7 @@ class NoteDB:
             stock_name="",
             ticker="",
             checklist=_default_checklist(),
+            custom_checklist=_default_custom_checklist(),
             created_at=now,
             updated_at=now,
         )
@@ -602,6 +634,7 @@ class NoteDB:
                             "stock_name": "",
                             "ticker": "",
                             "checklist": _default_checklist(),
+                            "custom_checklist": _default_custom_checklist(),
                             "created_at": now,
                             "updated_at": now,
                         }
@@ -722,6 +755,7 @@ class NoteDB:
                                     stock_name=str(p.get("stock_name", "")) or "",
                                     ticker=str(p.get("ticker", "")) or "",
                                     checklist=_normalize_checklist(p.get("checklist", None)),
+                                    custom_checklist=_normalize_custom_checklist(p.get("custom_checklist", None)),
                                     created_at=int(p.get("created_at", _now_epoch())),
                                     updated_at=int(p.get("updated_at", _now_epoch())),
                                 )
@@ -748,6 +782,7 @@ class NoteDB:
             "stock_name": pg.stock_name,
             "ticker": pg.ticker,
             "checklist": pg.checklist,
+            "custom_checklist": pg.custom_checklist,
             "created_at": pg.created_at,
             "updated_at": pg.updated_at,
         }
@@ -1860,44 +1895,55 @@ class MainWindow(QMainWindow):
         img_layout.setSpacing(6)
 
         meta_widget = QWidget()
-        meta_flow = FlowLayout(meta_widget, margin=0, spacing=6)
+        meta_layout = QHBoxLayout(meta_widget)
+        meta_layout.setContentsMargins(0, 0, 0, 0)
+        meta_layout.setSpacing(6)
+        
+        # 좌측: Name, Ticker 영역 (모두 같은 줄에 표시)
+        left_meta = QWidget()
+        left_meta_layout = QHBoxLayout(left_meta)
+        left_meta_layout.setContentsMargins(0, 0, 0, 0)
+        left_meta_layout.setSpacing(6)
         
         lbl_name = QLabel("Name:")
         lbl_name.setFixedHeight(26)
         lbl_name.setAlignment(Qt.AlignVCenter)
-        meta_flow.addWidget(lbl_name)
+        left_meta_layout.addWidget(lbl_name)
         
         self.edit_stock_name = QLineEdit()
         self.edit_stock_name.setFixedSize(220, 26)
         self.edit_stock_name.textChanged.connect(self._on_page_field_changed)
-        meta_flow.addWidget(self.edit_stock_name)
+        left_meta_layout.addWidget(self.edit_stock_name)
         
         lbl_ticker = QLabel("Ticker:")
         lbl_ticker.setFixedHeight(26)
         lbl_ticker.setAlignment(Qt.AlignVCenter)
-        meta_flow.addWidget(lbl_ticker)
+        left_meta_layout.addWidget(lbl_ticker)
         
         self.edit_ticker = QLineEdit()
         self.edit_ticker.setFixedSize(120, 26)
         self.edit_ticker.textChanged.connect(self._on_page_field_changed)
-        meta_flow.addWidget(self.edit_ticker)
+        left_meta_layout.addWidget(self.edit_ticker)
         
         self.btn_copy_ticker = QToolButton()
         self.btn_copy_ticker.setIcon(_make_copy_icon(16))
         self.btn_copy_ticker.setToolTip("Copy ticker to clipboard")
         self.btn_copy_ticker.setFixedSize(30, 26)
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
-        meta_flow.addWidget(self.btn_copy_ticker)
+        left_meta_layout.addWidget(self.btn_copy_ticker)
         
-        # Description 토글 버튼 추가
+        meta_layout.addWidget(left_meta, 0)  # stretch factor 0으로 설정하여 필요한 만큼만 차지
+        meta_layout.addStretch()  # 좌측과 우측 사이 공간
+        
+        # 우측: Description 토글 버튼 (Chart 너비에 맞춰 우측 정렬)
         self.btn_toggle_desc = QToolButton()
         self.btn_toggle_desc.setCheckable(True)
         self.btn_toggle_desc.setChecked(self._desc_visible)
         self.btn_toggle_desc.setToolTip("Show/Hide Description panel")
-        self.btn_toggle_desc.setFixedSize(80, 26)
+        self.btn_toggle_desc.setFixedSize(100, 26)
         self.btn_toggle_desc.toggled.connect(self._on_toggle_desc)
         self._update_desc_toggle_button_text()
-        meta_flow.addWidget(self.btn_toggle_desc)
+        meta_layout.addWidget(self.btn_toggle_desc)
         
         img_layout.addWidget(meta_widget)
 
@@ -2100,10 +2146,21 @@ class MainWindow(QMainWindow):
         self.btn_col_blue.toggled.connect(lambda v: v and self._apply_text_color(COLOR_BLUE))
         self.btn_col_yellow.toggled.connect(lambda v: v and self._apply_text_color(COLOR_YELLOW))
 
-        self.btn_bullets = QToolButton(); self.btn_bullets.setText("•"); self.btn_bullets.setFixedSize(28, 26); self.btn_bullets.setToolTip("Bulleted List")
-        self.btn_numbered = QToolButton(); self.btn_numbered.setText("1."); self.btn_numbered.setFixedSize(32, 26); self.btn_numbered.setToolTip("Numbered List")
-        self.btn_bullets.clicked.connect(lambda: self._apply_list("bullet"))
-        self.btn_numbered.clicked.connect(lambda: self._apply_list("number"))
+        # 리스트 버튼들 (checkable로 변경하여 상태 표시)
+        self.btn_bullets = QToolButton(); self.btn_bullets.setText("•"); self.btn_bullets.setFixedSize(28, 26); self.btn_bullets.setToolTip("Bulleted List"); self.btn_bullets.setCheckable(True)
+        self.btn_numbered = QToolButton(); self.btn_numbered.setText("1."); self.btn_numbered.setFixedSize(32, 26); self.btn_numbered.setToolTip("Numbered List"); self.btn_numbered.setCheckable(True)
+        self.btn_bullets.clicked.connect(lambda checked: self._toggle_list("bullet"))
+        self.btn_numbered.clicked.connect(lambda checked: self._toggle_list("number"))
+        
+        # 리스트 제거 버튼
+        self.btn_list_remove = QToolButton(); self.btn_list_remove.setText("×"); self.btn_list_remove.setFixedSize(28, 26); self.btn_list_remove.setToolTip("Remove List")
+        self.btn_list_remove.clicked.connect(self._remove_list)
+        
+        # 리스트 들여쓰기/내어쓰기 버튼
+        self.btn_list_indent = QToolButton(); self.btn_list_indent.setText("→"); self.btn_list_indent.setFixedSize(28, 26); self.btn_list_indent.setToolTip("Indent List (Tab)")
+        self.btn_list_outdent = QToolButton(); self.btn_list_outdent.setText("←"); self.btn_list_outdent.setFixedSize(28, 26); self.btn_list_outdent.setToolTip("Outdent List (Shift+Tab)")
+        self.btn_list_indent.clicked.connect(self._indent_list)
+        self.btn_list_outdent.clicked.connect(self._outdent_list)
 
         self.btn_ideas = QToolButton(); self.btn_ideas.setText("Ideas"); self.btn_ideas.setCheckable(True)
         self.btn_ideas.setToolTip("Toggle Global Ideas panel (전역 아이디어)")
@@ -2127,6 +2184,10 @@ class MainWindow(QMainWindow):
         r2.addWidget(_vsep())
         r2.addWidget(self.btn_bullets)
         r2.addWidget(self.btn_numbered)
+        r2.addWidget(self.btn_list_remove)
+        r2.addWidget(_vsep())
+        r2.addWidget(self.btn_list_outdent)
+        r2.addWidget(self.btn_list_indent)
         r2.addStretch(1)
 
         fmt_outer.addWidget(row1)
@@ -2140,15 +2201,31 @@ class MainWindow(QMainWindow):
         notes_left_l.setContentsMargins(0,0,0,0)
         notes_left_l.setSpacing(6)
 
-        self.chk_group = QGroupBox("Checklist")
-        chk_layout = QVBoxLayout(self.chk_group)
-        chk_layout.setContentsMargins(10,10,10,10)
-        chk_layout.setSpacing(6)
+        # Checklist 탭 위젯
+        self.chk_tabs = QTabWidget()
+        
+        # 기본 Checklist 탭
+        self.chk_default_tab = QWidget()
+        chk_default_layout = QVBoxLayout(self.chk_default_tab)
+        chk_default_layout.setContentsMargins(10,10,10,10)
+        chk_default_layout.setSpacing(6)
 
         self.chk_boxes: List[QCheckBox] = []
         self.chk_notes: List[QTextEdit] = []
         for q in DEFAULT_CHECK_QUESTIONS:
-            cb = QCheckBox(q); cb.stateChanged.connect(self._on_page_field_changed)
+            cb = QCheckBox(q)
+            # 체크 상태에 따라 질문 텍스트 색상 변경
+            cb.stateChanged.connect(self._on_page_field_changed)
+            cb.stateChanged.connect(lambda state, checkbox=cb: self._update_checkbox_color(checkbox, state))
+            # 초기 스타일 설정
+            cb.setStyleSheet("""
+                QCheckBox {
+                    color: #222222;
+                }
+                QCheckBox:checked {
+                    color: #2D6BFF;
+                }
+            """)
             self.chk_boxes.append(cb)
             note = QTextEdit()
             note.setPlaceholderText("간단 설명을 입력하세요... (서식/색상 가능)")
@@ -2158,8 +2235,37 @@ class MainWindow(QMainWindow):
             note.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
             note.setTabChangesFocus(False)
             self.chk_notes.append(note)
-            chk_layout.addWidget(cb)
-            chk_layout.addWidget(note)
+            chk_default_layout.addWidget(cb)
+            chk_default_layout.addWidget(note)
+        chk_default_layout.addStretch()
+        self.chk_tabs.addTab(self.chk_default_tab, "기본 Checklist")
+        
+        # Custom Checklist 탭
+        self.chk_custom_tab = QWidget()
+        chk_custom_layout = QVBoxLayout(self.chk_custom_tab)
+        chk_custom_layout.setContentsMargins(10,10,10,10)
+        chk_custom_layout.setSpacing(6)
+        
+        # Custom Checklist 컨테이너 (스크롤 가능)
+        self.chk_custom_scroll = QScrollArea()
+        self.chk_custom_scroll.setWidgetResizable(True)
+        self.chk_custom_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chk_custom_scroll_widget = QWidget()
+        self.chk_custom_scroll_layout = QVBoxLayout(self.chk_custom_scroll_widget)
+        self.chk_custom_scroll_layout.setContentsMargins(0,0,0,0)
+        self.chk_custom_scroll_layout.setSpacing(6)
+        self.chk_custom_scroll.setWidget(self.chk_custom_scroll_widget)
+        
+        # Custom Checklist 항목 추가 버튼
+        self.chk_custom_add_btn = QPushButton("+ 항목 추가")
+        self.chk_custom_add_btn.clicked.connect(self._on_add_custom_checklist_item)
+        chk_custom_layout.addWidget(self.chk_custom_add_btn)
+        chk_custom_layout.addWidget(self.chk_custom_scroll)
+        
+        self.chk_tabs.addTab(self.chk_custom_tab, "Custom Checklist")
+        
+        # Custom Checklist UI 요소 저장
+        self.chk_custom_items: List[Dict[str, Any]] = []  # [{"cb": QCheckBox, "q_edit": QLineEdit, "note": QTextEdit, "del_btn": QPushButton, "widget": QWidget}, ...]
 
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText("추가 분석/설명을 자유롭게 작성하세요... (서식/색상 가능)")
@@ -2168,7 +2274,7 @@ class MainWindow(QMainWindow):
         self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
         self.text_edit.setTabChangesFocus(False)
 
-        notes_left_l.addWidget(self.chk_group)
+        notes_left_l.addWidget(self.chk_tabs)
         notes_left_l.addWidget(self.text_edit, 1)
 
         self.ideas_panel = QFrame()
@@ -2380,14 +2486,70 @@ class MainWindow(QMainWindow):
         color_l = QHBoxLayout(color_row)
         color_l.setContentsMargins(0, 0, 0, 0)
         color_l.setSpacing(6)
-        color_l.addWidget(QLabel("Color"))
-        combo_color = QComboBox(color_row)
-        combo_color.addItem("Red", COLOR_RED)
-        combo_color.addItem("Yellow", COLOR_YELLOW)
-        combo_color.addItem("Cyan", "#00D5FF")
-        combo_color.addItem("White", "#FFFFFF")
-        color_l.addWidget(combo_color, 1)
+        color_l.addWidget(QLabel("Color:"))
+        
+        # 색상 버튼 그룹 (라디오 버튼처럼 동작)
+        color_group = QButtonGroup(color_row)
+        color_buttons = {}
+        
+        def _mk_anno_color_btn(color_hex: str, tooltip: str) -> QToolButton:
+            """Annotation 색상 버튼 생성"""
+            btn = QToolButton(color_row)
+            btn.setCheckable(True)
+            btn.setFixedSize(32, 32)
+            btn.setToolTip(tooltip)
+            btn.setStyleSheet(f"""
+                QToolButton {{
+                    background-color: {color_hex};
+                    border: 2px solid #CCCCCC;
+                    border-radius: 4px;
+                }}
+                QToolButton:checked {{
+                    border: 3px solid #000000;
+                }}
+                QToolButton:hover {{
+                    border: 3px solid #666666;
+                }}
+            """)
+            return btn
+        
+        # 색상 버튼들 생성
+        btn_color_red = _mk_anno_color_btn(COLOR_RED, "Red")
+        btn_color_yellow = _mk_anno_color_btn(COLOR_YELLOW, "Yellow")
+        btn_color_cyan = _mk_anno_color_btn("#00D5FF", "Cyan")
+        btn_color_white = _mk_anno_color_btn("#FFFFFF", "White")
+        
+        # 기본 선택: Red
+        btn_color_red.setChecked(True)
+        
+        # 버튼 그룹에 추가
+        color_group.addButton(btn_color_red, 0)
+        color_group.addButton(btn_color_yellow, 1)
+        color_group.addButton(btn_color_cyan, 2)
+        color_group.addButton(btn_color_white, 3)
+        
+        # 색상 매핑
+        color_map = {
+            0: COLOR_RED,
+            1: COLOR_YELLOW,
+            2: "#00D5FF",
+            3: "#FFFFFF"
+        }
+        
+        color_l.addWidget(btn_color_red)
+        color_l.addWidget(btn_color_yellow)
+        color_l.addWidget(btn_color_cyan)
+        color_l.addWidget(btn_color_white)
+        color_l.addStretch()
+        
         p_layout.addWidget(color_row)
+        
+        # 색상 선택 함수
+        def on_color_changed(btn_id: int):
+            color_hex = color_map.get(btn_id, COLOR_RED)
+            viewer.set_pen(color_hex, float(combo_width.currentData()))
+        
+        color_group.buttonClicked.connect(lambda btn: on_color_changed(color_group.id(btn)))
 
         width_row = QWidget(anno_panel)
         width_l = QHBoxLayout(width_row)
@@ -2405,9 +2567,15 @@ class MainWindow(QMainWindow):
         p_layout.addWidget(btn_clear_lines)
 
         def apply_pen():
-            viewer.set_pen(str(combo_color.currentData()), float(combo_width.currentData()))
+            # 현재 선택된 색상 버튼의 색상 가져오기
+            checked_btn = color_group.checkedButton()
+            if checked_btn:
+                btn_id = color_group.id(checked_btn)
+                color_hex = color_map.get(btn_id, COLOR_RED)
+            else:
+                color_hex = COLOR_RED  # 기본값
+            viewer.set_pen(color_hex, float(combo_width.currentData()))
 
-        combo_color.currentIndexChanged.connect(lambda _: apply_pen())
         combo_width.currentIndexChanged.connect(lambda _: apply_pen())
         apply_pen()
 
@@ -2851,6 +3019,7 @@ class MainWindow(QMainWindow):
                 for note in self.chk_notes:
                     note.clear()
                 self.text_edit.clear()
+                self._clear_custom_checklist_ui()
                 self._update_nav()
                 self._set_active_rich_edit(self.text_edit)
                 self._sync_format_buttons()
@@ -2886,9 +3055,16 @@ class MainWindow(QMainWindow):
 
             cl = _normalize_checklist(pg.checklist)
             for i in range(len(DEFAULT_CHECK_QUESTIONS)):
-                self.chk_boxes[i].setChecked(bool(cl[i].get("checked", False)))
+                checked = bool(cl[i].get("checked", False))
+                self.chk_boxes[i].setChecked(checked)
+                # 체크 상태에 따라 색상 업데이트
+                self._update_checkbox_color(self.chk_boxes[i], Qt.Checked if checked else Qt.Unchecked)
                 val = _strip_highlight_html(str(cl[i].get("note", "") or ""))
                 self.chk_notes[i].setHtml(val) if _looks_like_html(val) else self.chk_notes[i].setPlainText(val)
+            
+            # Custom Checklist 로드
+            custom_cl = _normalize_custom_checklist(pg.custom_checklist)
+            self._load_custom_checklist_to_ui(custom_cl)
 
             val_desc = _strip_highlight_html(pg.note_text or "")
             self.text_edit.setHtml(val_desc) if _looks_like_html(val_desc) else self.text_edit.setPlainText(val_desc)
@@ -2919,6 +3095,119 @@ class MainWindow(QMainWindow):
         for i, q in enumerate(DEFAULT_CHECK_QUESTIONS):
             out.append({"q": q, "checked": bool(self.chk_boxes[i].isChecked()), "note": _strip_highlight_html(self.chk_notes[i].toHtml())})
         return out
+    
+    def _collect_custom_checklist_from_ui(self) -> CustomChecklist:
+        """Custom Checklist UI에서 데이터 수집"""
+        out: CustomChecklist = []
+        for item in self.chk_custom_items:
+            q_text = item["q_edit"].text().strip()
+            if q_text:  # 질문 텍스트가 있는 경우만 추가
+                out.append({
+                    "q": q_text,
+                    "checked": bool(item["cb"].isChecked()),
+                    "note": _strip_highlight_html(item["note"].toHtml())
+                })
+        return out
+    
+    def _on_add_custom_checklist_item(self) -> None:
+        """Custom Checklist 항목 추가"""
+        self._add_custom_checklist_item_ui("새 항목", False, "")
+    
+    def _add_custom_checklist_item_ui(self, question: str, checked: bool, note: str) -> None:
+        """Custom Checklist 항목 UI 추가"""
+        item_widget = QWidget()
+        item_layout = QVBoxLayout(item_widget)
+        item_layout.setContentsMargins(0, 0, 0, 0)
+        item_layout.setSpacing(4)
+        
+        # 상단: 체크박스 + 질문 입력 + 삭제 버튼
+        top_row = QWidget()
+        top_layout = QHBoxLayout(top_row)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(6)
+        
+        cb = QCheckBox()
+        cb.setChecked(checked)
+        cb.stateChanged.connect(self._on_page_field_changed)
+        cb.stateChanged.connect(lambda state, checkbox=cb: self._update_checkbox_color(checkbox, state))
+        cb.setStyleSheet("""
+            QCheckBox {
+                color: #222222;
+            }
+            QCheckBox:checked {
+                color: #2D6BFF;
+            }
+        """)
+        
+        q_edit = QLineEdit(question)
+        q_edit.setPlaceholderText("질문을 입력하세요...")
+        q_edit.textChanged.connect(self._on_page_field_changed)
+        
+        del_btn = QPushButton("삭제")
+        del_btn.setFixedSize(50, 26)
+        del_btn.clicked.connect(lambda: self._on_delete_custom_checklist_item(item_widget))
+        
+        top_layout.addWidget(cb)
+        top_layout.addWidget(q_edit, 1)
+        top_layout.addWidget(del_btn)
+        
+        # 하단: 설명 입력
+        note_edit = QTextEdit()
+        note_edit.setPlaceholderText("간단 설명을 입력하세요... (서식/색상 가능)")
+        note_edit.setFixedHeight(54)
+        if note:
+            note_edit.setHtml(note) if _looks_like_html(note) else note_edit.setPlainText(note)
+        note_edit.textChanged.connect(self._on_page_field_changed)
+        note_edit.installEventFilter(self)
+        note_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
+        note_edit.setTabChangesFocus(False)
+        
+        item_layout.addWidget(top_row)
+        item_layout.addWidget(note_edit)
+        
+        # 저장
+        item_data = {
+            "widget": item_widget,
+            "cb": cb,
+            "q_edit": q_edit,
+            "note": note_edit,
+            "del_btn": del_btn
+        }
+        self.chk_custom_items.append(item_data)
+        
+        # 레이아웃에 추가
+        self.chk_custom_scroll_layout.addWidget(item_widget)
+        
+        # 색상 업데이트
+        self._update_checkbox_color(cb, Qt.Checked if checked else Qt.Unchecked)
+    
+    def _on_delete_custom_checklist_item(self, item_widget: QWidget) -> None:
+        """Custom Checklist 항목 삭제"""
+        # UI에서 제거
+        for i, item in enumerate(self.chk_custom_items):
+            if item["widget"] == item_widget:
+                self.chk_custom_items.pop(i)
+                item_widget.setParent(None)
+                item_widget.deleteLater()
+                self._on_page_field_changed()
+                break
+    
+    def _clear_custom_checklist_ui(self) -> None:
+        """Custom Checklist UI 초기화"""
+        for item in self.chk_custom_items:
+            item["widget"].setParent(None)
+            item["widget"].deleteLater()
+        self.chk_custom_items.clear()
+    
+    def _load_custom_checklist_to_ui(self, custom_checklist: CustomChecklist) -> None:
+        """Custom Checklist 데이터를 UI에 로드"""
+        self._clear_custom_checklist_ui()
+        for item in custom_checklist:
+            q_text = str(item.get("q", "")).strip()
+            if q_text:  # 질문이 있는 경우만 추가
+                checked = bool(item.get("checked", False))
+                note = str(item.get("note", "") or "")
+                self._add_custom_checklist_item_ui(q_text, checked, note)
 
     def _flush_page_fields_to_model_and_save(self) -> None:
         it = self.current_item()
@@ -2974,6 +3263,10 @@ class MainWindow(QMainWindow):
         new_checklist = self._collect_checklist_from_ui()
         if pg.checklist != new_checklist:
             pg.checklist = new_checklist; changed = True
+        
+        new_custom_checklist = self._collect_custom_checklist_from_ui()
+        if pg.custom_checklist != new_custom_checklist:
+            pg.custom_checklist = new_custom_checklist; changed = True
 
         it.last_page_index = self.current_page_index
         self._save_ui_state()
@@ -3484,6 +3777,7 @@ class MainWindow(QMainWindow):
         self._on_page_field_changed()
 
     def _apply_list(self, kind: str) -> None:
+        """리스트 적용 (기존 메서드 유지)"""
         ed = self._active_rich_edit
         if ed is None:
             return
@@ -3496,6 +3790,130 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         cur.endEditBlock()
+        ed.setFocus(Qt.MouseFocusReason)
+        self._on_page_field_changed()
+    
+    def _toggle_list(self, kind: str) -> None:
+        """리스트 토글: 리스트 안에 있으면 제거, 없으면 생성"""
+        ed = self._active_rich_edit
+        if ed is None:
+            return
+        cur = ed.textCursor()
+        
+        # 현재 리스트 확인
+        current_list = cur.currentList()
+        if current_list:
+            # 리스트 안에 있으면 제거
+            cur.beginEditBlock()
+            try:
+                # 리스트 포맷 제거
+                fmt = QTextBlockFormat()
+                cur.setBlockFormat(fmt)
+                # 리스트에서 벗어나기
+                cur.movePosition(cur.StartOfBlock)
+                cur.movePosition(cur.EndOfBlock, cur.KeepAnchor)
+                cur.insertText(cur.selectedText())
+            except Exception:
+                pass
+            cur.endEditBlock()
+        else:
+            # 리스트가 없으면 생성
+            style = QTextListFormat.ListDisc if kind == "bullet" else QTextListFormat.ListDecimal
+            fmt = QTextListFormat(); fmt.setStyle(style)
+            cur.beginEditBlock()
+            try:
+                cur.createList(fmt)
+            except Exception:
+                pass
+            cur.endEditBlock()
+        
+        ed.setTextCursor(cur)
+        ed.setFocus(Qt.MouseFocusReason)
+        self._on_page_field_changed()
+        self._sync_format_buttons()
+    
+    def _remove_list(self) -> None:
+        """리스트 제거"""
+        ed = self._active_rich_edit
+        if ed is None:
+            return
+        cur = ed.textCursor()
+        current_list = cur.currentList()
+        if current_list:
+            # 리스트의 모든 블록을 일반 텍스트로 변환
+            cur.beginEditBlock()
+            try:
+                # 현재 블록부터 리스트의 끝까지 선택
+                start_block = cur.block()
+                cur.movePosition(cur.StartOfBlock)
+                
+                # 리스트의 모든 블록을 처리
+                block = start_block
+                while block.isValid():
+                    block_list = block.textList()
+                    if block_list != current_list:
+                        break
+                    # 블록의 텍스트를 가져와서 리스트 포맷 제거
+                    block_cur = QTextCursor(block)
+                    block_cur.select(block_cur.BlockUnderCursor)
+                    text = block_cur.selectedText()
+                    
+                    # 리스트 포맷 제거
+                    fmt = QTextBlockFormat()
+                    block_cur.setBlockFormat(fmt)
+                    block_cur.removeSelectedText()
+                    block_cur.insertText(text)
+                    
+                    block = block.next()
+                    if not block.isValid():
+                        break
+                
+                # 현재 커서 위치 조정
+                cur.setPosition(start_block.position())
+            except Exception:
+                pass
+            cur.endEditBlock()
+            ed.setTextCursor(cur)
+            ed.setFocus(Qt.MouseFocusReason)
+            self._on_page_field_changed()
+            self._sync_format_buttons()
+    
+    def _indent_list(self) -> None:
+        """리스트 들여쓰기 (간격을 작게 조정: 15px, 개별 항목만 이동)"""
+        ed = self._active_rich_edit
+        if ed is None:
+            return
+        cur = ed.textCursor()
+        # QTextListFormat.indent()를 변경하면 같은 리스트의 모든 항목이 영향을 받으므로
+        # QTextBlockFormat.leftMargin()만 사용하여 개별 항목의 들여쓰기 제어
+        block_fmt = cur.blockFormat()
+        left_margin = block_fmt.leftMargin()
+        block_fmt.setLeftMargin(left_margin + 15)  # 작은 간격 (15px)
+        cur.setBlockFormat(block_fmt)
+        ed.setTextCursor(cur)
+        ed.setFocus(Qt.MouseFocusReason)
+        self._on_page_field_changed()
+    
+    def _outdent_list(self) -> None:
+        """리스트 내어쓰기 (개별 항목만 이동)"""
+        ed = self._active_rich_edit
+        if ed is None:
+            return
+        cur = ed.textCursor()
+        current_list = cur.currentList()
+        block_fmt = cur.blockFormat()
+        left_margin = block_fmt.leftMargin()
+        
+        if left_margin <= 0:
+            # leftMargin이 0이고 리스트가 있으면 리스트 제거
+            if current_list:
+                self._remove_list()
+            return
+        
+        # leftMargin만 조정하여 개별 항목만 내어쓰기
+        block_fmt.setLeftMargin(max(0, left_margin - 15))  # 작은 간격만큼 감소 (15px)
+        cur.setBlockFormat(block_fmt)
+        ed.setTextCursor(cur)
         ed.setFocus(Qt.MouseFocusReason)
         self._on_page_field_changed()
 
@@ -3527,6 +3945,35 @@ class MainWindow(QMainWindow):
             _set_checked(self.btn_col_yellow, True)
         else:
             _set_checked(self.btn_col_default, True)
+        
+        # 리스트 상태 동기화
+        cur = ed.textCursor()
+        current_list = cur.currentList()
+        if current_list:
+            fmt = current_list.format()
+            style = fmt.style()
+            # 리스트 스타일에 따라 버튼 활성화
+            self.btn_bullets.blockSignals(True)
+            self.btn_numbered.blockSignals(True)
+            if style == QTextListFormat.ListDisc or style == QTextListFormat.ListCircle or style == QTextListFormat.ListSquare:
+                self.btn_bullets.setChecked(True)
+                self.btn_numbered.setChecked(False)
+            elif style == QTextListFormat.ListDecimal or style == QTextListFormat.ListLowerAlpha or style == QTextListFormat.ListUpperAlpha:
+                self.btn_bullets.setChecked(False)
+                self.btn_numbered.setChecked(True)
+            else:
+                self.btn_bullets.setChecked(False)
+                self.btn_numbered.setChecked(False)
+            self.btn_bullets.blockSignals(False)
+            self.btn_numbered.blockSignals(False)
+        else:
+            # 리스트가 없으면 둘 다 비활성화
+            self.btn_bullets.blockSignals(True)
+            self.btn_numbered.blockSignals(True)
+            self.btn_bullets.setChecked(False)
+            self.btn_numbered.setChecked(False)
+            self.btn_bullets.blockSignals(False)
+            self.btn_numbered.blockSignals(False)
 
     # ---------------- Ideas panel toggle ----------------
     def _on_toggle_ideas(self, checked: bool) -> None:
@@ -3640,15 +4087,24 @@ class MainWindow(QMainWindow):
             self._save_db_with_warning()
     
     def _update_desc_toggle_button_text(self) -> None:
-        """상단 Description 토글 버튼 텍스트 업데이트"""
+        """상단 Description 토글 버튼 텍스트 및 아이콘 업데이트"""
         if hasattr(self, 'btn_toggle_desc'):
             self.btn_toggle_desc.blockSignals(True)
             self.btn_toggle_desc.setChecked(self._desc_visible)
             if self._desc_visible:
+                # Description이 보일 때: 체크 표시
                 self.btn_toggle_desc.setText("Description ✓")
             else:
-                self.btn_toggle_desc.setText("Description")
+                # Description이 숨겨져 있을 때: 오른쪽 화살표
+                self.btn_toggle_desc.setText("Description ▶")
             self.btn_toggle_desc.blockSignals(False)
+    
+    def _update_checkbox_color(self, checkbox: QCheckBox, state: int) -> None:
+        """체크박스 상태에 따라 질문 텍스트 색상 업데이트"""
+        if state == Qt.Checked:
+            checkbox.setStyleSheet("QCheckBox { color: #2D6BFF; }")
+        else:
+            checkbox.setStyleSheet("QCheckBox { color: #222222; }")
     
     def _update_splitter_handle_state(self) -> None:
         """Splitter 핸들 상태 업데이트 (지연 호출)"""
@@ -3720,6 +4176,31 @@ class MainWindow(QMainWindow):
         if isinstance(obj, QTextEdit) and event.type() == QEvent.FocusIn:
             self._set_active_rich_edit(obj)
             return super().eventFilter(obj, event)
+        # Tab/Shift+Tab 키로 리스트 들여쓰기/내어쓰기 지원
+        if isinstance(obj, QTextEdit) and event.type() == QEvent.KeyPress:
+            ed = self._active_rich_edit
+            if ed is not None and obj is ed:
+                if event.key() == Qt.Key_Tab:
+                    cur = ed.textCursor()
+                    current_list = cur.currentList()
+                    block_fmt = cur.blockFormat()
+                    # 리스트가 있거나 들여쓰기가 있으면 리스트 들여쓰기/내어쓰기 처리
+                    if current_list or block_fmt.indent() > 0 or block_fmt.leftMargin() > 0:
+                        if event.modifiers() & Qt.ShiftModifier:
+                            # Shift+Tab: 내어쓰기
+                            self._outdent_list()
+                        else:
+                            # Tab: 들여쓰기
+                            self._indent_list()
+                        return True
+                elif event.key() == Qt.Key_Backtab:  # Shift+Tab은 Backtab으로도 감지됨
+                    cur = ed.textCursor()
+                    current_list = cur.currentList()
+                    block_fmt = cur.blockFormat()
+                    # 리스트가 있거나 들여쓰기가 있으면 내어쓰기
+                    if current_list or block_fmt.indent() > 0 or block_fmt.leftMargin() > 0:
+                        self._outdent_list()
+                        return True
         return super().eventFilter(obj, event)
 
 
