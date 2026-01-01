@@ -2,14 +2,21 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.6.0  (2026-01-01)
+Version: 0.7.5  (2026-01-01)
 
-v0.6.0 핵심 요구사항 반영:
-- 좌측 트리: Folder(Category) / Item 구조
-- Drag&Drop 제거, Folder/Item 모두 Up/Down 이동만 제공
-- Folder 선택 시 우측 "편집 영역"을 완전히 숨기고(빈 캔버스처럼)
-  "Select an item to view" 안내 라벨만 표시 (Chart/Description/툴바 모두 숨김)
-- Debug output(Trace) 영역은 계속 유지
+v0.7.5 변경 사항:
+- Description 숨김 시 Chart 영역 우측 끝까지 확장 개선
+  AS-IS: Description 숨김 시 Chart 영역이 우측으로 넓어지지만 윈도우 끝까지 확장되지 않음
+  TO-BE:
+    - Description 영역의 최소 크기를 0으로 설정하여 완전히 접을 수 있도록
+    - 핸들 너비를 8px에서 5px로 줄여 Chart가 더 넓게 차지하도록
+    - 재시도 횟수 증가 (300ms 추가) 및 크기 검증 로직 개선
+    - Description 표시 시 최소 크기(440px) 복원
+
+v0.7.4 변경 사항:
+- Description 숨김 시 Chart 영역 확장
+  AS-IS: Description 숨김 시에도 Description 영역이 10px로 유지되어 Chart 영역이 제한됨
+  TO-BE: Description 숨김 시 Chart 영역이 거의 전체를 차지하도록 확장 (splitter 핸들만 8px 유지)
 """
 
 import json
@@ -32,10 +39,11 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QMainWindow, QMessageBox, QShortcut, QSplitter, QTextEdit, QToolButton,
     QVBoxLayout, QHBoxLayout, QWidget, QInputDialog, QComboBox, QCheckBox, QGroupBox, QPushButton,
     QLayout, QWidgetItem, QFrame, QTreeWidget, QTreeWidgetItem, QMenu, QPlainTextEdit,
-    QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget, QStyle
+    QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
+    QStyleOptionViewItem, QSplitterHandle
 )
 
-APP_TITLE = "Trader Chart Note (v0.6.0)"
+APP_TITLE = "Trader Chart Note (v0.7.5)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 ASSETS_DIR = "assets"
 
@@ -156,21 +164,126 @@ def _strip_highlight_html(html: str) -> str:
 
 
 def _make_copy_icon(size: int = 16) -> QIcon:
+    """복사 아이콘: 두 개의 겹쳐진 사각형 (클립보드 모양)"""
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing, True)
-    fg = QColor("#2E2E2E")
-    pen = QPen(fg, 1.2)
-    p.setPen(pen)
-    back = QRect(4, 3, 9, 10)
-    p.drawRoundedRect(back, 1.5, 1.5)
-    front = QRect(2, 5, 9, 10)
-    p.drawRoundedRect(front, 1.5, 1.5)
-    p.drawLine(4, 9, 9, 9)
-    p.drawLine(4, 11, 9, 11)
+    
+    # 배경 사각형 (뒤쪽)
+    bg_color = QColor("#E0E0E0")
+    bg_pen = QPen(bg_color, 1.0)
+    p.setPen(bg_pen)
+    p.setBrush(QBrush(bg_color))
+    back_rect = QRect(5, 2, 10, 12)
+    p.drawRoundedRect(back_rect, 1.5, 1.5)
+    
+    # 앞쪽 사각형 (클립보드)
+    fg_color = QColor("#333333")
+    fg_pen = QPen(fg_color, 1.2)
+    p.setPen(fg_pen)
+    p.setBrush(QBrush(QColor("#FFFFFF")))
+    front_rect = QRect(3, 4, 10, 12)
+    p.drawRoundedRect(front_rect, 1.5, 1.5)
+    
+    # 클립보드 상단 클립 부분
+    clip_rect = QRect(6, 4, 4, 3)
+    p.setBrush(QBrush(fg_color))
+    p.drawRoundedRect(clip_rect, 0.5, 0.5)
+    
+    # 클립보드 내부 라인 (문서 느낌)
+    line_pen = QPen(QColor("#CCCCCC"), 0.8)
+    p.setPen(line_pen)
+    p.drawLine(5, 9, 11, 9)
+    p.drawLine(5, 11, 11, 11)
+    
     p.end()
     return QIcon(pm)
+
+
+def _make_expand_icon(size: int = 16, expanded: bool = False) -> QIcon:
+    """사각형 안에 + 모양 확장/축소 아이콘 생성 (축소: +, 확장: -)"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    
+    # 사각형 테두리
+    border_color = QColor("#999999")
+    border_pen = QPen(border_color, 1.5)
+    p.setPen(border_pen)
+    p.setBrush(QBrush(QColor("#FFFFFF")))
+    
+    # 사각형 그리기 (약간의 여백)
+    margin = 2
+    rect = QRect(margin, margin, size - margin * 2, size - margin * 2)
+    p.drawRect(rect)
+    
+    # + 또는 - 기호 그리기
+    fg = QColor("#333333")
+    pen = QPen(fg, 2.0)
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    
+    center = size // 2
+    line_len = 6
+    
+    # 가로선 (항상 표시)
+    p.drawLine(center - line_len // 2, center, center + line_len // 2, center)
+    
+    # 세로선 (축소 상태일 때만 + 모양)
+    if not expanded:
+        p.drawLine(center, center - line_len // 2, center, center + line_len // 2)
+    
+    p.end()
+    return QIcon(pm)
+
+
+# ---------------------------
+# Custom Tree Delegate for + expand icon
+# ---------------------------
+class PlusTreeDelegate(QStyledItemDelegate):
+    """+ 모양 확장 아이콘을 그리는 커스텀 델리게이트"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tree_widget = parent
+    
+    def paint(self, painter, option, index):
+        # 기본 페인팅 수행
+        super().paint(painter, option, index)
+        
+        # QTreeWidget에서 아이템 가져오기
+        if self._tree_widget is None:
+            return
+        
+        item = self._tree_widget.itemFromIndex(index)
+        if item is None:
+            return
+        
+        # 자식이 있는 경우에만 + 모양 그리기
+        if item.childCount() > 0:
+            # 확장 아이콘 영역 계산 (보통 왼쪽에 위치)
+            icon_rect = QRect(option.rect.x() + 2, option.rect.y() + (option.rect.height() - 12) // 2, 12, 12)
+            
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            pen = QPen(QColor("#666666"), 2.0)
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            
+            center_x = icon_rect.x() + icon_rect.width() // 2
+            center_y = icon_rect.y() + icon_rect.height() // 2
+            line_len = 6
+            
+            # 가로선
+            painter.drawLine(center_x - line_len // 2, center_y, center_x + line_len // 2, center_y)
+            
+            # 세로선 (축소 상태일 때만 + 모양)
+            if not item.isExpanded():
+                painter.drawLine(center_x, center_y - line_len // 2, center_x, center_y + line_len // 2)
+            
+            painter.restore()
 
 
 # ---------------------------
@@ -658,10 +771,12 @@ class NoteDB:
         }
 
     def _ensure_integrity(self) -> None:
-        if not self.categories:
-            base = self._default_data()
-            self._parse_categories_items(base)
-            self.root_category_ids = base["root_category_ids"]
+        # 카테고리가 없어도 허용 (사용자가 모든 폴더를 삭제할 수 있도록)
+        # 초기 로드 시에만 _default_data()를 사용 (load() 함수에서 처리)
+        # if not self.categories:
+        #     base = self._default_data()
+        #     self._parse_categories_items(base)
+        #     self.root_category_ids = base["root_category_ids"]
 
         if not self.root_category_ids:
             self.root_category_ids = [cid for cid, c in self.categories.items() if not c.parent_id]
@@ -683,12 +798,13 @@ class NoteDB:
                 if iid not in c.item_ids:
                     c.item_ids.append(iid)
 
-        if not self.items:
-            root0 = self.root_category_ids[0]
-            iid = _uuid()
-            it = Item(id=iid, name="Item 1", category_id=root0, pages=[self.new_page()], last_page_index=0)
-            self.items[iid] = it
-            self.categories[root0].item_ids.append(iid)
+        # 아이템이 없어도 허용 (사용자가 모든 아이템을 삭제할 수 있도록)
+        # if not self.items:
+        #     root0 = self.root_category_ids[0]
+        #     iid = _uuid()
+        #     it = Item(id=iid, name="Item 1", category_id=root0, pages=[self.new_page()], last_page_index=0)
+        #     self.items[iid] = it
+        #     self.categories[root0].item_ids.append(iid)
 
         for it in self.items.values():
             if not it.pages:
@@ -788,7 +904,16 @@ class NoteDB:
         if not c:
             return False
 
+        # 루트 폴더인 경우 다른 루트 폴더로 이동, 없으면 빈 상태 허용
         parent_id = c.parent_id if c.parent_id in self.categories else None
+        if not parent_id:
+            # 루트 폴더인 경우: 다른 루트 폴더가 있으면 그곳으로, 없으면 None (빈 상태 허용)
+            other_roots = [rid for rid in self.root_category_ids if rid != cid]
+            if other_roots:
+                parent_id = other_roots[0]
+            else:
+                # 마지막 루트 폴더 삭제 시 빈 상태 허용 (자동 생성하지 않음)
+                parent_id = None
         target = self.categories[parent_id] if parent_id else None
 
         for ch_id in list(c.child_ids):
@@ -846,9 +971,7 @@ class NoteDB:
             if cat:
                 to_delete_items.extend([iid for iid in cat.item_ids if iid in self.items])
 
-        remaining = self.total_items() - len(set(to_delete_items))
-        if remaining <= 0:
-            return False
+        # 아이템이 몇 개 있든 삭제 허용 (_ensure_integrity()가 빈 상태를 자동으로 처리함)
 
         c = self.categories[cid]
         if c.parent_id and c.parent_id in self.categories:
@@ -875,11 +998,12 @@ class NoteDB:
     def add_item(self, name: str, category_id: str) -> Item:
         name = (name or "").strip() or "New Item"
         if category_id not in self.categories:
-            category_id = self.root_category_ids[0]
+            category_id = self.root_category_ids[0] if self.root_category_ids else ""
         iid = _uuid()
         it = Item(id=iid, name=name, category_id=category_id, pages=[self.new_page()], last_page_index=0)
         self.items[iid] = it
-        self.categories[category_id].item_ids.append(iid)
+        if category_id and category_id in self.categories:
+            self.categories[category_id].item_ids.append(iid)
         return it
 
     def rename_item(self, iid: str, new_name: str) -> None:
@@ -907,11 +1031,38 @@ class NoteDB:
             return
         arr[idx], arr[new_idx] = arr[new_idx], arr[idx]
 
+    def move_item_to_category(self, iid: str, target_category_id: str) -> bool:
+        """아이템을 다른 폴더로 이동"""
+        it = self.items.get(iid)
+        if not it:
+            return False
+        if target_category_id not in self.categories:
+            return False
+        
+        old_cat_id = it.category_id
+        if old_cat_id == target_category_id:
+            return False  # 같은 폴더로 이동할 필요 없음
+        
+        # 기존 폴더에서 제거
+        old_cat = self.categories.get(old_cat_id)
+        if old_cat:
+            old_cat.item_ids = [x for x in old_cat.item_ids if x != iid]
+        
+        # 새 폴더에 추가
+        new_cat = self.categories[target_category_id]
+        if iid not in new_cat.item_ids:
+            new_cat.item_ids.append(iid)
+        
+        # 아이템의 category_id 업데이트
+        it.category_id = target_category_id
+        
+        self._ensure_integrity()
+        return True
+
     def delete_item(self, iid: str) -> bool:
         if iid not in self.items:
             return False
-        if self.total_items() <= 1:
-            return False
+        # 마지막 아이템도 삭제 허용 (빈 상태 허용)
         it = self.items[iid]
         cat = self.categories.get(it.category_id)
         if cat:
@@ -1188,6 +1339,119 @@ class ZoomPanAnnotateView(QGraphicsView):
 
 
 # ---------------------------
+# Custom Splitter Handle with Toggle Button
+# ---------------------------
+class DescriptionToggleSplitterHandle(QSplitterHandle):
+    """Description 영역 토글 버튼이 있는 커스텀 Splitter 핸들"""
+    
+    def __init__(self, orientation: Qt.Orientation, parent: QSplitter, toggle_callback) -> None:
+        super().__init__(orientation, parent)
+        self.toggle_callback = toggle_callback
+        self._desc_visible = True
+        self._setup_ui()
+    
+    def _setup_ui(self) -> None:
+        """UI 설정"""
+        # 핸들 배경 스타일 설정
+        self.setStyleSheet("""
+            QSplitterHandle {
+                background-color: #E0E0E0;
+                border: 1px solid #B0B0B0;
+            }
+            QSplitterHandle:hover {
+                background-color: #D0D0D0;
+            }
+        """)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # 화살표 버튼
+        self.toggle_btn = QToolButton(self)
+        self.toggle_btn.setFixedSize(32, 50)
+        self.toggle_btn.setToolTip("Toggle Description panel")
+        self.toggle_btn.setAutoRaise(False)
+        self.toggle_btn.setStyleSheet("""
+            QToolButton {
+                background-color: #F5F5F5;
+                border: 1px solid #999999;
+                border-radius: 4px;
+                font-size: 16px;
+                font-weight: bold;
+                color: #333333;
+            }
+            QToolButton:hover {
+                background-color: #E8E8E8;
+                border: 1px solid #666666;
+            }
+            QToolButton:pressed {
+                background-color: #D0D0D0;
+            }
+        """)
+        self.toggle_btn.clicked.connect(self.toggle_callback)
+        self._update_button_icon()
+        
+        layout.addStretch()
+        layout.addWidget(self.toggle_btn)
+        layout.addStretch()
+    
+    def set_description_visible(self, visible: bool) -> None:
+        """Description 영역 표시 상태 업데이트"""
+        self._desc_visible = visible
+        self._update_button_icon()
+    
+    def _update_button_icon(self) -> None:
+        """버튼 아이콘 업데이트 (← 또는 →)"""
+        if self._desc_visible:
+            # Description이 보이면 ← (숨기기)
+            self.toggle_btn.setText("◀")
+        else:
+            # Description이 숨겨지면 → (보이기)
+            self.toggle_btn.setText("▶")
+    
+    def sizeHint(self) -> QSize:
+        """핸들 크기 - 더 넓게 설정하여 구분이 잘 되도록"""
+        return QSize(10, 0) if self.orientation() == Qt.Horizontal else QSize(0, 10)
+
+
+class DescriptionToggleSplitter(QSplitter):
+    """Description 토글 버튼이 있는 커스텀 Splitter"""
+    
+    def __init__(self, orientation: Qt.Orientation, parent: QWidget = None, toggle_callback=None) -> None:
+        super().__init__(orientation, parent)
+        self.toggle_callback = toggle_callback
+        self._handle: Optional[DescriptionToggleSplitterHandle] = None
+    
+    def createHandle(self) -> QSplitterHandle:
+        """커스텀 핸들 생성"""
+        handle = DescriptionToggleSplitterHandle(self.orientation(), self, self.toggle_callback)
+        self._handle = handle
+        return handle
+    
+    def set_description_visible(self, visible: bool) -> None:
+        """Description 영역 표시 상태 업데이트"""
+        # 핸들이 아직 생성되지 않았다면 모든 핸들을 확인
+        if not self._handle:
+            for i in range(self.count() - 1):
+                try:
+                    handle = self.handle(i + 1)
+                    if isinstance(handle, DescriptionToggleSplitterHandle):
+                        self._handle = handle
+                        break
+                except:
+                    pass
+        if self._handle:
+            self._handle.set_description_visible(visible)
+        else:
+            # 핸들을 찾지 못한 경우, 모든 자식 위젯을 확인
+            for child in self.findChildren(DescriptionToggleSplitterHandle):
+                self._handle = child
+                child.set_description_visible(visible)
+                break
+
+
+# ---------------------------
 # Main Window
 # ---------------------------
 class MainWindow(QMainWindow):
@@ -1208,6 +1472,7 @@ class MainWindow(QMainWindow):
         self.current_item_id: str = ""
         self.current_page_index: int = 0
         self._loading_ui: bool = False
+        self._adjusting_splitter: bool = False  # Description 토글 중 splitter 크기 조정 플래그
 
         self._active_rich_edit: Optional[QTextEdit] = None
         self._desc_visible: bool = bool(self.db.ui_state.get("desc_visible", True))
@@ -1239,6 +1504,17 @@ class MainWindow(QMainWindow):
 
         self._load_ui_state_or_defaults()
         self._apply_splitter_sizes_from_state()
+        # 초기 Description 영역 표시 상태 설정
+        # text_container는 항상 보이게 유지 (splitter 핸들이 보이도록)
+        # 초기 크기 설정은 _set_desc_visible에서 처리
+        if not self._desc_visible:
+            # Description이 숨겨진 상태라면 최소 크기로 설정
+            QTimer.singleShot(50, lambda: self._set_desc_visible(False, persist=False))
+        # 상단 토글 버튼 초기 상태 설정
+        if hasattr(self, 'btn_toggle_desc'):
+            self._update_desc_toggle_button_text()
+        # Splitter 핸들 초기 상태 설정 (위젯 추가 후 핸들이 생성되므로 지연 처리)
+        QTimer.singleShot(100, lambda: self._update_splitter_handle_state())
         self._refresh_nav_tree(select_current=True)
 
         # 시작 상태가 Folder라면 placeholder(빈 캔버스)로
@@ -1413,6 +1689,9 @@ class MainWindow(QMainWindow):
     def _on_page_splitter_moved(self, pos: int, index: int) -> None:
         if self._loading_ui:
             return
+        # Description 토글 중에는 크기 저장하지 않음
+        if self._adjusting_splitter:
+            return
         if not self.text_container.isVisible():
             return
         self._remember_page_splitter_sizes()
@@ -1461,37 +1740,51 @@ class MainWindow(QMainWindow):
         left_layout.setSpacing(8)
 
         ctrl = QWidget()
-        ctrl_l = FlowLayout(ctrl, margin=0, spacing=6)
+        ctrl_l = QHBoxLayout(ctrl)
+        ctrl_l.setContentsMargins(0, 0, 0, 0)
+        ctrl_l.setSpacing(4)
 
-        self.btn_add_folder = QToolButton(); self.btn_add_folder.setText("+ Folder")
-        self.btn_rename_folder = QToolButton(); self.btn_rename_folder.setText("Rename Folder")
-        self.btn_del_folder = QToolButton(); self.btn_del_folder.setText("Del Folder")
-        self.btn_folder_up = QToolButton(); self.btn_folder_up.setText("Folder ↑")
-        self.btn_folder_down = QToolButton(); self.btn_folder_down.setText("Folder ↓")
+        # 간단한 아이콘 버튼들만 표시
+        self.btn_add_folder = QToolButton()
+        self.btn_add_folder.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
+        self.btn_add_folder.setToolTip("Add Folder")
+        self.btn_add_folder.setFixedSize(32, 32)
+        
+        self.btn_add_item = QToolButton()
+        self.btn_add_item.setIcon(self.style().standardIcon(QStyle.SP_FileIcon))
+        self.btn_add_item.setToolTip("Add Item")
+        self.btn_add_item.setFixedSize(32, 32)
+        
+        self.btn_move_up = QToolButton()
+        self.btn_move_up.setText("↑")
+        self.btn_move_up.setToolTip("Move Up")
+        self.btn_move_up.setFixedSize(32, 32)
+        
+        self.btn_move_down = QToolButton()
+        self.btn_move_down.setText("↓")
+        self.btn_move_down.setToolTip("Move Down")
+        self.btn_move_down.setFixedSize(32, 32)
 
-        self.btn_add_item = QToolButton(); self.btn_add_item.setText("+ Item")
-        self.btn_rename_item = QToolButton(); self.btn_rename_item.setText("Rename Item")
-        self.btn_del_item = QToolButton(); self.btn_del_item.setText("Del Item")
-        self.btn_item_up = QToolButton(); self.btn_item_up.setText("Item ↑")
-        self.btn_item_down = QToolButton(); self.btn_item_down.setText("Item ↓")
+        # 내부적으로 사용할 버튼들 (컨텍스트 메뉴에서만 사용)
+        self.btn_rename_folder = QToolButton()
+        self.btn_del_folder = QToolButton()
+        self.btn_rename_item = QToolButton()
+        self.btn_del_item = QToolButton()
+        self.btn_folder_up = QToolButton()
+        self.btn_folder_down = QToolButton()
+        self.btn_item_up = QToolButton()
+        self.btn_item_down = QToolButton()
 
-        for b in [
-            self.btn_add_folder, self.btn_rename_folder, self.btn_del_folder, self.btn_folder_up, self.btn_folder_down,
-            self.btn_add_item, self.btn_rename_item, self.btn_del_item, self.btn_item_up, self.btn_item_down,
-        ]:
-            ctrl_l.addWidget(b)
+        ctrl_l.addWidget(self.btn_add_folder)
+        ctrl_l.addWidget(self.btn_add_item)
+        ctrl_l.addWidget(self.btn_move_up)
+        ctrl_l.addWidget(self.btn_move_down)
+        ctrl_l.addStretch()
 
         self.btn_add_folder.clicked.connect(self.add_folder)
-        self.btn_rename_folder.clicked.connect(self.rename_folder)
-        self.btn_del_folder.clicked.connect(self.delete_folder)
-        self.btn_folder_up.clicked.connect(lambda: self.move_folder(-1))
-        self.btn_folder_down.clicked.connect(lambda: self.move_folder(+1))
-
         self.btn_add_item.clicked.connect(self.add_item)
-        self.btn_rename_item.clicked.connect(self.rename_item)
-        self.btn_del_item.clicked.connect(self.delete_item)
-        self.btn_item_up.clicked.connect(lambda: self.move_item(-1))
-        self.btn_item_down.clicked.connect(lambda: self.move_item(+1))
+        self.btn_move_up.clicked.connect(self._move_current_up)
+        self.btn_move_down.clicked.connect(self._move_current_down)
 
         self.nav_tree = QTreeWidget()
         self.nav_tree.setHeaderHidden(True)
@@ -1500,6 +1793,40 @@ class MainWindow(QMainWindow):
         self.nav_tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
         self.nav_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.nav_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        
+        # 트리 아이템 확장/축소 시 아이콘 업데이트
+        self.nav_tree.itemExpanded.connect(self._on_tree_item_expanded)
+        self.nav_tree.itemCollapsed.connect(self._on_tree_item_collapsed)
+        
+        # ttk 스타일처럼 기본 확장 아이콘 숨기기 (커스텀 + 아이콘만 사용)
+        self.nav_tree.setStyleSheet("""
+            QTreeWidget::branch {
+                background: transparent;
+                border: none;
+            }
+            QTreeWidget::branch:has-siblings:!adjoins-item {
+                border-image: none;
+                border: none;
+            }
+            QTreeWidget::branch:has-siblings:adjoins-item {
+                border-image: none;
+                border: none;
+            }
+            QTreeWidget::branch:!has-children:!has-siblings:adjoins-item {
+                border-image: none;
+                border: none;
+            }
+            QTreeWidget::branch:has-children:!expanded:adjoins-item {
+                border-image: none;
+                border: none;
+                image: none;
+            }
+            QTreeWidget::branch:expanded:adjoins-item {
+                border-image: none;
+                border: none;
+                image: none;
+            }
+        """)
 
         left_layout.addWidget(ctrl)
         left_layout.addWidget(self.nav_tree, 1)
@@ -1524,7 +1851,7 @@ class MainWindow(QMainWindow):
         self.content_stack.setContentsMargins(0, 0, 0, 0)
 
         # editor (page_splitter)
-        self.page_splitter = QSplitter(Qt.Horizontal)
+        self.page_splitter = DescriptionToggleSplitter(Qt.Horizontal, toggle_callback=self._on_toggle_desc_clicked)
 
         # -------- Images (A/B vertical) --------
         self.img_container = QWidget()
@@ -1534,20 +1861,44 @@ class MainWindow(QMainWindow):
 
         meta_widget = QWidget()
         meta_flow = FlowLayout(meta_widget, margin=0, spacing=6)
-        meta_flow.addWidget(QLabel("Name:"))
-        self.edit_stock_name = QLineEdit(); self.edit_stock_name.setFixedWidth(220)
+        
+        lbl_name = QLabel("Name:")
+        lbl_name.setFixedHeight(26)
+        lbl_name.setAlignment(Qt.AlignVCenter)
+        meta_flow.addWidget(lbl_name)
+        
+        self.edit_stock_name = QLineEdit()
+        self.edit_stock_name.setFixedSize(220, 26)
         self.edit_stock_name.textChanged.connect(self._on_page_field_changed)
         meta_flow.addWidget(self.edit_stock_name)
-        meta_flow.addWidget(QLabel("Ticker:"))
-        self.edit_ticker = QLineEdit(); self.edit_ticker.setFixedWidth(120)
+        
+        lbl_ticker = QLabel("Ticker:")
+        lbl_ticker.setFixedHeight(26)
+        lbl_ticker.setAlignment(Qt.AlignVCenter)
+        meta_flow.addWidget(lbl_ticker)
+        
+        self.edit_ticker = QLineEdit()
+        self.edit_ticker.setFixedSize(120, 26)
         self.edit_ticker.textChanged.connect(self._on_page_field_changed)
         meta_flow.addWidget(self.edit_ticker)
+        
         self.btn_copy_ticker = QToolButton()
         self.btn_copy_ticker.setIcon(_make_copy_icon(16))
         self.btn_copy_ticker.setToolTip("Copy ticker to clipboard")
         self.btn_copy_ticker.setFixedSize(30, 26)
         self.btn_copy_ticker.clicked.connect(self.copy_ticker)
         meta_flow.addWidget(self.btn_copy_ticker)
+        
+        # Description 토글 버튼 추가
+        self.btn_toggle_desc = QToolButton()
+        self.btn_toggle_desc.setCheckable(True)
+        self.btn_toggle_desc.setChecked(self._desc_visible)
+        self.btn_toggle_desc.setToolTip("Show/Hide Description panel")
+        self.btn_toggle_desc.setFixedSize(80, 26)
+        self.btn_toggle_desc.toggled.connect(self._on_toggle_desc)
+        self._update_desc_toggle_button_text()
+        meta_flow.addWidget(self.btn_toggle_desc)
+        
         img_layout.addWidget(meta_widget)
 
         self.dual_view_splitter = QSplitter(Qt.Vertical)
@@ -1560,19 +1911,48 @@ class MainWindow(QMainWindow):
         paneA_l.setSpacing(6)
 
         barA = QWidget()
-        barA_l = FlowLayout(barA, margin=0, spacing=6)
-        lblA = QLabel("Chart A"); lblA.setStyleSheet("font-weight: 700;")
+        barA_l = QHBoxLayout(barA)
+        barA_l.setContentsMargins(0, 0, 0, 0)
+        barA_l.setSpacing(4)
+        
+        lblA = QLabel("Chart A")
+        lblA.setStyleSheet("font-weight: 700; font-size: 11pt;")
         barA_l.addWidget(lblA)
-        self.btn_open_a = QPushButton("Open A")
-        self.btn_paste_a = QPushButton("Paste A")
-        self.btn_clear_a = QPushButton("Clr A")
-        self.btn_fit_a = QPushButton("Fit A")
+        
+        # 아이콘 버튼들
+        self.btn_open_a = QToolButton()
+        self.btn_open_a.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.btn_open_a.setToolTip("Open Image (A)")
+        self.btn_open_a.setFixedSize(28, 28)
         self.btn_open_a.clicked.connect(lambda: self.set_image_via_dialog("A"))
+        
+        self.btn_paste_a = QToolButton()
+        # 클립보드 아이콘이 없으면 텍스트로 표시
+        paste_icon = self.style().standardIcon(QStyle.SP_FileDialogContentsView)
+        if paste_icon.isNull():
+            self.btn_paste_a.setText("📋")
+        else:
+            self.btn_paste_a.setIcon(paste_icon)
+        self.btn_paste_a.setToolTip("Paste from Clipboard (A)")
+        self.btn_paste_a.setFixedSize(28, 28)
         self.btn_paste_a.clicked.connect(lambda: self.paste_image_from_clipboard("A"))
-        self.btn_clear_a.clicked.connect(lambda: self.clear_image("A"))
-        self.btn_fit_a.clicked.connect(lambda: self.reset_image_view("A"))
-        for b in [self.btn_open_a, self.btn_paste_a, self.btn_clear_a, self.btn_fit_a]:
-            barA_l.addWidget(b)
+        
+        # 드롭다운 메뉴 버튼 (Clear, Fit 포함)
+        self.btn_menu_a = QToolButton()
+        self.btn_menu_a.setText("⋯")
+        self.btn_menu_a.setToolTip("More options (A)")
+        self.btn_menu_a.setFixedSize(28, 28)
+        menu_a = QMenu(self)
+        menu_a.addAction("Clear Image", lambda: self.clear_image("A"))
+        menu_a.addAction("Fit to View", lambda: self.reset_image_view("A"))
+        self.btn_menu_a.setMenu(menu_a)
+        self.btn_menu_a.setPopupMode(QToolButton.InstantPopup)
+        
+        barA_l.addWidget(self.btn_open_a)
+        barA_l.addWidget(self.btn_paste_a)
+        barA_l.addWidget(self.btn_menu_a)
+        barA_l.addStretch()
+        
         paneA_l.addWidget(barA)
         self.viewer_a = ZoomPanAnnotateView()
         self.viewer_a.imageDropped.connect(lambda p: self._on_image_dropped("A", p))
@@ -1587,19 +1967,48 @@ class MainWindow(QMainWindow):
         paneB_l.setSpacing(6)
 
         barB = QWidget()
-        barB_l = FlowLayout(barB, margin=0, spacing=6)
-        lblB = QLabel("Chart B"); lblB.setStyleSheet("font-weight: 700;")
+        barB_l = QHBoxLayout(barB)
+        barB_l.setContentsMargins(0, 0, 0, 0)
+        barB_l.setSpacing(4)
+        
+        lblB = QLabel("Chart B")
+        lblB.setStyleSheet("font-weight: 700; font-size: 11pt;")
         barB_l.addWidget(lblB)
-        self.btn_open_b = QPushButton("Open B")
-        self.btn_paste_b = QPushButton("Paste B")
-        self.btn_clear_b = QPushButton("Clr B")
-        self.btn_fit_b = QPushButton("Fit B")
+        
+        # 아이콘 버튼들
+        self.btn_open_b = QToolButton()
+        self.btn_open_b.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.btn_open_b.setToolTip("Open Image (B)")
+        self.btn_open_b.setFixedSize(28, 28)
         self.btn_open_b.clicked.connect(lambda: self.set_image_via_dialog("B"))
+        
+        self.btn_paste_b = QToolButton()
+        # 클립보드 아이콘이 없으면 텍스트로 표시
+        paste_icon = self.style().standardIcon(QStyle.SP_FileDialogContentsView)
+        if paste_icon.isNull():
+            self.btn_paste_b.setText("📋")
+        else:
+            self.btn_paste_b.setIcon(paste_icon)
+        self.btn_paste_b.setToolTip("Paste from Clipboard (B)")
+        self.btn_paste_b.setFixedSize(28, 28)
         self.btn_paste_b.clicked.connect(lambda: self.paste_image_from_clipboard("B"))
-        self.btn_clear_b.clicked.connect(lambda: self.clear_image("B"))
-        self.btn_fit_b.clicked.connect(lambda: self.reset_image_view("B"))
-        for b in [self.btn_open_b, self.btn_paste_b, self.btn_clear_b, self.btn_fit_b]:
-            barB_l.addWidget(b)
+        
+        # 드롭다운 메뉴 버튼 (Clear, Fit 포함)
+        self.btn_menu_b = QToolButton()
+        self.btn_menu_b.setText("⋯")
+        self.btn_menu_b.setToolTip("More options (B)")
+        self.btn_menu_b.setFixedSize(28, 28)
+        menu_b = QMenu(self)
+        menu_b.addAction("Clear Image", lambda: self.clear_image("B"))
+        menu_b.addAction("Fit to View", lambda: self.reset_image_view("B"))
+        self.btn_menu_b.setMenu(menu_b)
+        self.btn_menu_b.setPopupMode(QToolButton.InstantPopup)
+        
+        barB_l.addWidget(self.btn_open_b)
+        barB_l.addWidget(self.btn_paste_b)
+        barB_l.addWidget(self.btn_menu_b)
+        barB_l.addStretch()
+        
         paneB_l.addWidget(barB)
         self.viewer_b = ZoomPanAnnotateView()
         self.viewer_b.imageDropped.connect(lambda p: self._on_image_dropped("B", p))
@@ -1639,8 +2048,8 @@ class MainWindow(QMainWindow):
             v.setFixedHeight(22)
             return v
 
-        fmt_row = QWidget()
-        fmt_outer = QVBoxLayout(fmt_row)
+        self.fmt_row = QWidget()
+        fmt_outer = QVBoxLayout(self.fmt_row)
         fmt_outer.setContentsMargins(0, 0, 0, 0)
         fmt_outer.setSpacing(4)
 
@@ -1790,13 +2199,14 @@ class MainWindow(QMainWindow):
         self.notes_ideas_splitter.setStretchFactor(0, 3)
         self.notes_ideas_splitter.setStretchFactor(1, 1)
 
-        text_layout.addWidget(fmt_row)
+        text_layout.addWidget(self.fmt_row)
         text_layout.addWidget(self.notes_ideas_splitter, 1)
 
         self.page_splitter.addWidget(self.img_container)
         self.page_splitter.addWidget(self.text_container)
-        self.page_splitter.setStretchFactor(0, 1)
-        self.page_splitter.setStretchFactor(1, 1)
+        # 초기 stretch factor 설정 (Chart와 Description 모두 보이도록)
+        self.page_splitter.setStretchFactor(0, 1)  # Chart
+        self.page_splitter.setStretchFactor(1, 1)  # Description
         self.text_container.setMinimumWidth(440)
 
         self._set_active_rich_edit(self.text_edit)
@@ -1930,14 +2340,7 @@ class MainWindow(QMainWindow):
         btn_anno_toggle.setAutoRaise(True)
         btn_anno_toggle.setFixedSize(34, 30)
 
-        btn_desc_toggle = QToolButton(vp)
-        btn_desc_toggle.setText("Notes✓" if self._desc_visible else "Notes")
-        btn_desc_toggle.setToolTip("Show/Hide Description & Checklist panel")
-        btn_desc_toggle.setCheckable(True)
-        btn_desc_toggle.setChecked(bool(self._desc_visible))
-        btn_desc_toggle.setAutoRaise(True)
-        btn_desc_toggle.setFixedSize(64, 30)
-        btn_desc_toggle.toggled.connect(self._on_toggle_desc)
+        # Notes 버튼 제거 - 이제 splitter 핸들에 화살표 버튼 사용
 
         anno_panel = QFrame(vp)
         anno_panel.setFrameShape(QFrame.StyledPanel)
@@ -2060,7 +2463,7 @@ class MainWindow(QMainWindow):
             "viewer": viewer,
             "cap": edit_cap,
             "anno_toggle": btn_anno_toggle,
-            "desc_toggle": btn_desc_toggle,
+            # desc_toggle 제거됨 - splitter 핸들 버튼 사용
             "panel": anno_panel,
             "draw": btn_draw_mode,
         }
@@ -2082,7 +2485,6 @@ class MainWindow(QMainWindow):
 
         edit_cap: CollapsibleCaptionEdit = ui["cap"]
         btn_anno_toggle: QToolButton = ui["anno_toggle"]
-        btn_desc_toggle: QToolButton = ui["desc_toggle"]
         anno_panel: QFrame = ui["panel"]
 
         w = vp.width()
@@ -2092,26 +2494,24 @@ class MainWindow(QMainWindow):
         if anno_panel.isVisible():
             panel_x = max(margin, w - anno_panel.width() - margin)
             anno_panel.move(panel_x, margin)
-            btn_desc_toggle.move(max(margin, panel_x - margin - btn_desc_toggle.width()), margin)
+            btn_anno_toggle.move(max(margin, panel_x - margin - btn_anno_toggle.width()), margin)
         else:
             btn_anno_toggle.move(max(margin, w - btn_anno_toggle.width() - margin), margin)
-            btn_desc_toggle.move(max(margin, w - btn_desc_toggle.width() - margin), margin + btn_anno_toggle.height() + gap)
 
         cap_min = 260
         cap_max = 720
-        cap_right_limit = (anno_panel.x() - margin) if anno_panel.isVisible() else min(btn_anno_toggle.x(), btn_desc_toggle.x()) - margin
+        cap_right_limit = (anno_panel.x() - margin) if anno_panel.isVisible() else (btn_anno_toggle.x() - margin)
         cap_w = min(cap_max, max(cap_min, cap_right_limit - margin))
         cap_x = max(margin, cap_right_limit - cap_w)
         edit_cap.setFixedWidth(cap_w)
         edit_cap.move(cap_x, margin)
 
-    # ---------------- Tree refresh ----------------
+    # ---------------- Tree refresh ---------------- 
     def _refresh_nav_tree(self, select_current: bool = False) -> None:
         self.nav_tree.blockSignals(True)
         self.nav_tree.clear()
         
         # 표준 아이콘 준비
-        folder_icon = self.style().standardIcon(QStyle.SP_DirIcon)
         file_icon = self.style().standardIcon(QStyle.SP_FileIcon)
 
         item_to_qitem: Dict[str, QTreeWidgetItem] = {}
@@ -2121,13 +2521,18 @@ class MainWindow(QMainWindow):
             c = self.db.get_category(cid)
             if not c:
                 return None
+            
+            # 자식이 있으면 사각형 + 아이콘 사용
+            has_children = bool(c.child_ids or c.item_ids)
+            
             q = QTreeWidgetItem([c.name])
             q.setData(0, self.NODE_TYPE_ROLE, "category")
             q.setData(0, self.CATEGORY_ID_ROLE, c.id)
             q.setFlags(q.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
             
-            # ✅ Folder icon
-            q.setIcon(0, folder_icon)
+            # 자식이 있으면 사각형 + 아이콘 설정
+            if has_children:
+                q.setIcon(0, _make_expand_icon(16, expanded=False))
             
             # ✅ Category(폴더)만 Bold
             f = q.font(0)
@@ -2162,7 +2567,21 @@ class MainWindow(QMainWindow):
         for rid in self.db.root_category_ids:
             add_cat(rid, None)
 
+        # 트리 아이템의 초기 확장 상태에 맞게 아이콘 설정
+        def update_icons_recursive(item: QTreeWidgetItem):
+            if item.childCount() > 0:
+                item.setIcon(0, _make_expand_icon(16, expanded=item.isExpanded()))
+            for i in range(item.childCount()):
+                update_icons_recursive(item.child(i))
+        
+        for i in range(self.nav_tree.topLevelItemCount()):
+            update_icons_recursive(self.nav_tree.topLevelItem(i))
+        
         self.nav_tree.expandAll()
+        
+        # expandAll 후 다시 아이콘 업데이트
+        for i in range(self.nav_tree.topLevelItemCount()):
+            update_icons_recursive(self.nav_tree.topLevelItem(i))
 
         if select_current:
             if self.current_item_id and self.current_item_id in item_to_qitem:
@@ -2179,6 +2598,11 @@ class MainWindow(QMainWindow):
         is_cat = (node_type == "category")
         is_item = (node_type == "item")
 
+        # 이동 버튼은 선택된 항목이 있을 때만 활성화
+        self.btn_move_up.setEnabled(is_cat or is_item)
+        self.btn_move_down.setEnabled(is_cat or is_item)
+
+        # 내부 버튼들 (컨텍스트 메뉴용)
         self.btn_rename_folder.setEnabled(is_cat)
         self.btn_del_folder.setEnabled(is_cat)
         self.btn_folder_up.setEnabled(is_cat)
@@ -2191,6 +2615,28 @@ class MainWindow(QMainWindow):
 
         self.btn_add_folder.setEnabled(True)
         self.btn_add_item.setEnabled(True)
+    
+    def _move_current_up(self) -> None:
+        """현재 선택된 항목을 위로 이동"""
+        it = self.nav_tree.currentItem()
+        if not it:
+            return
+        node_type = it.data(0, self.NODE_TYPE_ROLE)
+        if node_type == "category":
+            self.move_folder(-1)
+        elif node_type == "item":
+            self.move_item(-1)
+    
+    def _move_current_down(self) -> None:
+        """현재 선택된 항목을 아래로 이동"""
+        it = self.nav_tree.currentItem()
+        if not it:
+            return
+        node_type = it.data(0, self.NODE_TYPE_ROLE)
+        if node_type == "category":
+            self.move_folder(+1)
+        elif node_type == "item":
+            self.move_item(+1)
 
     def _on_tree_context_menu(self, pos) -> None:
         item = self.nav_tree.itemAt(pos)
@@ -2230,6 +2676,7 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             act_rename = menu.addAction("Rename Item")
             act_delete = menu.addAction("Delete Item")
+            act_move_to_folder = menu.addAction("Move Item to Folder...")
             menu.addSeparator()
             act_up = menu.addAction("Move Item Up")
             act_down = menu.addAction("Move Item Down")
@@ -2242,6 +2689,8 @@ class MainWindow(QMainWindow):
                 self.rename_item()
             elif chosen == act_delete:
                 self.delete_item()
+            elif chosen == act_move_to_folder:
+                self.move_item_to_folder()
             elif chosen == act_up:
                 self.move_item(-1)
             elif chosen == act_down:
@@ -2297,6 +2746,17 @@ class MainWindow(QMainWindow):
             self._remember_notes_splitter_sizes()
         self._remember_right_vsplit_sizes()
 
+    # ---------------- Tree expand/collapse icon update ----------------
+    def _on_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
+        """트리 아이템 확장 시 아이콘을 - 모양으로 변경"""
+        if item.childCount() > 0:
+            item.setIcon(0, _make_expand_icon(16, expanded=True))
+    
+    def _on_tree_item_collapsed(self, item: QTreeWidgetItem) -> None:
+        """트리 아이템 축소 시 아이콘을 + 모양으로 변경"""
+        if item.childCount() > 0:
+            item.setIcon(0, _make_expand_icon(16, expanded=False))
+    
     # ---------------- Selection changed ----------------
     def _on_tree_selection_changed(self) -> None:
         item = self.nav_tree.currentItem()
@@ -2649,7 +3109,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Paste Image", "Clipboard does not contain an image.")
             return
         self._flush_page_fields_to_model_and_save()
-        safe_item = _sanitize_for_folder(it.name, it.id[:8])
+        # 아이템 ID를 포함하여 고유한 폴더명 생성 (같은 이름의 아이템이 다른 폴더에 있어도 충돌 방지)
+        safe_item = _sanitize_for_folder(f"{it.name}_{it.id[:8]}", it.id[:8])
         dst_dir = os.path.join(ASSETS_DIR, safe_item)
         _ensure_dir(dst_dir)
         dst_name = f"{pg.id}_{pane.lower()}_clip_{_now_epoch()}.png"
@@ -2684,7 +3145,8 @@ class MainWindow(QMainWindow):
         if ext not in [".png", ".jpg", ".jpeg", ".bmp", ".webp"]:
             QMessageBox.warning(self, "Invalid file", "Please select an image file.")
             return
-        safe_item = _sanitize_for_folder(it.name, it.id[:8])
+        # 아이템 ID를 포함하여 고유한 폴더명 생성 (같은 이름의 아이템이 다른 폴더에 있어도 충돌 방지)
+        safe_item = _sanitize_for_folder(f"{it.name}_{it.id[:8]}", it.id[:8])
         dst_dir = os.path.join(ASSETS_DIR, safe_item)
         _ensure_dir(dst_dir)
         dst_name = f"{pg.id}_{pane.lower()}{ext}"
@@ -2796,7 +3258,7 @@ class MainWindow(QMainWindow):
             return
 
         self.current_item_id = ""
-        self.current_category_id = self.db.root_category_ids[0]
+        self.current_category_id = self.db.root_category_ids[0] if self.db.root_category_ids else ""
         self.current_page_index = 0
         self._save_ui_state()
         self._save_db_with_warning()
@@ -2856,9 +3318,7 @@ class MainWindow(QMainWindow):
         it = self.db.get_item(iid)
         if not it:
             return
-        if self.db.total_items() <= 1:
-            QMessageBox.warning(self, "Not allowed", "At least one item must remain.")
-            return
+        # 마지막 아이템도 삭제 허용 (빈 상태 허용)
         reply = QMessageBox.question(
             self, "Delete Item",
             f"Delete item '{it.name}' and all its pages?\n(This cannot be undone.)",
@@ -2868,21 +3328,32 @@ class MainWindow(QMainWindow):
             return
         self._flush_page_fields_to_model_and_save()
         if not self.db.delete_item(iid):
-            QMessageBox.warning(self, "Failed", "Cannot delete the last remaining item.")
             return
 
-        # fallback to some existing item
-        fallback_iid = next(iter(self.db.items.keys()))
-        found = self.db.find_item(fallback_iid)
-        if found:
-            self.current_item_id = fallback_iid
-            self.current_category_id = found[1].id
-            self.current_page_index = max(0, min(found[0].last_page_index, len(found[0].pages) - 1))
-            self._show_placeholder(False)
-            self._save_ui_state()
-            self._save_db_with_warning()
-            self._refresh_nav_tree(select_current=True)
-            self._load_current_item_page_to_ui()
+        # fallback to some existing item (있으면)
+        if self.db.items:
+            fallback_iid = next(iter(self.db.items.keys()))
+            found = self.db.find_item(fallback_iid)
+            if found:
+                self.current_item_id = fallback_iid
+                self.current_category_id = found[1].id
+                self.current_page_index = max(0, min(found[0].last_page_index, len(found[0].pages) - 1))
+                self._show_placeholder(False)
+            else:
+                self.current_item_id = ""
+                self.current_category_id = self.db.root_category_ids[0] if self.db.root_category_ids else ""
+                self._show_placeholder(True)
+        else:
+            # 아이템이 없으면 빈 상태로
+            self.current_item_id = ""
+            self.current_category_id = self.db.root_category_ids[0] if self.db.root_category_ids else ""
+            self.current_page_index = 0
+            self._show_placeholder(True)
+        
+        self._save_ui_state()
+        self._save_db_with_warning()
+        self._refresh_nav_tree(select_current=True)
+        self._load_current_item_page_to_ui(clear_only=(not self.current_item_id))
 
     def move_item(self, direction: int) -> None:
         itw = self.nav_tree.currentItem()
@@ -2894,6 +3365,75 @@ class MainWindow(QMainWindow):
         self.db.move_item_sibling(iid, direction)
         self._save_db_with_warning()
         self._refresh_nav_tree(select_current=True)
+
+    def move_item_to_folder(self) -> None:
+        """아이템을 다른 폴더로 이동"""
+        itw = self.nav_tree.currentItem()
+        if not itw or itw.data(0, self.NODE_TYPE_ROLE) != "item":
+            return
+        iid = str(itw.data(0, self.ITEM_ID_ROLE) or "")
+        it = self.db.get_item(iid)
+        if not it:
+            return
+        
+        # 모든 폴더 목록 생성
+        folder_list = []
+        folder_ids = []
+        
+        def collect_folders(cid: str, prefix: str = ""):
+            cat = self.db.get_category(cid)
+            if not cat:
+                return
+            folder_list.append(f"{prefix}{cat.name}")
+            folder_ids.append(cid)
+            for child_id in cat.child_ids:
+                collect_folders(child_id, prefix + "  ")
+        
+        for root_id in self.db.root_category_ids:
+            collect_folders(root_id)
+        
+        if not folder_list:
+            QMessageBox.warning(self, "No Folders", "이동할 폴더가 없습니다.")
+            return
+        
+        # 현재 폴더는 제외
+        current_cat_id = it.category_id
+        try:
+            current_idx = folder_ids.index(current_cat_id)
+            folder_list.pop(current_idx)
+            folder_ids.pop(current_idx)
+        except ValueError:
+            pass
+        
+        if not folder_list:
+            QMessageBox.information(self, "No Other Folders", "다른 폴더가 없습니다.")
+            return
+        
+        # 폴더 선택 다이얼로그
+        selected_folder, ok = QInputDialog.getItem(
+            self, "Move Item to Folder", 
+            f"Move '{it.name}' to:", 
+            folder_list, 0, False
+        )
+        
+        if not ok or not selected_folder:
+            return
+        
+        target_idx = folder_list.index(selected_folder)
+        target_cat_id = folder_ids[target_idx]
+        
+        if target_cat_id == current_cat_id:
+            return
+        
+        self._flush_page_fields_to_model_and_save()
+        if self.db.move_item_to_category(iid, target_cat_id):
+            self.current_category_id = target_cat_id
+            self._save_ui_state()
+            self._save_db_with_warning()
+            self._refresh_nav_tree(select_current=True)
+            self.trace(f"Moved item '{it.name}' to folder '{selected_folder}'", "INFO")
+        else:
+            QMessageBox.warning(self, "Failed", "아이템 이동에 실패했습니다.")
 
     # ---------------- Rich text ops ----------------
     def _set_active_rich_edit(self, editor: QTextEdit) -> None:
@@ -3003,7 +3543,12 @@ class MainWindow(QMainWindow):
             self._save_db_with_warning()
 
     # ---------------- Description toggle ----------------
+    def _on_toggle_desc_clicked(self) -> None:
+        """Splitter 핸들 버튼 클릭 시 호출"""
+        self._set_desc_visible(not self._desc_visible, persist=True)
+    
     def _on_toggle_desc(self, checked: bool) -> None:
+        """기존 토글 메서드 (호환성 유지)"""
         self._set_desc_visible(bool(checked), persist=True)
 
     def _set_desc_visible(self, visible: bool, persist: bool = True) -> None:
@@ -3011,37 +3556,123 @@ class MainWindow(QMainWindow):
             self._remember_notes_splitter_sizes()
         self._desc_visible = bool(visible)
         self.notes_left.setVisible(self._desc_visible)
-        for pane in ("A", "B"):
-            ui = self._pane_ui.get(pane, {})
-            if ui and "desc_toggle" in ui:
-                btn = ui["desc_toggle"]
-                btn.blockSignals(True)
-                btn.setChecked(self._desc_visible)
-                btn.setText("Notes✓" if self._desc_visible else "Notes")
-                btn.blockSignals(False)
+        
+        # 상단 서식 툴바도 함께 숨김/표시
+        if hasattr(self, 'fmt_row'):
+            self.fmt_row.setVisible(self._desc_visible)
+        
+        # text_container는 항상 보이게 유지 (splitter 핸들이 보이도록)
+        # 대신 splitter 크기를 조정하여 내용만 숨김/표시
+        self._adjusting_splitter = True  # splitter 크기 조정 중 플래그 설정
+        try:
+            if visible:
+                # Description이 보일 때: 최소 크기 복원 및 stretch factor 복원
+                self.text_container.setMinimumWidth(440)  # Description 최소 크기 복원
+                self.page_splitter.setStretchFactor(0, 1)  # Chart
+                self.page_splitter.setStretchFactor(1, 1)  # Description
+                
+                # 이전 크기 복원 또는 기본 크기 설정
+                if hasattr(self, '_page_split_prev_sizes') and self._page_split_prev_sizes:
+                    def _restore_sizes():
+                        self.page_splitter.setSizes(self._page_split_prev_sizes)
+                    QTimer.singleShot(10, _restore_sizes)
+                else:
+                    # 기본 크기 설정 (Chart: 60%, Description: 40%)
+                    def _set_default_sizes():
+                        total_width = self.page_splitter.width()
+                        if total_width <= 0:
+                            total_width = self.page_splitter.size().width()
+                        if total_width > 0:
+                            chart_width = int(total_width * 0.6)
+                            desc_width = total_width - chart_width
+                            self.page_splitter.setSizes([chart_width, desc_width])
+                    QTimer.singleShot(10, _set_default_sizes)
+            else:
+                # Description이 숨겨질 때: 현재 크기 저장 후 Chart 영역이 전체를 차지하도록
+                current_sizes = self.page_splitter.sizes()
+                if len(current_sizes) == 2 and current_sizes[1] > 20:
+                    self._page_split_prev_sizes = list(current_sizes)
+                
+                # Chart 영역이 전체를 차지하도록 stretch factor 조정
+                self.page_splitter.setStretchFactor(0, 1)  # Chart가 확장 가능하도록
+                self.page_splitter.setStretchFactor(1, 0)  # Description은 확장하지 않도록
+                
+                # Description 영역의 최소 크기를 0으로 설정하여 완전히 접을 수 있도록
+                self.text_container.setMinimumWidth(0)
+                
+                # Chart 영역이 전체를 차지하도록 설정
+                def _expand_chart_area():
+                    total_width = self.page_splitter.width()
+                    if total_width <= 0:
+                        total_width = self.page_splitter.size().width()
+                    if total_width > 0:
+                        # Description 영역을 최소한으로 (splitter 핸들만 보이도록)
+                        # 핸들 너비는 보통 5-10px이지만, 더 작게 설정
+                        handle_width = 5
+                        chart_width = total_width - handle_width
+                        # Chart가 전체를 차지하도록 설정
+                        self.page_splitter.setSizes([chart_width, handle_width])
+                        # 크기가 제대로 설정되었는지 확인하고 재시도
+                        actual_sizes = self.page_splitter.sizes()
+                        if len(actual_sizes) == 2:
+                            # Description 영역이 여전히 크면 다시 시도
+                            if actual_sizes[1] > handle_width * 3:
+                                chart_width = total_width - handle_width
+                                self.page_splitter.setSizes([chart_width, handle_width])
+                
+                # 즉시 시도하고, 실패하면 지연 후 재시도
+                _expand_chart_area()
+                QTimer.singleShot(50, _expand_chart_area)
+                QTimer.singleShot(100, _expand_chart_area)
+                QTimer.singleShot(200, _expand_chart_area)
+                QTimer.singleShot(300, _expand_chart_area)
+        finally:
+            # 플래그 해제 (지연 처리 후)
+            QTimer.singleShot(300, lambda: setattr(self, '_adjusting_splitter', False))
+        
+        # 상단 토글 버튼 상태 업데이트
+        self._update_desc_toggle_button_text()
+        # Splitter 핸들의 버튼 상태 업데이트 (위젯 추가 후 핸들이 생성되므로 지연 처리)
+        QTimer.singleShot(0, lambda: self._update_splitter_handle_state())
         self._update_text_area_layout()
         if persist:
             self.db.ui_state["desc_visible"] = bool(self._desc_visible)
             self._save_db_with_warning()
+    
+    def _update_desc_toggle_button_text(self) -> None:
+        """상단 Description 토글 버튼 텍스트 업데이트"""
+        if hasattr(self, 'btn_toggle_desc'):
+            self.btn_toggle_desc.blockSignals(True)
+            self.btn_toggle_desc.setChecked(self._desc_visible)
+            if self._desc_visible:
+                self.btn_toggle_desc.setText("Description ✓")
+            else:
+                self.btn_toggle_desc.setText("Description")
+            self.btn_toggle_desc.blockSignals(False)
+    
+    def _update_splitter_handle_state(self) -> None:
+        """Splitter 핸들 상태 업데이트 (지연 호출)"""
+        if hasattr(self.page_splitter, 'set_description_visible'):
+            self.page_splitter.set_description_visible(self._desc_visible)
 
     def _collapse_text_container(self, collapse: bool) -> None:
+        """text_container 축소/확장 - 이제는 splitter 크기만 조정 (항상 보이게 유지)"""
         if collapse:
-            if self.text_container.isVisible():
-                self._remember_page_splitter_sizes()
-                self._save_db_with_warning()
-            self.text_container.setVisible(False)
+            # 최소 크기로 축소 (splitter 핸들이 보이도록 10px 유지)
             total = max(1, self.page_splitter.width())
-            self.page_splitter.setSizes([total, 0])
+            self.page_splitter.setSizes([max(1, total - 10), 10])
         else:
-            if not self.text_container.isVisible():
-                self.text_container.setVisible(True)
+            # 이전 크기 복원 또는 기본 크기 설정
             ps = self.db.ui_state.get("page_splitter_sizes")
             if self._is_valid_splitter_sizes(ps):
                 self.page_splitter.setSizes(ps)
             elif self._page_split_prev_sizes and len(self._page_split_prev_sizes) == 2:
                 self.page_splitter.setSizes(self._page_split_prev_sizes)
             else:
-                self.page_splitter.setSizes([760, 700])
+                total = max(1, self.page_splitter.width())
+                chart_width = int(total * 0.6)
+                desc_width = total - chart_width
+                self.page_splitter.setSizes([chart_width, desc_width])
 
     def _apply_notes_splitter_sizes_both_visible(self, total: int) -> None:
         ns = self.db.ui_state.get("notes_splitter_sizes")
