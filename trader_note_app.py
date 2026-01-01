@@ -2,7 +2,52 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.8.0  (2026-01-01)
+Version: 0.9.0  (2026-01-01)
+
+v0.9.0 변경 사항:
+- 데이터 저장 안정성 종합 개선
+  AS-IS: 기본적인 저장/로드 기능만 존재
+  TO-BE:
+    - 저장 전 JSON 직렬화 검증 추가
+    - 저장 전 데이터 크기 확인 (최대 50MB)
+    - 자동 백업 메커니즘 (저장 전 백업 생성, 최근 10개 유지)
+    - 백업에서 자동 복구 기능 (데이터 손상 시)
+    - 상세한 에러 로깅 및 사용자 경고 메시지
+    - 저장 실패 시 상세한 오류 정보 제공
+    - 데이터 직렬화 예외 처리 강화
+    - 저장 전 데이터 무결성 검증 강화
+
+v0.8.3 변경 사항:
+- Ideas (Global) 탭 기능 추가
+  AS-IS: 단일 Ideas 영역만 존재 (하나의 텍스트 편집기)
+  TO-BE:
+    - QTabWidget으로 여러 Ideas 탭 관리 (최대 10개)
+    - 각 탭마다 독립적인 텍스트 편집기 (서식/색상 가능)
+    - 탭 추가 버튼 ("+ Tab")
+    - 탭 삭제 기능 (상단 삭제 버튼, 최소 1개 유지, 확인 다이얼로그)
+    - 데이터 구조 변경: global_ideas를 리스트로 변경 [{"name": str, "content": str}, ...]
+    - 기존 문자열 형식과 호환 (자동 변환)
+    - 추가/삭제 버튼을 page 버튼과 동일한 스타일로 변경 ("+", "−")
+
+v0.8.2 변경 사항:
+- Ideas (Global) 버튼 UI 개선
+  AS-IS: Ideas 버튼이 작고 눈에 띄지 않음 ("Ideas" 텍스트만)
+  TO-BE:
+    - Ideas 버튼 크기 증가 (100x32px)
+    - 아이콘 추가 ("💡 Ideas")
+    - 스타일 개선 (배경색, 테두리, 호버 효과)
+    - 체크 상태 시 파란색 강조 표시
+    - Description 상단 우측에 배치 (전역 참고 내용임을 강조)
+
+v0.8.1 변경 사항:
+- 페이지 네비게이션 버튼 UI 개선
+  AS-IS: 페이지 추가/삭제 버튼이 텍스트 버튼 ("+ Page", "Del Page")
+  TO-BE:
+    - 페이지 추가 버튼을 아이콘 버튼으로 변경 ("+")
+    - 페이지 삭제 버튼을 아이콘 버튼으로 변경 ("×")
+    - 모든 네비게이션 버튼 크기 통일 (32x26px)
+    - 모든 버튼에 툴팁 추가
+    - 이전/다음 버튼과 스타일 통일
 
 v0.8.0 변경 사항:
 - 리스트 기능 개선
@@ -53,8 +98,11 @@ from PyQt5.QtWidgets import (
     QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea
 )
 
-APP_TITLE = "Trader Chart Note (v0.8.0)"
+APP_TITLE = "Trader Chart Note (v0.9.0)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
+BACKUP_DIR = os.path.join("data", "backups")
+MAX_BACKUPS = 10  # 최대 백업 파일 개수
+MAX_DATA_SIZE_MB = 50  # 최대 데이터 크기 (MB)
 ASSETS_DIR = "assets"
 
 DEFAULT_CHECK_QUESTIONS = [
@@ -82,25 +130,163 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def _safe_write_json(path: str, data: Dict[str, Any], retries: int = 12, base_delay: float = 0.08) -> bool:
+def _validate_json_serializable(data: Any) -> Tuple[bool, Optional[str]]:
+    """JSON 직렬화 가능 여부 검증"""
+    try:
+        json.dumps(data, ensure_ascii=False, default=str)
+        return True, None
+    except (TypeError, ValueError) as e:
+        return False, str(e)
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def _create_backup(db_path: str) -> Optional[str]:
+    """저장 전 백업 생성"""
+    if not os.path.exists(db_path):
+        return None
+    
+    try:
+        _ensure_dir(BACKUP_DIR)
+        timestamp = _now_epoch()
+        backup_filename = f"notes_db_backup_{timestamp}.json"
+        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        
+        # 기존 파일 복사
+        shutil.copy2(db_path, backup_path)
+        
+        # 오래된 백업 파일 정리
+        _cleanup_old_backups()
+        
+        return backup_path
+    except Exception as e:
+        # 백업 실패해도 저장은 계속 진행
+        return None
+
+
+def _cleanup_old_backups() -> None:
+    """오래된 백업 파일 정리 (최근 MAX_BACKUPS개만 유지)"""
+    try:
+        if not os.path.exists(BACKUP_DIR):
+            return
+        
+        backup_files = []
+        for filename in os.listdir(BACKUP_DIR):
+            if filename.startswith("notes_db_backup_") and filename.endswith(".json"):
+                filepath = os.path.join(BACKUP_DIR, filename)
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    backup_files.append((mtime, filepath))
+                except Exception:
+                    continue
+        
+        # 최신순으로 정렬
+        backup_files.sort(reverse=True)
+        
+        # MAX_BACKUPS개 초과 시 오래된 것 삭제
+        for mtime, filepath in backup_files[MAX_BACKUPS:]:
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _check_data_size(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """데이터 크기 확인"""
+    try:
+        json_str = json.dumps(data, ensure_ascii=False, default=str)
+        size_mb = len(json_str.encode('utf-8')) / (1024 * 1024)
+        if size_mb > MAX_DATA_SIZE_MB:
+            return False, f"Data size ({size_mb:.2f} MB) exceeds maximum ({MAX_DATA_SIZE_MB} MB)"
+        return True, None
+    except Exception as e:
+        return False, f"Error checking data size: {str(e)}"
+
+
+def _safe_write_json(path: str, data: Dict[str, Any], retries: int = 12, base_delay: float = 0.08, create_backup: bool = True) -> Tuple[bool, Optional[str]]:
+    """
+    안전한 JSON 파일 저장
+    Returns: (success: bool, error_message: Optional[str])
+    """
+    # 1. JSON 직렬화 가능 여부 검증
+    is_valid, error = _validate_json_serializable(data)
+    if not is_valid:
+        return False, f"Data is not JSON serializable: {error}"
+    
+    # 2. 데이터 크기 확인
+    size_ok, size_error = _check_data_size(data)
+    if not size_ok:
+        return False, size_error
+    
+    # 3. 백업 생성 (기존 파일이 있는 경우)
+    backup_path = None
+    if create_backup and os.path.exists(path):
+        backup_path = _create_backup(path)
+    
     _ensure_dir(os.path.dirname(path) or ".")
     tmp_path = f"{path}.tmp"
 
+    # 4. 임시 파일에 저장
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        return False
+    except Exception as e:
+        return False, f"Failed to write temporary file: {str(e)}"
 
+    # 5. 원본 파일로 교체 (재시도)
     for i in range(max(1, retries)):
         try:
             os.replace(tmp_path, path)
-            return True
+            return True, None
         except PermissionError:
-            time.sleep(base_delay * (1.6 ** i))
-        except OSError:
-            time.sleep(base_delay * (1.6 ** i))
+            if i < retries - 1:
+                time.sleep(base_delay * (1.6 ** i))
+            else:
+                # 마지막 시도 실패 시 autosave 생성
+                try:
+                    autosave_path = f"{path}.autosave.{_now_epoch()}.json"
+                    try:
+                        os.replace(tmp_path, autosave_path)
+                    except Exception:
+                        with open(autosave_path, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        try:
+                            os.remove(tmp_path)
+                        except Exception:
+                            pass
+                    return False, f"Permission denied after {retries} retries. Autosave created: {autosave_path}"
+                except Exception as e:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    return False, f"Failed to create autosave: {str(e)}"
+        except OSError as e:
+            if i < retries - 1:
+                time.sleep(base_delay * (1.6 ** i))
+            else:
+                try:
+                    autosave_path = f"{path}.autosave.{_now_epoch()}.json"
+                    try:
+                        os.replace(tmp_path, autosave_path)
+                    except Exception:
+                        with open(autosave_path, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        try:
+                            os.remove(tmp_path)
+                        except Exception:
+                            pass
+                    return False, f"OS error after {retries} retries: {str(e)}. Autosave created: {autosave_path}"
+                except Exception as e2:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    return False, f"Failed to create autosave: {str(e2)}"
 
+    # 6. 모든 재시도 실패 시 autosave 생성
     try:
         autosave_path = f"{path}.autosave.{_now_epoch()}.json"
         try:
@@ -112,13 +298,13 @@ def _safe_write_json(path: str, data: Dict[str, Any], retries: int = 12, base_de
                 os.remove(tmp_path)
             except Exception:
                 pass
-        return False
-    except Exception:
+        return False, f"Failed after {retries} retries. Autosave created: {autosave_path}"
+    except Exception as e:
         try:
             os.remove(tmp_path)
         except Exception:
             pass
-        return False
+        return False, f"Failed to create autosave: {str(e)}"
 
 
 def _relpath_norm(path: str) -> str:
@@ -578,7 +764,7 @@ class NoteDB:
         self.items: Dict[str, Item] = {}
         self.root_category_ids: List[str] = []
         self.ui_state: Dict[str, Any] = {}
-        self.global_ideas: str = ""
+        self.global_ideas: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 10개
         self.load()
 
     @staticmethod
@@ -656,15 +842,74 @@ class NoteDB:
         }
 
     def load(self) -> None:
+        """데이터 로드 (에러 처리 및 복구 로직 포함)"""
         if os.path.exists(self.db_path):
             try:
                 with open(self.db_path, "r", encoding="utf-8") as f:
                     self.data = json.load(f)
-            except Exception:
+                
+                # 로드된 데이터 검증
+                if not isinstance(self.data, dict):
+                    raise ValueError("Data is not a dictionary")
+                
+            except json.JSONDecodeError as e:
+                # JSON 파싱 오류: 백업 파일에서 복구 시도
                 self.data = {}
+                backup_restored = self._try_restore_from_backup()
+                if not backup_restored:
+                    # 백업 복구 실패 시 기본 데이터 사용
+                    self.data = self._default_data()
+            except Exception as e:
+                # 기타 오류: 백업에서 복구 시도
+                self.data = {}
+                backup_restored = self._try_restore_from_backup()
+                if not backup_restored:
+                    self.data = self._default_data()
+        else:
+            self.data = {}
 
         if not self.data:
             self.data = self._default_data()
+    
+    def _try_restore_from_backup(self) -> bool:
+        """백업 파일에서 데이터 복구 시도"""
+        try:
+            if not os.path.exists(BACKUP_DIR):
+                return False
+            
+            # 최신 백업 파일 찾기
+            backup_files = []
+            for filename in os.listdir(BACKUP_DIR):
+                if filename.startswith("notes_db_backup_") and filename.endswith(".json"):
+                    filepath = os.path.join(BACKUP_DIR, filename)
+                    try:
+                        mtime = os.path.getmtime(filepath)
+                        backup_files.append((mtime, filepath))
+                    except Exception:
+                        continue
+            
+            if not backup_files:
+                return False
+            
+            # 최신 백업 파일로 복구 시도
+            backup_files.sort(reverse=True)
+            for mtime, backup_path in backup_files:
+                try:
+                    with open(backup_path, "r", encoding="utf-8") as f:
+                        self.data = json.load(f)
+                    if isinstance(self.data, dict):
+                        # 백업 복구 성공: 원본 파일을 백업으로 교체
+                        try:
+                            shutil.copy2(backup_path, self.db_path)
+                        except Exception:
+                            pass
+                        return True
+                except Exception:
+                    continue
+            
+            return False
+        except Exception:
+            return False
 
         self.ui_state = self.data.get("ui_state", {})
         if not isinstance(self.ui_state, dict):
@@ -680,21 +925,59 @@ class NoteDB:
         self.ui_state.setdefault("trace_visible", True)
         self.ui_state.setdefault("right_vsplit_sizes", None)
 
-        self.global_ideas = str(self.data.get("global_ideas", "") or "")
+        # global_ideas를 리스트로 로드 (기존 문자열 형식도 호환)
+        raw_ideas = self.data.get("global_ideas", [])
+        if isinstance(raw_ideas, str):
+            # 기존 문자열 형식: 첫 번째 탭으로 변환
+            if raw_ideas.strip():
+                self.global_ideas = [{"name": "Ideas 1", "content": raw_ideas}]
+            else:
+                self.global_ideas = []
+        elif isinstance(raw_ideas, list):
+            # 리스트 형식: 정규화
+            self.global_ideas = []
+            for item in raw_ideas[:10]:  # 최대 10개
+                if isinstance(item, dict):
+                    name = str(item.get("name", "")).strip() or "Ideas"
+                    content = str(item.get("content", "") or "")
+                    self.global_ideas.append({"name": name, "content": content})
+                elif isinstance(item, str):
+                    # 문자열이면 이름 자동 생성
+                    self.global_ideas.append({"name": f"Ideas {len(self.global_ideas) + 1}", "content": item})
+        else:
+            self.global_ideas = []
 
         self._parse_categories_items(self.data)
         self._ensure_integrity()
 
-    def save(self) -> bool:
+    def save(self) -> Tuple[bool, Optional[str]]:
+        """
+        데이터 저장
+        Returns: (success: bool, error_message: Optional[str])
+        """
+        # 저장 전 데이터 정규화 및 무결성 검증
+        self._ensure_integrity()
+        
+        # 데이터 직렬화
         self.data["version"] = "0.6.0"
         self.data["updated_at"] = _now_epoch()
-        self.data["ui_state"] = self.ui_state
-        self.data["global_ideas"] = self.global_ideas
+        self.data["ui_state"] = self.ui_state.copy() if isinstance(self.ui_state, dict) else {}
+        self.data["global_ideas"] = self.global_ideas.copy() if isinstance(self.global_ideas, list) else []
         self.data["root_category_ids"] = list(self.root_category_ids)
-        self.data["categories"] = [self._serialize_category(self.categories[cid]) for cid in self._all_category_ids_in_stable_order()]
-        self.data["items"] = [self._serialize_item(self.items[iid]) for iid in self._all_item_ids_in_stable_order()]
-        ok = _safe_write_json(self.db_path, self.data)
-        return ok
+        
+        # 카테고리 및 아이템 직렬화 (예외 처리)
+        try:
+            self.data["categories"] = [self._serialize_category(self.categories[cid]) for cid in self._all_category_ids_in_stable_order()]
+        except Exception as e:
+            return False, f"Failed to serialize categories: {str(e)}"
+        
+        try:
+            self.data["items"] = [self._serialize_item(self.items[iid]) for iid in self._all_item_ids_in_stable_order()]
+        except Exception as e:
+            return False, f"Failed to serialize items: {str(e)}"
+        
+        # 안전한 저장 (백업 포함)
+        return _safe_write_json(self.db_path, self.data, create_backup=True)
 
     def _parse_categories_items(self, raw: Dict[str, Any]) -> None:
         self.categories = {}
@@ -2071,11 +2354,11 @@ class MainWindow(QMainWindow):
 
         nav_widget = QWidget()
         nav_flow = FlowLayout(nav_widget, margin=0, spacing=6)
-        self.btn_prev = QToolButton(); self.btn_prev.setText("◀"); self.btn_prev.clicked.connect(self.go_prev_page)
+        self.btn_prev = QToolButton(); self.btn_prev.setText("◀"); self.btn_prev.setFixedSize(32, 26); self.btn_prev.setToolTip("Previous Page"); self.btn_prev.clicked.connect(self.go_prev_page)
         self.lbl_page = QLabel("0 / 0"); self.lbl_page.setAlignment(Qt.AlignCenter); self.lbl_page.setMinimumWidth(80)
-        self.btn_next = QToolButton(); self.btn_next.setText("▶"); self.btn_next.clicked.connect(self.go_next_page)
-        self.btn_add_page = QToolButton(); self.btn_add_page.setText("+ Page"); self.btn_add_page.clicked.connect(self.add_page)
-        self.btn_del_page = QToolButton(); self.btn_del_page.setText("Del Page"); self.btn_del_page.clicked.connect(self.delete_page)
+        self.btn_next = QToolButton(); self.btn_next.setText("▶"); self.btn_next.setFixedSize(32, 26); self.btn_next.setToolTip("Next Page"); self.btn_next.clicked.connect(self.go_next_page)
+        self.btn_add_page = QToolButton(); self.btn_add_page.setText("+"); self.btn_add_page.setFixedSize(32, 26); self.btn_add_page.setToolTip("Add Page"); self.btn_add_page.clicked.connect(self.add_page)
+        self.btn_del_page = QToolButton(); self.btn_del_page.setText("×"); self.btn_del_page.setFixedSize(32, 26); self.btn_del_page.setToolTip("Delete Page"); self.btn_del_page.clicked.connect(self.delete_page)
         for w in [self.btn_prev, self.lbl_page, self.btn_next, self.btn_add_page, self.btn_del_page]:
             nav_flow.addWidget(w)
         img_layout.addWidget(nav_widget)
@@ -2162,8 +2445,30 @@ class MainWindow(QMainWindow):
         self.btn_list_indent.clicked.connect(self._indent_list)
         self.btn_list_outdent.clicked.connect(self._outdent_list)
 
-        self.btn_ideas = QToolButton(); self.btn_ideas.setText("Ideas"); self.btn_ideas.setCheckable(True)
+        self.btn_ideas = QToolButton(); self.btn_ideas.setText("💡 Ideas"); self.btn_ideas.setCheckable(True)
+        self.btn_ideas.setFixedSize(100, 32)  # 더 크고 부각되도록
         self.btn_ideas.setToolTip("Toggle Global Ideas panel (전역 아이디어)")
+        self.btn_ideas.setStyleSheet("""
+            QToolButton {
+                font-weight: 600;
+                font-size: 10pt;
+                background: #F0F0F0;
+                border: 2px solid #CCCCCC;
+                border-radius: 6px;
+            }
+            QToolButton:hover {
+                background: #E8E8E8;
+                border: 2px solid #999999;
+            }
+            QToolButton:checked {
+                background: #E3F2FD;
+                border: 2px solid #2196F3;
+                color: #1976D2;
+            }
+            QToolButton:checked:hover {
+                background: #BBDEFB;
+            }
+        """)
         self.btn_ideas.toggled.connect(self._on_toggle_ideas)
 
         row1 = QWidget(); r1 = QHBoxLayout(row1); r1.setContentsMargins(0,0,0,0); r1.setSpacing(6)
@@ -2290,15 +2595,38 @@ class MainWindow(QMainWindow):
         ideas_l = QVBoxLayout(self.ideas_panel)
         ideas_l.setContentsMargins(10,10,10,10)
         ideas_l.setSpacing(6)
+        
+        # Ideas 탭 위젯
+        self.ideas_tabs = QTabWidget()
+        self.ideas_tabs.setTabsClosable(False)  # X 버튼 제거
+        self.ideas_tabs.currentChanged.connect(self._on_ideas_tab_changed)
+        
+        # 탭 추가/삭제 버튼 (page 추가/삭제와 동일한 스타일)
+        ideas_header = QWidget()
+        ideas_header_l = QHBoxLayout(ideas_header)
+        ideas_header_l.setContentsMargins(0, 0, 0, 0)
+        ideas_header_l.setSpacing(6)
         self.lbl_ideas = QLabel("Global Ideas"); self.lbl_ideas.setStyleSheet("font-weight: 700;")
-        ideas_l.addWidget(self.lbl_ideas)
-        self.edit_global_ideas = QTextEdit()
-        self.edit_global_ideas.setPlaceholderText("전역적으로 적용할 아이디어를 여기에 작성하세요... (서식/색상 가능)")
-        self.edit_global_ideas.textChanged.connect(self._on_page_field_changed)
-        self.edit_global_ideas.installEventFilter(self)
-        self.edit_global_ideas.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
-        self.edit_global_ideas.setTabChangesFocus(False)
-        ideas_l.addWidget(self.edit_global_ideas, 1)
+        ideas_header_l.addWidget(self.lbl_ideas)
+        ideas_header_l.addStretch()
+        self.btn_del_ideas_tab = QToolButton()
+        self.btn_del_ideas_tab.setText("−")
+        self.btn_del_ideas_tab.setFixedSize(32, 26)
+        self.btn_del_ideas_tab.setToolTip("Delete Current Tab (현재 탭 삭제)")
+        self.btn_del_ideas_tab.clicked.connect(self._on_delete_current_ideas_tab)
+        self.btn_add_ideas_tab = QToolButton()
+        self.btn_add_ideas_tab.setText("+")
+        self.btn_add_ideas_tab.setFixedSize(32, 26)
+        self.btn_add_ideas_tab.setToolTip("Add Ideas Tab (최대 10개)")
+        self.btn_add_ideas_tab.clicked.connect(self._on_add_ideas_tab)
+        ideas_header_l.addWidget(self.btn_del_ideas_tab)
+        ideas_header_l.addWidget(self.btn_add_ideas_tab)
+        
+        ideas_l.addWidget(ideas_header)
+        ideas_l.addWidget(self.ideas_tabs, 1)
+        
+        # Ideas 탭 데이터 저장
+        self.ideas_tab_editors: List[QTextEdit] = []  # 각 탭의 QTextEdit 저장
 
         self.notes_ideas_splitter.addWidget(self.notes_left)
         self.notes_ideas_splitter.addWidget(self.ideas_panel)
@@ -2974,24 +3302,32 @@ class MainWindow(QMainWindow):
 
     # ---------------- Safe save wrapper ----------------
     def _save_db_with_warning(self) -> bool:
-        ok = self.db.save()
+        ok, error_msg = self.db.save()
         if ok:
             return True
+        
+        # 저장 실패 시 상세한 에러 로그 및 경고
         now = time.time()
         if (now - self._last_save_warn_ts) >= self._save_warn_cooldown_sec:
             self._last_save_warn_ts = now
-            self.trace("Save failed (possible file lock). autosave may have been created.", "WARN")
-            QMessageBox.warning(
-                self,
-                "Save warning",
-                "JSON 저장에 실패했습니다(파일이 다른 프로그램에 의해 잠겼을 수 있습니다).\n\n"
-                "조치:\n"
-                "- VS Code에서 data/notes_db.json 탭을 닫거나 JSON Viewer/Preview 확장이 파일을 잡고 있지 않은지 확인\n"
-                "- 앱이 2개 실행 중인지 확인\n"
-                "- OneDrive/백신 실시간 감시가 잠깐 락을 거는 경우 잠시 후 자동 저장 재시도\n\n"
-                "데이터 보호:\n"
-                "- data 폴더에 notes_db.json.autosave.<timestamp>.json 파일이 생성되었을 수 있습니다."
-            )
+            
+            # 상세한 에러 로그
+            error_detail = error_msg or "Unknown error"
+            self.trace(f"Save failed: {error_detail}", "WARN")
+            
+            # 사용자에게 상세한 경고 메시지 표시
+            warning_msg = "JSON 저장에 실패했습니다.\n\n"
+            warning_msg += f"오류: {error_detail}\n\n"
+            warning_msg += "조치:\n"
+            warning_msg += "- VS Code에서 data/notes_db.json 탭을 닫거나 JSON Viewer/Preview 확장이 파일을 잡고 있지 않은지 확인\n"
+            warning_msg += "- 앱이 2개 실행 중인지 확인\n"
+            warning_msg += "- OneDrive/백신 실시간 감시가 잠깐 락을 거는 경우 잠시 후 자동 저장 재시도\n"
+            warning_msg += "- 데이터 크기가 너무 큰 경우 일부 데이터를 정리하세요\n\n"
+            warning_msg += "데이터 보호:\n"
+            warning_msg += "- data/backups 폴더에 백업 파일이 생성되었을 수 있습니다\n"
+            warning_msg += "- data 폴더에 notes_db.json.autosave.<timestamp>.json 파일이 생성되었을 수 있습니다"
+            
+            QMessageBox.warning(self, "Save warning", warning_msg)
         return False
 
     # ---------------- Page load/save ----------------
@@ -3214,9 +3550,9 @@ class MainWindow(QMainWindow):
         pg = self.current_page()
         if not it or not pg or self._loading_ui:
             try:
-                new_global = _strip_highlight_html(self.edit_global_ideas.toHtml())
-                if self.db.global_ideas != new_global:
-                    self.db.global_ideas = new_global
+                new_global_ideas = self._collect_ideas_tabs_from_ui()
+                if self.db.global_ideas != new_global_ideas:
+                    self.db.global_ideas = new_global_ideas
                     self._save_ui_state()
                     self._save_db_with_warning()
             except Exception:
@@ -3224,9 +3560,10 @@ class MainWindow(QMainWindow):
             return
 
         changed = False
-        new_global = _strip_highlight_html(self.edit_global_ideas.toHtml())
-        if self.db.global_ideas != new_global:
-            self.db.global_ideas = new_global
+        # Ideas 탭들 수집
+        new_global_ideas = self._collect_ideas_tabs_from_ui()
+        if self.db.global_ideas != new_global_ideas:
+            self.db.global_ideas = new_global_ideas
             changed = True
 
         capA = self._pane_ui.get("A", {}).get("cap")
@@ -3290,12 +3627,115 @@ class MainWindow(QMainWindow):
         self.btn_del_page.setEnabled(total > 1)
 
     def _load_global_ideas_to_ui(self) -> None:
+        """Ideas 탭들을 UI에 로드"""
         self._loading_ui = True
         try:
-            val = _strip_highlight_html(self.db.global_ideas or "")
-            self.edit_global_ideas.setHtml(val) if _looks_like_html(val) else self.edit_global_ideas.setPlainText(val)
+            # 기존 탭들 모두 제거
+            self._clear_ideas_tabs()
+            
+            # 데이터에서 탭들 로드
+            if not self.db.global_ideas:
+                # 탭이 없으면 기본 탭 하나 생성
+                self._add_ideas_tab_ui("Ideas 1", "")
+            else:
+                for idea in self.db.global_ideas:
+                    name = str(idea.get("name", "")).strip() or "Ideas"
+                    content = str(idea.get("content", "") or "")
+                    self._add_ideas_tab_ui(name, content)
         finally:
             self._loading_ui = False
+    
+    def _add_ideas_tab_ui(self, name: str, content: str) -> None:
+        """Ideas 탭 UI 추가"""
+        if len(self.ideas_tab_editors) >= 10:
+            QMessageBox.warning(self, "최대 개수", "Ideas 탭은 최대 10개까지 추가할 수 있습니다.")
+            return
+        
+        tab_widget = QWidget()
+        tab_layout = QVBoxLayout(tab_widget)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+        
+        editor = QTextEdit()
+        editor.setPlaceholderText("전역적으로 적용할 아이디어를 여기에 작성하세요... (서식/색상 가능)")
+        if content:
+            editor.setHtml(content) if _looks_like_html(content) else editor.setPlainText(content)
+        editor.textChanged.connect(self._on_page_field_changed)
+        editor.installEventFilter(self)
+        editor.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
+        editor.setTabChangesFocus(False)
+        
+        tab_layout.addWidget(editor)
+        self.ideas_tab_editors.append(editor)
+        
+        tab_index = self.ideas_tabs.addTab(tab_widget, name)
+        self.ideas_tabs.setCurrentIndex(tab_index)
+    
+    def _on_add_ideas_tab(self) -> None:
+        """Ideas 탭 추가"""
+        if len(self.ideas_tab_editors) >= 10:
+            QMessageBox.warning(self, "최대 개수", "Ideas 탭은 최대 10개까지 추가할 수 있습니다.")
+            return
+        
+        tab_num = len(self.ideas_tab_editors) + 1
+        name = f"Ideas {tab_num}"
+        self._add_ideas_tab_ui(name, "")
+    
+    def _on_delete_current_ideas_tab(self) -> None:
+        """현재 선택된 Ideas 탭 삭제"""
+        current_index = self.ideas_tabs.currentIndex()
+        if current_index < 0:
+            return
+        
+        if len(self.ideas_tab_editors) <= 1:
+            QMessageBox.warning(self, "최소 개수", "Ideas 탭은 최소 1개는 유지해야 합니다.")
+            return
+        
+        if 0 <= current_index < len(self.ideas_tab_editors):
+            # 탭 이름 가져오기
+            tab_name = self.ideas_tabs.tabText(current_index)
+            
+            # 사용자 확인
+            reply = QMessageBox.question(
+                self,
+                "탭 삭제 확인",
+                f"'{tab_name}' 탭을 삭제하시겠습니까?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.ideas_tab_editors.pop(current_index)
+                self.ideas_tabs.removeTab(current_index)
+                
+                # 삭제 후 현재 탭이 유효한지 확인하고 활성 편집기 설정
+                new_index = self.ideas_tabs.currentIndex()
+                if 0 <= new_index < len(self.ideas_tab_editors):
+                    self._set_active_rich_edit(self.ideas_tab_editors[new_index])
+                
+                self._on_page_field_changed()
+    
+    def _on_ideas_tab_changed(self, index: int) -> None:
+        """Ideas 탭 변경 시"""
+        if 0 <= index < len(self.ideas_tab_editors):
+            self._set_active_rich_edit(self.ideas_tab_editors[index])
+    
+    def _clear_ideas_tabs(self) -> None:
+        """Ideas 탭들 모두 제거"""
+        while self.ideas_tabs.count() > 0:
+            self.ideas_tabs.removeTab(0)
+        self.ideas_tab_editors.clear()
+    
+    def _collect_ideas_tabs_from_ui(self) -> List[Dict[str, str]]:
+        """Ideas 탭들에서 데이터 수집"""
+        out: List[Dict[str, str]] = []
+        for i in range(self.ideas_tabs.count()):
+            name = self.ideas_tabs.tabText(i)
+            if i < len(self.ideas_tab_editors):
+                editor = self.ideas_tab_editors[i]
+                content = _strip_highlight_html(editor.toHtml())
+                out.append({"name": name, "content": content})
+        return out
 
     # ---------------- Page navigation ----------------
     def go_prev_page(self) -> None:
