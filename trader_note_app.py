@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QMainWindow, QMessageBox, QShortcut, QSplitter, QTextEdit, QToolButton,
     QVBoxLayout, QHBoxLayout, QWidget, QInputDialog, QComboBox, QCheckBox, QGroupBox, QPushButton,
     QLayout, QWidgetItem, QFrame, QTreeWidget, QTreeWidgetItem, QMenu, QPlainTextEdit,
-    QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget
+    QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget, QStyle
 )
 
 APP_TITLE = "Trader Chart Note (v0.6.0)"
@@ -2109,6 +2109,10 @@ class MainWindow(QMainWindow):
     def _refresh_nav_tree(self, select_current: bool = False) -> None:
         self.nav_tree.blockSignals(True)
         self.nav_tree.clear()
+        
+        # 표준 아이콘 준비
+        folder_icon = self.style().standardIcon(QStyle.SP_DirIcon)
+        file_icon = self.style().standardIcon(QStyle.SP_FileIcon)
 
         item_to_qitem: Dict[str, QTreeWidgetItem] = {}
         cat_to_qitem: Dict[str, QTreeWidgetItem] = {}
@@ -2121,6 +2125,10 @@ class MainWindow(QMainWindow):
             q.setData(0, self.NODE_TYPE_ROLE, "category")
             q.setData(0, self.CATEGORY_ID_ROLE, c.id)
             q.setFlags(q.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            
+            # ✅ Folder icon
+            q.setIcon(0, folder_icon)
+            
             if parent_q is None:
                 self.nav_tree.addTopLevelItem(q)
             else:
@@ -2135,6 +2143,10 @@ class MainWindow(QMainWindow):
                 qi.setData(0, self.NODE_TYPE_ROLE, "item")
                 qi.setData(0, self.ITEM_ID_ROLE, it.id)
                 qi.setFlags(qi.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                
+                # ✅ Item(File) icon
+                qi.setIcon(0, file_icon)
+                
                 q.addChild(qi)
                 item_to_qitem[it.id] = qi
 
