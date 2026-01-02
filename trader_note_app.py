@@ -2,76 +2,42 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.9.0  (2026-01-01)
+Version: 0.10.2  (2026-01-01)
 
-v0.9.0 변경 사항:
-- 데이터 저장 안정성 종합 개선
-  AS-IS: 기본적인 저장/로드 기능만 존재
+v0.10.2 변경 사항:
+- 트리 확장/축소 상태 저장 및 복원 기능
+  AS-IS: 앱 재시작 시 트리 확장 상태가 초기화됨
   TO-BE:
-    - 저장 전 JSON 직렬화 검증 추가
-    - 저장 전 데이터 크기 확인 (최대 50MB)
-    - 자동 백업 메커니즘 (저장 전 백업 생성, 최근 10개 유지)
-    - 백업에서 자동 복구 기능 (데이터 손상 시)
-    - 상세한 에러 로깅 및 사용자 경고 메시지
-    - 저장 실패 시 상세한 오류 정보 제공
-    - 데이터 직렬화 예외 처리 강화
-    - 저장 전 데이터 무결성 검증 강화
+    - 트리 확장/축소 시 자동으로 상태 저장
+    - 앱 재시작 시 이전 확장 상태 자동 복원
+    - `ui_state["tree_expanded_categories"]`에 확장된 카테고리 ID 목록 저장
+- ROOT 폴더 보호 강화
+  AS-IS: ROOT 폴더가 UI에서만 삭제/이름 변경 방지
+  TO-BE:
+    - ROOT 폴더 고정 ID (`__ROOT__`) 사용
+    - 모든 삭제 경로에서 ROOT 폴더 보호 (방어적 프로그래밍)
+    - ROOT 폴더는 항상 첫 번째로 표시
+- 더블 클릭 크래시 수정 및 예외 처리 강화
+  AS-IS: 트리 아이템 더블 클릭 시 크래시 발생
+  TO-BE:
+    - 더블 클릭 이벤트 핸들러 추가 (`_on_tree_item_double_clicked`)
+    - 선택 변경 이벤트에 예외 처리 추가
+    - 아이템 페이지가 없는 경우 자동 생성
+- 폴더 확장/축소 기능 개선
+  AS-IS: 폴더 클릭/더블 클릭 시 확장/축소가 동작하지 않음
+  TO-BE:
+    - `ExpandableTreeWidget` 커스텀 클래스 추가
+    - 아이콘 영역(왼쪽 20px) 클릭 시 확장/축소
+    - 단일 클릭 및 더블 클릭 모두 지원
 
-v0.8.3 변경 사항:
-- Ideas (Global) 탭 기능 추가
-  AS-IS: 단일 Ideas 영역만 존재 (하나의 텍스트 편집기)
+v0.10.1 변경 사항:
+- 아이템 이름 충돌 방지 개선
+  AS-IS: 이미지 저장 시 `{아이템이름}_{ID일부}` 형식 사용 (이론적 충돌 가능성)
   TO-BE:
-    - QTabWidget으로 여러 Ideas 탭 관리 (최대 10개)
-    - 각 탭마다 독립적인 텍스트 편집기 (서식/색상 가능)
-    - 탭 추가 버튼 ("+ Tab")
-    - 탭 삭제 기능 (상단 삭제 버튼, 최소 1개 유지, 확인 다이얼로그)
-    - 데이터 구조 변경: global_ideas를 리스트로 변경 [{"name": str, "content": str}, ...]
-    - 기존 문자열 형식과 호환 (자동 변환)
-    - 추가/삭제 버튼을 page 버튼과 동일한 스타일로 변경 ("+", "−")
-
-v0.8.2 변경 사항:
-- Ideas (Global) 버튼 UI 개선
-  AS-IS: Ideas 버튼이 작고 눈에 띄지 않음 ("Ideas" 텍스트만)
-  TO-BE:
-    - Ideas 버튼 크기 증가 (100x32px)
-    - 아이콘 추가 ("💡 Ideas")
-    - 스타일 개선 (배경색, 테두리, 호버 효과)
-    - 체크 상태 시 파란색 강조 표시
-    - Description 상단 우측에 배치 (전역 참고 내용임을 강조)
-
-v0.8.1 변경 사항:
-- 페이지 네비게이션 버튼 UI 개선
-  AS-IS: 페이지 추가/삭제 버튼이 텍스트 버튼 ("+ Page", "Del Page")
-  TO-BE:
-    - 페이지 추가 버튼을 아이콘 버튼으로 변경 ("+")
-    - 페이지 삭제 버튼을 아이콘 버튼으로 변경 ("×")
-    - 모든 네비게이션 버튼 크기 통일 (32x26px)
-    - 모든 버튼에 툴팁 추가
-    - 이전/다음 버튼과 스타일 통일
-
-v0.8.0 변경 사항:
-- 리스트 기능 개선
-  AS-IS: 리스트 생성만 가능, 상태 표시 없음, 제거 기능 없음
-  TO-BE:
-    - 리스트 버튼을 checkable로 변경하여 현재 리스트 상태 표시
-    - 리스트 토글 기능: 리스트 안에 있으면 제거, 없으면 생성
-    - 리스트 제거 버튼 추가 (×)
-    - 리스트 들여쓰기/내어쓰기 버튼 추가 (→/←)
-    - Tab/Shift+Tab 키로 리스트 들여쓰기/내어쓰기 지원
-    - _sync_format_buttons에 리스트 상태 동기화 추가
-    - 커서 위치에 따라 리스트 버튼 자동 활성화/비활성화
-    - 리스트 들여쓰기 간격을 15px로 축소 (기존보다 작게)
-    - 개별 리스트 항목만 들여쓰기되도록 개선 (같은 리스트의 다른 항목 영향 없음)
-
-v0.7.9 변경 사항:
-- Custom Checklist 탭 추가
-  AS-IS: 기본 Checklist만 존재 (고정된 4개 질문)
-  TO-BE:
-    - QTabWidget으로 "기본 Checklist"와 "Custom Checklist" 탭 분리
-    - Custom Checklist에서 사용자가 자유롭게 항목 추가/삭제/편집 가능
-    - 각 Custom 항목마다 체크박스, 질문 입력, 설명 입력, 삭제 버튼 제공
-    - Custom Checklist 데이터는 페이지별로 독립적으로 저장
-    - 스크롤 가능한 영역으로 많은 항목 관리 가능
+    - 전체 UUID만 사용하여 폴더명 생성 (`it.id.replace("-", "_")`)
+    - UUID는 고유하므로 충돌 불가능
+    - 같은 이름의 아이템이 여러 폴더에 있어도 안전
+    - 파일시스템 호환성을 위해 하이픈을 언더스코어로 변경
 """
 
 import json
@@ -81,6 +47,8 @@ import shutil
 import sys
 import time
 import uuid
+import zipfile
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -98,12 +66,13 @@ from PyQt5.QtWidgets import (
     QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea
 )
 
-APP_TITLE = "Trader Chart Note (v0.9.0)"
+APP_TITLE = "Trader Chart Note (v0.10.2)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
 MAX_DATA_SIZE_MB = 50  # 최대 데이터 크기 (MB)
 ASSETS_DIR = "assets"
+ROOT_CATEGORY_ID = "__ROOT__"  # ROOT 폴더 고정 ID (삭제 불가)
 
 DEFAULT_CHECK_QUESTIONS = [
     "Q. 매집구간이 보이는가?",
@@ -789,47 +758,19 @@ class NoteDB:
 
     def _default_data(self) -> Dict[str, Any]:
         now = _now_epoch()
-        root_id = _uuid()
-        item_id = _uuid()
-        page_id = _uuid()
 
         return {
             "version": "0.6.0",
             "created_at": now,
             "updated_at": now,
-            "root_category_ids": [root_id],
+            "root_category_ids": [ROOT_CATEGORY_ID],
             "categories": [
-                {"id": root_id, "name": "General", "parent_id": None, "child_ids": [], "item_ids": [item_id]}
+                {"id": ROOT_CATEGORY_ID, "name": "ROOT", "parent_id": None, "child_ids": [], "item_ids": []}
             ],
-            "items": [
-                {
-                    "id": item_id,
-                    "name": "Item 1",
-                    "category_id": root_id,
-                    "last_page_index": 0,
-                    "pages": [
-                        {
-                            "id": page_id,
-                            "image_a_path": "",
-                            "image_b_path": "",
-                            "image_a_caption": "",
-                            "image_b_caption": "",
-                            "strokes_a": [],
-                            "strokes_b": [],
-                            "note_text": "",
-                            "stock_name": "",
-                            "ticker": "",
-                            "checklist": _default_checklist(),
-                            "custom_checklist": _default_custom_checklist(),
-                            "created_at": now,
-                            "updated_at": now,
-                        }
-                    ],
-                }
-            ],
+            "items": [],
             "ui_state": {
-                "selected_category_id": root_id,
-                "selected_item_id": item_id,
+                "selected_category_id": ROOT_CATEGORY_ID,
+                "selected_item_id": "",
                 "current_page_index": 0,
                 "global_ideas_visible": False,
                 "desc_visible": True,
@@ -838,38 +779,82 @@ class NoteDB:
                 "trace_visible": True,
                 "right_vsplit_sizes": None,
             },
-            "global_ideas": "",
+            "global_ideas": [],
         }
 
     def load(self) -> None:
         """데이터 로드 (에러 처리 및 복구 로직 포함)"""
+        print(f"[DEBUG] load() 시작 - db_path: {self.db_path}, 존재: {os.path.exists(self.db_path)}")
+        
+        # 이전 형식 데이터가 있으면 초기화
         if os.path.exists(self.db_path):
             try:
                 with open(self.db_path, "r", encoding="utf-8") as f:
-                    self.data = json.load(f)
+                    temp_data = json.load(f)
                 
-                # 로드된 데이터 검증
-                if not isinstance(self.data, dict):
-                    raise ValueError("Data is not a dictionary")
+                # 이전 형식("root" 객체)이면 초기화
+                if isinstance(temp_data, dict) and "root" in temp_data:
+                    print(f"[DEBUG] 이전 형식 데이터 감지 - 초기화")
+                    self._initialize_db()
+                    return
                 
+                # 현재 형식이면 정상 로드
+                if isinstance(temp_data, dict) and "categories" in temp_data:
+                    self.data = temp_data
+                    print(f"[DEBUG] JSON 로드 성공 - categories: {len(self.data.get('categories', []))}, items: {len(self.data.get('items', []))}")
+                else:
+                    print(f"[DEBUG] 잘못된 형식 - 초기화")
+                    self._initialize_db()
+                    return
+                    
             except json.JSONDecodeError as e:
-                # JSON 파싱 오류: 백업 파일에서 복구 시도
-                self.data = {}
-                backup_restored = self._try_restore_from_backup()
-                if not backup_restored:
-                    # 백업 복구 실패 시 기본 데이터 사용
-                    self.data = self._default_data()
+                print(f"[DEBUG] JSON 파싱 오류: {str(e)} - 초기화")
+                self._initialize_db()
+                return
             except Exception as e:
-                # 기타 오류: 백업에서 복구 시도
-                self.data = {}
-                backup_restored = self._try_restore_from_backup()
-                if not backup_restored:
-                    self.data = self._default_data()
+                print(f"[DEBUG] 로드 오류: {str(e)} - 초기화")
+                self._initialize_db()
+                return
         else:
-            self.data = {}
+            print(f"[DEBUG] 파일 없음 - 초기화")
+            self._initialize_db()
+            return
 
-        if not self.data:
-            self.data = self._default_data()
+        # 데이터 파싱
+        self._parse_categories_items(self.data)
+        print(f"[DEBUG] _parse_categories_items() 완료 - categories: {len(self.categories)}, items: {len(self.items)}, root_category_ids: {self.root_category_ids}")
+        
+        self._ensure_integrity()
+        print(f"[DEBUG] _ensure_integrity() 완료 - root_category_ids: {self.root_category_ids}")
+        
+        # UI state 로드
+        self.ui_state = self.data.get("ui_state", {})
+        if not isinstance(self.ui_state, dict):
+            self.ui_state = {}
+        print(f"[DEBUG] ui_state 로드 완료 - tree_expanded_categories: {self.ui_state.get('tree_expanded_categories', [])}")
+        
+        # global_ideas 로드
+        ideas_raw = self.data.get("global_ideas", [])
+        if isinstance(ideas_raw, list):
+            self.global_ideas = ideas_raw
+        elif isinstance(ideas_raw, str):
+            # 이전 형식 (문자열)이면 빈 리스트로 초기화
+            self.global_ideas = []
+        else:
+            self.global_ideas = []
+    
+    def _initialize_db(self) -> None:
+        """DB를 기본 데이터로 초기화"""
+        print(f"[DEBUG] DB 초기화 시작")
+        self.data = self._default_data()
+        self._parse_categories_items(self.data)
+        self._ensure_integrity()
+        # 초기화 후 즉시 저장
+        ok, error = self.save()
+        if ok:
+            print(f"[DEBUG] DB 초기화 및 저장 성공")
+        else:
+            print(f"[DEBUG] DB 초기화 후 저장 실패: {error}")
     
     def _try_restore_from_backup(self) -> bool:
         """백업 파일에서 데이터 복구 시도"""
@@ -911,84 +896,76 @@ class NoteDB:
         except Exception:
             return False
 
-        self.ui_state = self.data.get("ui_state", {})
-        if not isinstance(self.ui_state, dict):
-            self.ui_state = {}
-
-        self.ui_state.setdefault("selected_category_id", "")
-        self.ui_state.setdefault("selected_item_id", "")
-        self.ui_state.setdefault("current_page_index", 0)
-        self.ui_state.setdefault("global_ideas_visible", False)
-        self.ui_state.setdefault("desc_visible", True)
-        self.ui_state.setdefault("page_splitter_sizes", None)
-        self.ui_state.setdefault("notes_splitter_sizes", None)
-        self.ui_state.setdefault("trace_visible", True)
-        self.ui_state.setdefault("right_vsplit_sizes", None)
-
-        # global_ideas를 리스트로 로드 (기존 문자열 형식도 호환)
-        raw_ideas = self.data.get("global_ideas", [])
-        if isinstance(raw_ideas, str):
-            # 기존 문자열 형식: 첫 번째 탭으로 변환
-            if raw_ideas.strip():
-                self.global_ideas = [{"name": "Ideas 1", "content": raw_ideas}]
-            else:
-                self.global_ideas = []
-        elif isinstance(raw_ideas, list):
-            # 리스트 형식: 정규화
-            self.global_ideas = []
-            for item in raw_ideas[:10]:  # 최대 10개
-                if isinstance(item, dict):
-                    name = str(item.get("name", "")).strip() or "Ideas"
-                    content = str(item.get("content", "") or "")
-                    self.global_ideas.append({"name": name, "content": content})
-                elif isinstance(item, str):
-                    # 문자열이면 이름 자동 생성
-                    self.global_ideas.append({"name": f"Ideas {len(self.global_ideas) + 1}", "content": item})
-        else:
-            self.global_ideas = []
-
-        self._parse_categories_items(self.data)
-        self._ensure_integrity()
 
     def save(self) -> Tuple[bool, Optional[str]]:
         """
         데이터 저장
         Returns: (success: bool, error_message: Optional[str])
         """
+        print(f"[DEBUG] save() 시작 - db_path: {self.db_path}")
+        print(f"[DEBUG] 저장 전 상태 - categories: {len(self.categories)}, items: {len(self.items)}, root_category_ids: {len(self.root_category_ids)}")
+        
         # 저장 전 데이터 정규화 및 무결성 검증
         self._ensure_integrity()
+        print(f"[DEBUG] _ensure_integrity() 완료 - root_category_ids: {self.root_category_ids}")
+        
+        # self.data 초기화 (없으면 빈 dict로 시작)
+        if not isinstance(self.data, dict):
+            self.data = {}
         
         # 데이터 직렬화
         self.data["version"] = "0.6.0"
+        if "created_at" not in self.data:
+            self.data["created_at"] = _now_epoch()
         self.data["updated_at"] = _now_epoch()
         self.data["ui_state"] = self.ui_state.copy() if isinstance(self.ui_state, dict) else {}
         self.data["global_ideas"] = self.global_ideas.copy() if isinstance(self.global_ideas, list) else []
         self.data["root_category_ids"] = list(self.root_category_ids)
+        print(f"[DEBUG] 기본 데이터 설정 완료 - root_category_ids: {self.data['root_category_ids']}")
         
         # 카테고리 및 아이템 직렬화 (예외 처리)
         try:
-            self.data["categories"] = [self._serialize_category(self.categories[cid]) for cid in self._all_category_ids_in_stable_order()]
+            category_ids = self._all_category_ids_in_stable_order()
+            print(f"[DEBUG] 카테고리 직렬화 시작 - 개수: {len(category_ids)}")
+            self.data["categories"] = [self._serialize_category(self.categories[cid]) for cid in category_ids]
+            print(f"[DEBUG] 카테고리 직렬화 완료 - 저장된 개수: {len(self.data['categories'])}")
         except Exception as e:
+            print(f"[DEBUG] 카테고리 직렬화 실패: {str(e)}")
             return False, f"Failed to serialize categories: {str(e)}"
         
         try:
-            self.data["items"] = [self._serialize_item(self.items[iid]) for iid in self._all_item_ids_in_stable_order()]
+            item_ids = self._all_item_ids_in_stable_order()
+            print(f"[DEBUG] 아이템 직렬화 시작 - 개수: {len(item_ids)}")
+            self.data["items"] = [self._serialize_item(self.items[iid]) for iid in item_ids]
+            print(f"[DEBUG] 아이템 직렬화 완료 - 저장된 개수: {len(self.data['items'])}")
         except Exception as e:
+            print(f"[DEBUG] 아이템 직렬화 실패: {str(e)}")
             return False, f"Failed to serialize items: {str(e)}"
         
         # 안전한 저장 (백업 포함)
-        return _safe_write_json(self.db_path, self.data, create_backup=True)
+        print(f"[DEBUG] _safe_write_json() 호출 시작")
+        result = _safe_write_json(self.db_path, self.data, create_backup=True)
+        if result[0]:
+            print(f"[DEBUG] 저장 성공!")
+        else:
+            print(f"[DEBUG] 저장 실패: {result[1]}")
+        return result
 
     def _parse_categories_items(self, raw: Dict[str, Any]) -> None:
+        """카테고리와 아이템 파싱 (현재 형식만 지원)"""
         self.categories = {}
         self.items = {}
         self.root_category_ids = []
+        
+        print(f"[DEBUG] _parse_categories_items() 시작 - raw keys: {list(raw.keys())}")
 
         root_ids = raw.get("root_category_ids", [])
+        print(f"[DEBUG] _parse_categories_items() 시작 - root_ids from data: {root_ids}")
         if isinstance(root_ids, list):
             self.root_category_ids = [str(x) for x in root_ids if str(x)]
         else:
             self.root_category_ids = []
+        print(f"[DEBUG] root_category_ids 파싱 완료: {self.root_category_ids}")
 
         cats = raw.get("categories", [])
         if isinstance(cats, list):
@@ -1088,6 +1065,97 @@ class NoteDB:
             "item_ids": list(c.item_ids),
         }
 
+    def _migrate_old_format(self, old_data: Dict[str, Any]) -> Dict[str, Any]:
+        """이전 형식(중첩 구조)을 현재 형식(평면 구조)으로 마이그레이션"""
+        new_data = {
+            "version": old_data.get("version", "0.6.0"),
+            "created_at": old_data.get("created_at", _now_epoch()),
+            "updated_at": old_data.get("updated_at", _now_epoch()),
+            "root_category_ids": [],
+            "categories": [],
+            "items": [],
+            "ui_state": old_data.get("ui_state", {}),
+            "global_ideas": old_data.get("global_ideas", []),
+        }
+        
+        def extract_categories(cat_obj: Dict[str, Any], parent_id: Optional[str] = None) -> None:
+            """재귀적으로 카테고리 추출"""
+            cid = str(cat_obj.get("id", _uuid()))
+            name = str(cat_obj.get("name", "Folder")).strip() or "Folder"
+            
+            # 카테고리 추가
+            new_cat = {
+                "id": cid,
+                "name": name,
+                "parent_id": parent_id,
+                "child_ids": [],
+                "item_ids": [],
+            }
+            new_data["categories"].append(new_cat)
+            
+            # root 카테고리인 경우 root_category_ids에 추가
+            if parent_id is None:
+                new_data["root_category_ids"].append(cid)
+            
+            # 자식 카테고리 처리
+            child_cats = cat_obj.get("categories", [])
+            if isinstance(child_cats, list):
+                for child_cat in child_cats:
+                    child_id = str(child_cat.get("id", _uuid()))
+                    new_cat["child_ids"].append(child_id)
+                    extract_categories(child_cat, parent_id=cid)
+            
+            # 아이템 처리
+            items = cat_obj.get("items", [])
+            if isinstance(items, list):
+                for item in items:
+                    iid = str(item.get("id", _uuid()))
+                    new_cat["item_ids"].append(iid)
+                    
+                    # 아이템 추가 (category_id 설정)
+                    new_item = {
+                        "id": iid,
+                        "name": str(item.get("name", "Item")).strip() or "Item",
+                        "category_id": cid,
+                        "last_page_index": int(item.get("last_page_index", 0)),
+                        "pages": item.get("pages", []),
+                    }
+                    new_data["items"].append(new_item)
+        
+        # root 객체에서 시작
+        root_obj = old_data.get("root", {})
+        if root_obj:
+            root_cats = root_obj.get("categories", [])
+            if isinstance(root_cats, list):
+                for root_cat in root_cats:
+                    extract_categories(root_cat, parent_id=None)
+        
+        # root 객체의 items도 처리 (최상위 아이템)
+        root_items = root_obj.get("items", []) if root_obj else []
+        if isinstance(root_items, list) and root_items:
+            # root 아이템들을 위한 임시 카테고리 생성
+            temp_root_id = _uuid()
+            new_data["root_category_ids"].append(temp_root_id)
+            new_data["categories"].append({
+                "id": temp_root_id,
+                "name": "General",
+                "parent_id": None,
+                "child_ids": [],
+                "item_ids": [],
+            })
+            for item in root_items:
+                iid = str(item.get("id", _uuid()))
+                new_data["categories"][-1]["item_ids"].append(iid)
+                new_data["items"].append({
+                    "id": iid,
+                    "name": str(item.get("name", "Item")).strip() or "Item",
+                    "category_id": temp_root_id,
+                    "last_page_index": int(item.get("last_page_index", 0)),
+                    "pages": item.get("pages", []),
+                })
+        
+        return new_data
+
     def _ensure_integrity(self) -> None:
         # 카테고리가 없어도 허용 (사용자가 모든 폴더를 삭제할 수 있도록)
         # 초기 로드 시에만 _default_data()를 사용 (load() 함수에서 처리)
@@ -1096,12 +1164,67 @@ class NoteDB:
         #     self._parse_categories_items(base)
         #     self.root_category_ids = base["root_category_ids"]
 
+        # root_category_ids 복구: parent_id가 None인 카테고리 찾기
         if not self.root_category_ids:
             self.root_category_ids = [cid for cid, c in self.categories.items() if not c.parent_id]
+            # parent_id가 None인 카테고리가 없으면, 모든 카테고리 중 첫 번째를 root로 설정
             if not self.root_category_ids and self.categories:
                 self.root_category_ids = [next(iter(self.categories.keys()))]
+        
+        # ROOT 폴더가 없으면 자동 생성
+        if ROOT_CATEGORY_ID not in self.categories:
+            self.categories[ROOT_CATEGORY_ID] = Category(
+                id=ROOT_CATEGORY_ID,
+                name="ROOT",
+                parent_id=None,
+                child_ids=[],
+                item_ids=[]
+            )
+            print(f"[DEBUG] ROOT 폴더 자동 생성")
+        
+        # root_category_ids 검증: 저장된 root_category_ids가 실제로 존재하는지 확인
+        valid_root_ids = []
+        for rid in self.root_category_ids:
+            if rid in self.categories:
+                c = self.categories[rid]
+                # parent_id가 None이거나 parent가 존재하지 않으면 root로 인정
+                if not c.parent_id or c.parent_id not in self.categories:
+                    valid_root_ids.append(rid)
+        
+        # ROOT 폴더를 항상 첫 번째로 포함
+        if ROOT_CATEGORY_ID not in valid_root_ids:
+            valid_root_ids.insert(0, ROOT_CATEGORY_ID)
+        
+        # 유효한 root가 없으면 parent_id가 None인 카테고리를 찾아서 추가
+        if not valid_root_ids:
+            roots = [cid for cid, c in self.categories.items() if not c.parent_id]
+            if roots:
+                valid_root_ids = roots
+            elif self.categories:
+                # 모든 카테고리가 자식인 경우, 첫 번째 카테고리를 root로 설정
+                valid_root_ids = [next(iter(self.categories.keys()))]
+        
+        # ROOT 폴더를 항상 첫 번째로 보장
+        if ROOT_CATEGORY_ID in valid_root_ids:
+            valid_root_ids.remove(ROOT_CATEGORY_ID)
+            valid_root_ids.insert(0, ROOT_CATEGORY_ID)
+        else:
+            valid_root_ids.insert(0, ROOT_CATEGORY_ID)
+        
+        self.root_category_ids = valid_root_ids
 
+        # ROOT 폴더는 항상 parent_id가 None이어야 함
+        if ROOT_CATEGORY_ID in self.categories:
+            self.categories[ROOT_CATEGORY_ID].parent_id = None
+        
         for cid, c in self.categories.items():
+            # ROOT 폴더는 다른 폴더의 자식이 될 수 없음
+            if cid == ROOT_CATEGORY_ID:
+                c.parent_id = None
+            # ROOT 폴더를 자식으로 가질 수 없음
+            if ROOT_CATEGORY_ID in c.child_ids:
+                c.child_ids.remove(ROOT_CATEGORY_ID)
+            
             c.child_ids = [x for x in c.child_ids if x in self.categories and self.categories[x].parent_id == cid]
             c.item_ids = [x for x in c.item_ids if x in self.items and self.items[x].category_id == cid]
 
@@ -1141,8 +1264,16 @@ class NoteDB:
             for ch in self.categories[cid].child_ids:
                 dfs(ch)
 
+        # ROOT 폴더를 항상 첫 번째로 처리
+        if ROOT_CATEGORY_ID in self.categories:
+            dfs(ROOT_CATEGORY_ID)
+        
+        # 나머지 root 폴더들 처리
         for r in self.root_category_ids:
-            dfs(r)
+            if r != ROOT_CATEGORY_ID:
+                dfs(r)
+        
+        # 아직 처리되지 않은 카테고리들 처리
         for cid in self.categories.keys():
             if cid not in seen:
                 dfs(cid)
@@ -1221,6 +1352,10 @@ class NoteDB:
         c = self.categories.get(cid)
         if not c:
             return False
+        
+        # ROOT 폴더는 삭제 불가
+        if cid == ROOT_CATEGORY_ID:
+            return False
 
         # 루트 폴더인 경우 다른 루트 폴더로 이동, 없으면 빈 상태 허용
         parent_id = c.parent_id if c.parent_id in self.categories else None
@@ -1270,6 +1405,10 @@ class NoteDB:
 
     def delete_category_recursive(self, cid: str) -> bool:
         if cid not in self.categories:
+            return False
+        
+        # ROOT 폴더는 삭제 불가
+        if cid == ROOT_CATEGORY_ID:
             return False
 
         to_delete_cats: List[str] = []
@@ -1388,6 +1527,230 @@ class NoteDB:
         del self.items[iid]
         self._ensure_integrity()
         return True
+
+    def export_to_zip(self, zip_path: str) -> Tuple[bool, Optional[str]]:
+        """
+        전체 데이터를 ZIP 파일로 내보내기
+        Returns: (success: bool, error_message: Optional[str])
+        """
+        try:
+            # 1. 임시 디렉토리 생성
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            export_json_path = os.path.join(temp_dir, "notes_db.json")
+            
+            # 2. 현재 데이터를 JSON으로 저장
+            self._ensure_integrity()
+            self.data["version"] = "0.6.0"
+            self.data["updated_at"] = _now_epoch()
+            self.data["ui_state"] = self.ui_state.copy() if isinstance(self.ui_state, dict) else {}
+            self.data["global_ideas"] = self.global_ideas.copy() if isinstance(self.global_ideas, list) else []
+            self.data["root_category_ids"] = list(self.root_category_ids)
+            
+            try:
+                self.data["categories"] = [self._serialize_category(self.categories[cid]) for cid in self._all_category_ids_in_stable_order()]
+            except Exception as e:
+                return False, f"Failed to serialize categories: {str(e)}"
+            
+            try:
+                self.data["items"] = [self._serialize_item(self.items[iid]) for iid in self._all_item_ids_in_stable_order()]
+            except Exception as e:
+                return False, f"Failed to serialize items: {str(e)}"
+            
+            # JSON 파일 저장
+            with open(export_json_path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+            
+            # 3. 참조되는 모든 이미지 파일 수집
+            image_files = set()
+            for item in self.items.values():
+                for page in item.pages:
+                    if page.image_a_path:
+                        abs_path = _abspath_from_rel(page.image_a_path)
+                        if os.path.exists(abs_path):
+                            image_files.add((abs_path, page.image_a_path))
+                    if page.image_b_path:
+                        abs_path = _abspath_from_rel(page.image_b_path)
+                        if os.path.exists(abs_path):
+                            image_files.add((abs_path, page.image_b_path))
+            
+            # 4. ZIP 파일 생성
+            _ensure_dir(os.path.dirname(zip_path) or ".")
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # JSON 파일 추가
+                zipf.write(export_json_path, "notes_db.json")
+                
+                # 이미지 파일들 추가 (디렉토리 구조 유지)
+                for abs_path, rel_path in image_files:
+                    if os.path.exists(abs_path):
+                        zipf.write(abs_path, rel_path)
+            
+            # 5. 임시 디렉토리 정리
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+            
+            return True, None
+            
+        except Exception as e:
+            return False, f"Export failed: {str(e)}"
+
+    def import_from_zip(self, zip_path: str, merge_mode: bool = False) -> Tuple[bool, Optional[str]]:
+        """
+        ZIP 파일에서 데이터 가져오기
+        Args:
+            zip_path: ZIP 파일 경로
+            merge_mode: True면 병합, False면 덮어쓰기
+        Returns: (success: bool, error_message: Optional[str])
+        """
+        try:
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            
+            # 1. ZIP 파일 압축 해제
+            with zipfile.ZipFile(zip_path, 'r') as zipf:
+                zipf.extractall(temp_dir)
+            
+            # 2. JSON 파일 로드
+            json_path = os.path.join(temp_dir, "notes_db.json")
+            if not os.path.exists(json_path):
+                shutil.rmtree(temp_dir)
+                return False, "notes_db.json not found in ZIP file"
+            
+            with open(json_path, "r", encoding="utf-8") as f:
+                imported_data = json.load(f)
+            
+            if not isinstance(imported_data, dict):
+                shutil.rmtree(temp_dir)
+                return False, "Invalid JSON format"
+            
+            # 3. 이미지 파일들을 assets 폴더로 복사
+            assets_temp = os.path.join(temp_dir, ASSETS_DIR)
+            if os.path.exists(assets_temp):
+                for root, dirs, files in os.walk(assets_temp):
+                    for file in files:
+                        src_path = os.path.join(root, file)
+                        rel_path = os.path.relpath(src_path, temp_dir)
+                        dst_path = _abspath_from_rel(rel_path)
+                        _ensure_dir(os.path.dirname(dst_path) or ".")
+                        try:
+                            shutil.copy2(src_path, dst_path)
+                        except Exception:
+                            pass  # 이미 존재하는 파일은 무시
+            
+            # 4. 데이터 병합 또는 덮어쓰기
+            if merge_mode:
+                # 병합 모드: 기존 데이터에 추가 (ID 충돌 시 새 ID 생성)
+                self._merge_imported_data(imported_data)
+            else:
+                # 덮어쓰기 모드: 기존 데이터 완전 교체
+                self.data = imported_data
+                self._parse_categories_items(self.data)
+            
+            # 5. 무결성 검증
+            self._ensure_integrity()
+            
+            # 6. 임시 디렉토리 정리
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+            
+            return True, None
+            
+        except zipfile.BadZipFile:
+            return False, "Invalid ZIP file format"
+        except Exception as e:
+            return False, f"Import failed: {str(e)}"
+
+    def _merge_imported_data(self, imported_data: Dict[str, Any]) -> None:
+        """병합 모드: Import된 데이터를 기존 데이터에 병합"""
+        # ID 매핑 (기존 ID -> 새 ID)
+        category_id_map: Dict[str, str] = {}
+        item_id_map: Dict[str, str] = {}
+        
+        # 카테고리 병합
+        imported_categories = imported_data.get("categories", [])
+        for cat_data in imported_categories:
+            old_id = cat_data.get("id", "")
+            if not old_id:
+                continue
+            
+            # 기존에 같은 ID가 있으면 새 ID 생성
+            if old_id in self.categories:
+                new_id = _uuid()
+                category_id_map[old_id] = new_id
+                cat_data["id"] = new_id
+            else:
+                category_id_map[old_id] = old_id
+            
+            # parent_id 업데이트
+            parent_id = cat_data.get("parent_id")
+            if parent_id and parent_id in category_id_map:
+                cat_data["parent_id"] = category_id_map[parent_id]
+            elif parent_id and parent_id not in category_id_map:
+                # 부모가 import되지 않은 경우 None으로 설정
+                cat_data["parent_id"] = None
+            
+            # child_ids 업데이트
+            child_ids = cat_data.get("child_ids", [])
+            cat_data["child_ids"] = [category_id_map.get(cid, cid) for cid in child_ids if cid in category_id_map]
+        
+        # 아이템 병합
+        imported_items = imported_data.get("items", [])
+        for item_data in imported_items:
+            old_id = item_data.get("id", "")
+            if not old_id:
+                continue
+            
+            # 기존에 같은 ID가 있으면 새 ID 생성
+            if old_id in self.items:
+                new_id = _uuid()
+                item_id_map[old_id] = new_id
+                item_data["id"] = new_id
+            else:
+                item_id_map[old_id] = old_id
+            
+            # category_id 업데이트
+            cat_id = item_data.get("category_id", "")
+            if cat_id and cat_id in category_id_map:
+                item_data["category_id"] = category_id_map[cat_id]
+            elif cat_id:
+                # 카테고리가 import되지 않은 경우 root로 설정
+                root_id = self.root_category_ids[0] if self.root_category_ids else None
+                if root_id:
+                    item_data["category_id"] = root_id
+                else:
+                    continue  # root가 없으면 스킵
+            
+            # 페이지 내 이미지 경로는 그대로 유지 (이미 복사됨)
+        
+        # 병합된 데이터를 기존 데이터에 추가
+        existing_categories = [self._serialize_category(c) for c in self.categories.values()]
+        existing_items = [self._serialize_item(i) for i in self.items.values()]
+        
+        # 카테고리 병합
+        for cat_data in imported_categories:
+            existing_categories.append(cat_data)
+        
+        # 아이템 병합
+        for item_data in imported_items:
+            existing_items.append(item_data)
+        
+        # root_category_ids 업데이트
+        imported_root_ids = imported_data.get("root_category_ids", [])
+        for root_id in imported_root_ids:
+            mapped_id = category_id_map.get(root_id)
+            if mapped_id and mapped_id not in self.root_category_ids:
+                self.root_category_ids.append(mapped_id)
+        
+        # 데이터 업데이트
+        self.data["categories"] = existing_categories
+        self.data["items"] = existing_items
+        
+        # 파싱하여 메모리 구조 업데이트
+        self._parse_categories_items(self.data)
 
 
 # ---------------------------
@@ -1770,6 +2133,50 @@ class DescriptionToggleSplitter(QSplitter):
 
 
 # ---------------------------
+# Custom Tree Widget for expand/collapse on icon click
+# ---------------------------
+class ExpandableTreeWidget(QTreeWidget):
+    """아이콘 영역 클릭 시 확장/축소가 가능한 커스텀 트리 위젯"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._icon_click_pos = None  # 아이콘 클릭 위치 저장
+    
+    def _is_icon_area_click(self, pos):
+        """클릭 위치가 아이콘 영역인지 확인"""
+        icon_area_width = 20
+        return pos.x() < icon_area_width
+    
+    def mousePressEvent(self, event):
+        """마우스 클릭 시 아이콘 영역 클릭을 감지하여 확장/축소 처리"""
+        if event.button() == Qt.LeftButton:
+            item = self.itemAt(event.pos())
+            if item and item.childCount() > 0:
+                # 아이콘 영역 클릭: 확장/축소만 수행
+                if self._is_icon_area_click(event.pos()):
+                    self._icon_click_pos = event.pos()
+                    item.setExpanded(not item.isExpanded())
+                    return  # 선택 변경 없이 확장/축소만 수행
+        
+        self._icon_click_pos = None
+        # 기본 동작 수행 (선택 등)
+        super().mousePressEvent(event)
+    
+    def mouseDoubleClickEvent(self, event):
+        """더블 클릭 시 아이콘 영역 클릭을 감지하여 확장/축소 처리"""
+        if event.button() == Qt.LeftButton:
+            item = self.itemAt(event.pos())
+            if item and item.childCount() > 0:
+                # 아이콘 영역 클릭: 확장/축소만 수행
+                if self._is_icon_area_click(event.pos()):
+                    item.setExpanded(not item.isExpanded())
+                    return  # 선택 변경 없이 확장/축소만 수행
+        
+        # 기본 동작 수행 (선택 등)
+        super().mouseDoubleClickEvent(event)
+
+
+# ---------------------------
 # Main Window
 # ---------------------------
 class MainWindow(QMainWindow):
@@ -1785,6 +2192,12 @@ class MainWindow(QMainWindow):
         self.resize(1460, 960)
 
         self.db = NoteDB(DEFAULT_DB_PATH)
+        # 로드 후 데이터 상태 확인
+        self.trace(f"데이터 로드 완료 - categories: {len(self.db.categories)}, items: {len(self.db.items)}, root_category_ids: {len(self.db.root_category_ids)}", "DEBUG")
+        if not self.db.root_category_ids:
+            self.trace("경고: root_category_ids가 비어있습니다!", "WARN")
+        if len(self.db.categories) > 0 and len(self.db.root_category_ids) == 0:
+            self.trace("경고: 카테고리는 있지만 root_category_ids가 비어있습니다! _ensure_integrity가 실행되었는지 확인 필요", "WARN")
 
         self.current_category_id: str = ""
         self.current_item_id: str = ""
@@ -1978,6 +2391,11 @@ class MainWindow(QMainWindow):
         try:
             self._remember_right_vsplit_sizes()
             self._flush_page_fields_to_model_and_save()
+            # 트리 확장 상태 저장
+            self._save_tree_expanded_state()
+            # UI 상태 저장 및 DB 저장
+            self._save_ui_state()
+            self._save_db_with_warning()
         except Exception:
             pass
         super().closeEvent(event)
@@ -2046,6 +2464,27 @@ class MainWindow(QMainWindow):
 
     # ---------------- UI ----------------
     def _build_ui(self) -> None:
+        # 메뉴바 생성
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
+        
+        # Export 메뉴
+        export_action = file_menu.addAction("Export Data...")
+        export_action.setShortcut(QKeySequence("Ctrl+E"))
+        export_action.triggered.connect(self.export_data)
+        
+        # Import 메뉴
+        import_action = file_menu.addAction("Import Data...")
+        import_action.setShortcut(QKeySequence("Ctrl+I"))
+        import_action.triggered.connect(self.import_data)
+        
+        file_menu.addSeparator()
+        
+        # Save 메뉴 (기존 force_save와 연결)
+        save_action = file_menu.addAction("Save")
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self.force_save)
+        
         root = QWidget(self)
         self.setCentralWidget(root)
 
@@ -2104,7 +2543,7 @@ class MainWindow(QMainWindow):
         self.btn_move_up.clicked.connect(self._move_current_up)
         self.btn_move_down.clicked.connect(self._move_current_down)
 
-        self.nav_tree = QTreeWidget()
+        self.nav_tree = ExpandableTreeWidget()
         self.nav_tree.setHeaderHidden(True)
         self.nav_tree.setUniformRowHeights(True)
         self.nav_tree.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -2115,6 +2554,9 @@ class MainWindow(QMainWindow):
         # 트리 아이템 확장/축소 시 아이콘 업데이트
         self.nav_tree.itemExpanded.connect(self._on_tree_item_expanded)
         self.nav_tree.itemCollapsed.connect(self._on_tree_item_collapsed)
+        
+        # 더블 클릭 이벤트 처리 (단일 클릭과 동일하게 처리, 예외 방지)
+        self.nav_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
         
         # ttk 스타일처럼 기본 확장 아이콘 숨기기 (커스텀 + 아이콘만 사용)
         self.nav_tree.setStyleSheet("""
@@ -3004,6 +3446,14 @@ class MainWindow(QMainWindow):
 
     # ---------------- Tree refresh ---------------- 
     def _refresh_nav_tree(self, select_current: bool = False) -> None:
+        self.trace(f"_refresh_nav_tree() 시작 - root_category_ids: {self.db.root_category_ids}, categories: {len(self.db.categories)}, items: {len(self.db.items)}", "DEBUG")
+        # 저장된 확장 상태를 미리 가져옴 (clear 전에)
+        expanded_categories = self.db.ui_state.get("tree_expanded_categories", [])
+        if isinstance(expanded_categories, list):
+            expanded_set = set(str(x) for x in expanded_categories if str(x))
+        else:
+            expanded_set = set()
+        
         self.nav_tree.blockSignals(True)
         self.nav_tree.clear()
         
@@ -3060,24 +3510,53 @@ class MainWindow(QMainWindow):
                 add_cat(ch, q)
             return q
 
+        self.trace(f"트리 구성 시작 - root_category_ids 개수: {len(self.db.root_category_ids)}", "DEBUG")
+        # ROOT 폴더를 항상 첫 번째로 표시
+        if ROOT_CATEGORY_ID in self.db.root_category_ids:
+            self.trace(f"  ROOT 카테고리 추가: {ROOT_CATEGORY_ID}", "DEBUG")
+            add_cat(ROOT_CATEGORY_ID, None)
+        # 나머지 root 폴더들 추가
         for rid in self.db.root_category_ids:
-            add_cat(rid, None)
+            if rid != ROOT_CATEGORY_ID:
+                self.trace(f"  root 카테고리 추가: {rid}", "DEBUG")
+                add_cat(rid, None)
+        self.trace(f"트리 구성 완료 - topLevelItemCount: {self.nav_tree.topLevelItemCount()}", "DEBUG")
 
-        # 트리 아이템의 초기 확장 상태에 맞게 아이콘 설정
-        def update_icons_recursive(item: QTreeWidgetItem):
-            if item.childCount() > 0:
-                item.setIcon(0, _make_expand_icon(16, expanded=item.isExpanded()))
-            for i in range(item.childCount()):
-                update_icons_recursive(item.child(i))
+        # 모든 카테고리의 아이콘 초기화 (모두 축소 상태로)
+        for cid, qitem in cat_to_qitem.items():
+            if qitem.childCount() > 0:
+                qitem.setIcon(0, _make_expand_icon(16, expanded=False))
         
-        for i in range(self.nav_tree.topLevelItemCount()):
-            update_icons_recursive(self.nav_tree.topLevelItem(i))
+        # blockSignals 해제
+        self.nav_tree.blockSignals(False)
         
-        self.nav_tree.expandAll()
+        # 저장된 확장 상태 복원 (트리 구성 완료 후 즉시 복원)
+        self.trace(f"트리 확장 상태 복원 시작 - 저장된 확장 카테고리: {expanded_set}, 리스트: {expanded_categories}", "DEBUG")
+        self.trace(f"cat_to_qitem 키: {list(cat_to_qitem.keys())}", "DEBUG")
         
-        # expandAll 후 다시 아이콘 업데이트
-        for i in range(self.nav_tree.topLevelItemCount()):
-            update_icons_recursive(self.nav_tree.topLevelItem(i))
+        if expanded_set:
+            # 저장된 확장 상태 복원 - cat_to_qitem 맵을 직접 사용
+            self.trace(f"저장된 확장 상태 복원 시작 - 확장할 카테고리: {expanded_set}", "DEBUG")
+            # 저장된 순서대로 부모부터 확장 (부모가 확장되어야 자식이 보임)
+            for cid in expanded_categories:
+                cid_str = str(cid)
+                if cid_str in expanded_set and cid_str in cat_to_qitem:
+                    qitem = cat_to_qitem[cid_str]
+                    if qitem.childCount() > 0:
+                        qitem.setExpanded(True)
+                        qitem.setIcon(0, _make_expand_icon(16, expanded=True))
+                        self.trace(f"카테고리 확장 성공: {cid_str}", "DEBUG")
+                    else:
+                        self.trace(f"카테고리 확장 실패 (자식 없음): {cid_str}", "DEBUG")
+                elif cid_str in expanded_set:
+                    self.trace(f"카테고리 확장 실패 (cat_to_qitem에 없음): {cid_str}", "DEBUG")
+            
+            # 모든 카테고리의 아이콘 최종 업데이트
+            for cid, qitem in cat_to_qitem.items():
+                if qitem.childCount() > 0:
+                    qitem.setIcon(0, _make_expand_icon(16, expanded=qitem.isExpanded()))
+        else:
+            self.trace("저장된 확장 상태 없음 - 모두 축소 상태 유지", "DEBUG")
 
         if select_current:
             if self.current_item_id and self.current_item_id in item_to_qitem:
@@ -3085,7 +3564,6 @@ class MainWindow(QMainWindow):
             elif self.current_category_id and self.current_category_id in cat_to_qitem:
                 self.nav_tree.setCurrentItem(cat_to_qitem[self.current_category_id])
 
-        self.nav_tree.blockSignals(False)
         self._update_left_buttons_enabled()
 
     def _update_left_buttons_enabled(self) -> None:
@@ -3241,70 +3719,139 @@ class MainWindow(QMainWindow):
         if self.notes_left.isVisible() and self.ideas_panel.isVisible():
             self._remember_notes_splitter_sizes()
         self._remember_right_vsplit_sizes()
+        # 트리 확장 상태 저장
+        self._save_tree_expanded_state()
+    
+    def _save_tree_expanded_state(self) -> None:
+        """현재 트리의 확장된 카테고리 ID 목록을 저장"""
+        expanded_ids = []
+        
+        def collect_expanded(item: QTreeWidgetItem):
+            node_type = item.data(0, self.NODE_TYPE_ROLE)
+            if node_type == "category" and item.isExpanded() and item.childCount() > 0:
+                cid = str(item.data(0, self.CATEGORY_ID_ROLE) or "")
+                if cid:
+                    expanded_ids.append(cid)
+            for i in range(item.childCount()):
+                collect_expanded(item.child(i))
+        
+        for i in range(self.nav_tree.topLevelItemCount()):
+            collect_expanded(self.nav_tree.topLevelItem(i))
+        
+        self.db.ui_state["tree_expanded_categories"] = expanded_ids
+        print(f"[DEBUG] 트리 확장 상태 저장: {expanded_ids}")
 
     # ---------------- Tree expand/collapse icon update ----------------
     def _on_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
         """트리 아이템 확장 시 아이콘을 - 모양으로 변경"""
         if item.childCount() > 0:
             item.setIcon(0, _make_expand_icon(16, expanded=True))
+        # 확장 상태 저장 (debounce를 위해 타이머 사용)
+        if not hasattr(self, '_tree_state_save_timer'):
+            self._tree_state_save_timer = QTimer(self)
+            self._tree_state_save_timer.setSingleShot(True)
+            def save_and_persist():
+                self._save_tree_expanded_state()
+                self._save_ui_state()
+                self._save_db_with_warning()
+            self._tree_state_save_timer.timeout.connect(save_and_persist)
+        self._tree_state_save_timer.stop()
+        self._tree_state_save_timer.start(500)  # 500ms 후 저장
     
     def _on_tree_item_collapsed(self, item: QTreeWidgetItem) -> None:
         """트리 아이템 축소 시 아이콘을 + 모양으로 변경"""
         if item.childCount() > 0:
             item.setIcon(0, _make_expand_icon(16, expanded=False))
+        # 축소 상태 저장 (debounce를 위해 타이머 사용)
+        if not hasattr(self, '_tree_state_save_timer'):
+            self._tree_state_save_timer = QTimer(self)
+            self._tree_state_save_timer.setSingleShot(True)
+            def save_and_persist():
+                self._save_tree_expanded_state()
+                self._save_ui_state()
+                self._save_db_with_warning()
+            self._tree_state_save_timer.timeout.connect(save_and_persist)
+        self._tree_state_save_timer.stop()
+        self._tree_state_save_timer.start(500)  # 500ms 후 저장
     
-    # ---------------- Selection changed ----------------
+    # ---------------- Selection changed ---------------- 
     def _on_tree_selection_changed(self) -> None:
-        item = self.nav_tree.currentItem()
-        if not item:
-            return
-
-        node_type = item.data(0, self.NODE_TYPE_ROLE)
-        self._update_left_buttons_enabled()
-
-        # Folder 선택: 우측 편집 영역 완전 숨김(placeholder로 전환)
-        if node_type == "category":
-            cid = str(item.data(0, self.CATEGORY_ID_ROLE) or "")
-            self._flush_page_fields_to_model_and_save()
-            self.current_category_id = cid
-            self.current_item_id = ""
-            self.current_page_index = 0
-            self._save_ui_state()
-
-            self._show_placeholder(True)  # 핵심
-            self._load_current_item_page_to_ui(clear_only=True)  # 필드 정리
-            self.trace(f"Selected folder: {item.text(0)}", "INFO")
-            return
-
-        # Item 선택: 편집 영역 표시
-        if node_type == "item":
-            iid = str(item.data(0, self.ITEM_ID_ROLE) or "")
-            if not iid:
+        try:
+            item = self.nav_tree.currentItem()
+            if not item:
                 return
-            if iid == self.current_item_id:
+
+            node_type = item.data(0, self.NODE_TYPE_ROLE)
+            self._update_left_buttons_enabled()
+
+            # Folder 선택: 우측 편집 영역 완전 숨김(placeholder로 전환)
+            if node_type == "category":
+                cid = str(item.data(0, self.CATEGORY_ID_ROLE) or "")
+                self._flush_page_fields_to_model_and_save()
+                self.current_category_id = cid
+                self.current_item_id = ""
+                self.current_page_index = 0
+                self._save_ui_state()
+
+                self._show_placeholder(True)  # 핵심
+                self._load_current_item_page_to_ui(clear_only=True)  # 필드 정리
+                self.trace(f"Selected folder: {item.text(0)}", "INFO")
+                return
+
+            # Item 선택: 편집 영역 표시
+            if node_type == "item":
+                iid = str(item.data(0, self.ITEM_ID_ROLE) or "")
+                if not iid:
+                    return
+                if iid == self.current_item_id:
+                    self._show_placeholder(False)
+                    return
+
+                self._flush_page_fields_to_model_and_save()
+                found = self.db.find_item(iid)
+                if not found:
+                    return
+                it, cat = found
+                self.current_item_id = it.id
+                self.current_category_id = cat.id
+                # pages가 비어있지 않은지 확인
+                if not it.pages:
+                    self.trace(f"경고: 아이템 '{it.name}'에 페이지가 없습니다. 기본 페이지를 생성합니다.", "WARN")
+                    it.pages = [self.db.new_page()]
+                self.current_page_index = max(0, min(it.last_page_index, len(it.pages) - 1))
+                self._save_ui_state()
+
                 self._show_placeholder(False)
+                self._load_current_item_page_to_ui()
+                self.trace(f"Selected item: {it.name}", "INFO")
                 return
-
-            self._flush_page_fields_to_model_and_save()
-            found = self.db.find_item(iid)
-            if not found:
-                return
-            it, cat = found
-            self.current_item_id = it.id
-            self.current_category_id = cat.id
-            self.current_page_index = max(0, min(it.last_page_index, len(it.pages) - 1))
-            self._save_ui_state()
-
-            self._show_placeholder(False)
-            self._load_current_item_page_to_ui()
-            self.trace(f"Selected item: {it.name}", "INFO")
-            return
+        except Exception as e:
+            self.trace(f"트리 선택 변경 중 오류 발생: {str(e)}", "ERROR")
+            import traceback
+            self.trace(traceback.format_exc(), "ERROR")
+    
+    def _on_tree_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        """트리 아이템 더블 클릭 처리 (아이콘 영역이 아닌 경우에만 선택 처리)"""
+        try:
+            # ExpandableTreeWidget에서 아이콘 영역 클릭은 이미 처리됨
+            # 여기서는 아이콘 영역이 아닌 경우에만 선택 처리
+            node_type = item.data(0, self.NODE_TYPE_ROLE)
+            if node_type == "item":
+                # 아이템은 선택 변경 이벤트를 트리거 (단일 클릭과 동일)
+                self.nav_tree.setCurrentItem(item)
+        except Exception as e:
+            self.trace(f"트리 더블 클릭 처리 중 오류 발생: {str(e)}", "ERROR")
+            import traceback
+            self.trace(traceback.format_exc(), "ERROR")
 
     # ---------------- Safe save wrapper ----------------
     def _save_db_with_warning(self) -> bool:
+        self.trace("_save_db_with_warning() 호출됨", "DEBUG")
         ok, error_msg = self.db.save()
         if ok:
+            self.trace("저장 성공", "DEBUG")
             return True
+        self.trace(f"저장 실패: {error_msg}", "DEBUG")
         
         # 저장 실패 시 상세한 에러 로그 및 경고
         now = time.time()
@@ -3615,7 +4162,11 @@ class MainWindow(QMainWindow):
 
     def force_save(self) -> None:
         self._flush_page_fields_to_model_and_save()
-        QMessageBox.information(self, "Saved", "Save requested (check warnings if file is locked).")
+        # 저장 성공 여부 확인
+        save_ok = self._save_db_with_warning()
+        if save_ok:
+            QMessageBox.information(self, "저장 완료", "데이터가 성공적으로 저장되었습니다.")
+        # 저장 실패 시 _save_db_with_warning에서 이미 경고 메시지를 표시함
 
     def _update_nav(self) -> None:
         it = self.current_item()
@@ -3842,8 +4393,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Paste Image", "Clipboard does not contain an image.")
             return
         self._flush_page_fields_to_model_and_save()
-        # 아이템 ID를 포함하여 고유한 폴더명 생성 (같은 이름의 아이템이 다른 폴더에 있어도 충돌 방지)
-        safe_item = _sanitize_for_folder(f"{it.name}_{it.id[:8]}", it.id[:8])
+        # 아이템 ID만 사용하여 고유한 폴더명 생성 (UUID는 고유하므로 충돌 불가능)
+        # UUID의 하이픈을 언더스코어로 변경하여 파일시스템 호환성 확보
+        safe_item = it.id.replace("-", "_")
         dst_dir = os.path.join(ASSETS_DIR, safe_item)
         _ensure_dir(dst_dir)
         dst_name = f"{pg.id}_{pane.lower()}_clip_{_now_epoch()}.png"
@@ -3878,8 +4430,9 @@ class MainWindow(QMainWindow):
         if ext not in [".png", ".jpg", ".jpeg", ".bmp", ".webp"]:
             QMessageBox.warning(self, "Invalid file", "Please select an image file.")
             return
-        # 아이템 ID를 포함하여 고유한 폴더명 생성 (같은 이름의 아이템이 다른 폴더에 있어도 충돌 방지)
-        safe_item = _sanitize_for_folder(f"{it.name}_{it.id[:8]}", it.id[:8])
+        # 아이템 ID만 사용하여 고유한 폴더명 생성 (UUID는 고유하므로 충돌 불가능)
+        # UUID의 하이픈을 언더스코어로 변경하여 파일시스템 호환성 확보
+        safe_item = it.id.replace("-", "_")
         dst_dir = os.path.join(ASSETS_DIR, safe_item)
         _ensure_dir(dst_dir)
         dst_name = f"{pg.id}_{pane.lower()}{ext}"
@@ -3910,6 +4463,100 @@ class MainWindow(QMainWindow):
             return
         QApplication.clipboard().setText(txt)
 
+    # ---------------- Export / Import operations ----------------
+    def export_data(self) -> None:
+        """데이터를 ZIP 파일로 내보내기"""
+        # 파일 저장 대화상자
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"notes_export_{timestamp}.zip"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Data",
+            default_filename,
+            "ZIP Files (*.zip);;All Files (*)"
+        )
+        if not file_path:
+            return
+        
+        # Export 실행
+        ok, error_msg = self.db.export_to_zip(file_path)
+        if ok:
+            QMessageBox.information(
+                self,
+                "Export Success",
+                f"데이터가 성공적으로 내보내졌습니다.\n\n파일: {file_path}"
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"데이터 내보내기에 실패했습니다.\n\n오류: {error_msg or 'Unknown error'}"
+            )
+
+    def import_data(self) -> None:
+        """ZIP 파일에서 데이터 가져오기"""
+        # 파일 열기 대화상자
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Data",
+            "",
+            "ZIP Files (*.zip);;All Files (*)"
+        )
+        if not file_path:
+            return
+        
+        # Import 모드 선택
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Import Data")
+        msg.setText("데이터 가져오기 방식을 선택하세요.")
+        msg.setInformativeText(
+            "병합: 기존 데이터에 추가 (ID 충돌 시 새 ID 생성)\n"
+            "덮어쓰기: 기존 데이터를 완전히 교체"
+        )
+        btn_merge = msg.addButton("병합 (Merge)", QMessageBox.ActionRole)
+        btn_replace = msg.addButton("덮어쓰기 (Replace)", QMessageBox.DestructiveRole)
+        btn_cancel = msg.addButton("취소", QMessageBox.RejectRole)
+        msg.setDefaultButton(btn_cancel)
+        msg.exec_()
+        clicked = msg.clickedButton()
+        
+        if clicked == btn_cancel:
+            return
+        
+        merge_mode = (clicked == btn_merge)
+        
+        # Import 전 백업 생성
+        backup_path = _create_backup(self.db.db_path)
+        if backup_path:
+            self.trace(f"Backup created before import: {backup_path}", "INFO")
+        
+        # Import 실행
+        ok, error_msg = self.db.import_from_zip(file_path, merge_mode=merge_mode)
+        if ok:
+            # UI 새로고침
+            self._refresh_nav_tree(select_current=False)
+            self._show_placeholder(True)
+            self._load_current_item_page_to_ui(clear_only=True)
+            self._load_global_ideas_to_ui()
+            
+            # 저장
+            self._save_db_with_warning()
+            
+            mode_text = "병합" if merge_mode else "덮어쓰기"
+            QMessageBox.information(
+                self,
+                "Import Success",
+                f"데이터가 성공적으로 가져와졌습니다.\n\n모드: {mode_text}\n"
+                f"파일: {file_path}"
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"데이터 가져오기에 실패했습니다.\n\n오류: {error_msg or 'Unknown error'}\n\n"
+                "백업 파일에서 복구할 수 있습니다."
+            )
+
     # ---------------- Folder / Item operations ----------------
     def _target_category_for_new(self) -> str:
         it = self.nav_tree.currentItem()
@@ -3932,12 +4579,33 @@ class MainWindow(QMainWindow):
         name, ok = QInputDialog.getText(self, "Add Folder", "Folder name:", text="New Folder")
         if not ok or not (name or "").strip():
             return
+        self.trace(f"폴더 생성 시작 - 이름: {name.strip()}, parent_id: {parent_cid}", "DEBUG")
         c = self.db.add_category(name.strip(), parent_id=parent_cid if parent_cid else None)
+        self.trace(f"폴더 생성 완료 - ID: {c.id}, root_category_ids: {self.db.root_category_ids}", "DEBUG")
         self.current_category_id = c.id
         self.current_item_id = ""
         self.current_page_index = 0
         self._save_ui_state()
-        self._save_db_with_warning()
+        # 저장 성공 여부 확인
+        self.trace("폴더 저장 시도...", "DEBUG")
+        save_ok = self._save_db_with_warning()
+        if not save_ok:
+            # 저장 실패 시 폴더 롤백
+            if c.id in self.db.categories:
+                del self.db.categories[c.id]
+            if c.id in self.db.root_category_ids:
+                self.db.root_category_ids.remove(c.id)
+            if parent_cid and parent_cid in self.db.categories:
+                if c.id in self.db.categories[parent_cid].child_ids:
+                    self.db.categories[parent_cid].child_ids.remove(c.id)
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                f"폴더 '{name.strip()}' 생성은 되었지만 저장에 실패했습니다.\n\n"
+                "폴더가 저장되지 않았으므로 앱을 종료하면 사라집니다.\n\n"
+                "다시 시도하거나 파일이 잠겨있는지 확인해주세요."
+            )
+            return
         self._refresh_nav_tree(select_current=True)
         self._show_placeholder(True)
         self._load_current_item_page_to_ui(clear_only=True)
@@ -3950,11 +4618,28 @@ class MainWindow(QMainWindow):
         c = self.db.get_category(cid)
         if not c:
             return
+        
+        # ROOT 폴더는 이름 변경 불가
+        if cid == ROOT_CATEGORY_ID:
+            QMessageBox.warning(self, "Cannot Rename", "ROOT 폴더의 이름은 변경할 수 없습니다.")
+            return
+        
+        old_name = c.name
         new_name, ok = QInputDialog.getText(self, "Rename Folder", "New name:", text=c.name)
         if not ok or not (new_name or "").strip():
             return
         self.db.rename_category(cid, new_name.strip())
-        self._save_db_with_warning()
+        save_ok = self._save_db_with_warning()
+        if not save_ok:
+            # 저장 실패 시 이름 롤백
+            self.db.rename_category(cid, old_name)
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                f"폴더 이름 변경 저장에 실패했습니다.\n\n"
+                "변경사항이 저장되지 않았으므로 앱을 종료하면 원래 이름으로 돌아갑니다."
+            )
+            return
         self._refresh_nav_tree(select_current=True)
 
     def delete_folder(self) -> None:
@@ -3964,6 +4649,11 @@ class MainWindow(QMainWindow):
         cid = str(it.data(0, self.CATEGORY_ID_ROLE) or "")
         c = self.db.get_category(cid)
         if not c:
+            return
+        
+        # ROOT 폴더는 삭제 불가
+        if cid == ROOT_CATEGORY_ID:
+            QMessageBox.warning(self, "Cannot Delete", "ROOT 폴더는 삭제할 수 없습니다.")
             return
 
         msg = QMessageBox(self)
@@ -3994,7 +4684,15 @@ class MainWindow(QMainWindow):
         self.current_category_id = self.db.root_category_ids[0] if self.db.root_category_ids else ""
         self.current_page_index = 0
         self._save_ui_state()
-        self._save_db_with_warning()
+        save_ok = self._save_db_with_warning()
+        if not save_ok:
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                "폴더 삭제 저장에 실패했습니다.\n\n"
+                "변경사항이 저장되지 않았으므로 앱을 종료하면 폴더가 다시 나타날 수 있습니다."
+            )
+            return
         self._refresh_nav_tree(select_current=True)
         self._show_placeholder(True)
         self._load_current_item_page_to_ui(clear_only=True)
@@ -4014,16 +4712,36 @@ class MainWindow(QMainWindow):
         self._flush_page_fields_to_model_and_save()
         cid = self._target_category_for_new()
         if not cid:
+            self.trace("아이템 생성 취소 - category_id 없음", "DEBUG")
             return
         name, ok = QInputDialog.getText(self, "Add Item", "Item name (in folder):", text="New Item")
         if not ok or not (name or "").strip():
             return
+        self.trace(f"아이템 생성 시작 - 이름: {name.strip()}, category_id: {cid}", "DEBUG")
         it = self.db.add_item(name.strip(), cid)
+        self.trace(f"아이템 생성 완료 - ID: {it.id}, category_id: {it.category_id}", "DEBUG")
         self.current_category_id = cid
         self.current_item_id = it.id
         self.current_page_index = 0
         self._save_ui_state()
-        self._save_db_with_warning()
+        # 저장 성공 여부 확인
+        self.trace("아이템 저장 시도...", "DEBUG")
+        save_ok = self._save_db_with_warning()
+        if not save_ok:
+            # 저장 실패 시 아이템 롤백
+            if it.id in self.db.items:
+                del self.db.items[it.id]
+            cat = self.db.categories.get(cid)
+            if cat and it.id in cat.item_ids:
+                cat.item_ids.remove(it.id)
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                f"아이템 '{name.strip()}' 생성은 되었지만 저장에 실패했습니다.\n\n"
+                "아이템이 저장되지 않았으므로 앱을 종료하면 사라집니다.\n\n"
+                "다시 시도하거나 파일이 잠겨있는지 확인해주세요."
+            )
+            return
         self._refresh_nav_tree(select_current=True)
         self._show_placeholder(False)
         self._load_current_item_page_to_ui()
