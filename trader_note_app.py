@@ -2,7 +2,26 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.3  (2026-01-01)
+Version: 0.10.4  (2026-01-01)
+
+v0.10.4 변경 사항:
+- Chart A/B 거래대금 정보 표시 기능
+  AS-IS: 차트에 거래대금 정보를 기록할 방법 없음
+  TO-BE:
+    - Chart A/B 각각에 거래대금 정보 위젯 추가
+    - 일봉/분봉 선택 ComboBox 추가
+    - 거래대금 입력 필드 (정수, 억 단위, 만 단위까지)
+    - 자동 상태 판단: 일봉 150억 이상/미만, 분봉 10억 이상/미만
+    - 상태별 배경색 및 테두리 변경 (양호: 녹색, 주의: 주황색)
+    - Caption과 동일한 폭으로 좌측 정렬 배치
+    - Page 모델에 `chart_type_a/b`, `trading_amount_a/b` 필드 추가
+- Chart 확대/축소 및 드래그 시 위젯 위치 관리 개선
+  AS-IS: 이미지 확대/축소 또는 드래그 시 위젯 위치가 잘못 표시됨
+  TO-BE:
+    - 확대/축소 시 위젯 위치 자동 업데이트 (`transformChanged` 시그널)
+    - 드래그 중에는 위젯 위치 업데이트 방지 (`scrollContentsBy` 오버라이드)
+    - 드래그 종료 후 위젯 위치 자동 복원
+    - Viewport 크기 변경 시에도 위젯 위치 자동 업데이트
 
 v0.10.3 변경 사항:
 - Global Ideas 탭 이름 변경 기능
@@ -35,32 +54,6 @@ v0.10.3 변경 사항:
     - 최근 20개 백업 파일만 유지 (자동 정리)
     - 기존 DB 백업 시스템과 독립적으로 동작
     - 백업 실패해도 저장은 계속 진행
-
-v0.10.2 변경 사항:
-- 트리 확장/축소 상태 저장 및 복원 기능
-  AS-IS: 앱 재시작 시 트리 확장 상태가 초기화됨
-  TO-BE:
-    - 트리 확장/축소 시 자동으로 상태 저장
-    - 앱 재시작 시 이전 확장 상태 자동 복원
-    - `ui_state["tree_expanded_categories"]`에 확장된 카테고리 ID 목록 저장
-- ROOT 폴더 보호 강화
-  AS-IS: ROOT 폴더가 UI에서만 삭제/이름 변경 방지
-  TO-BE:
-    - ROOT 폴더 고정 ID (`__ROOT__`) 사용
-    - 모든 삭제 경로에서 ROOT 폴더 보호 (방어적 프로그래밍)
-    - ROOT 폴더는 항상 첫 번째로 표시
-- 더블 클릭 크래시 수정 및 예외 처리 강화
-  AS-IS: 트리 아이템 더블 클릭 시 크래시 발생
-  TO-BE:
-    - 더블 클릭 이벤트 핸들러 추가 (`_on_tree_item_double_clicked`)
-    - 선택 변경 이벤트에 예외 처리 추가
-    - 아이템 페이지가 없는 경우 자동 생성
-- 폴더 확장/축소 기능 개선
-  AS-IS: 폴더 클릭/더블 클릭 시 확장/축소가 동작하지 않음
-  TO-BE:
-    - `ExpandableTreeWidget` 커스텀 클래스 추가
-    - 아이콘 영역(왼쪽 20px) 클릭 시 확장/축소
-    - 단일 클릭 및 더블 클릭 모두 지원
 """
 
 import json
@@ -89,8 +82,9 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea, QListWidget, QListWidgetItem
 )
+from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.3)"
+APP_TITLE = "Trader Chart Note (v0.10.4)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -813,6 +807,10 @@ class Page:
     custom_checklist: CustomChecklist
     created_at: int
     updated_at: int
+    chart_type_a: str = "일봉"  # "일봉" 또는 "분봉"
+    chart_type_b: str = "일봉"  # "일봉" 또는 "분봉"
+    trading_amount_a: int = 0  # 거래대금 (억 단위, 정수)
+    trading_amount_b: int = 0  # 거래대금 (억 단위, 정수)
 
 
 @dataclass
@@ -864,6 +862,10 @@ class NoteDB:
             custom_checklist=_default_custom_checklist(),
             created_at=now,
             updated_at=now,
+            chart_type_a="일봉",
+            chart_type_b="일봉",
+            trading_amount_a=0,
+            trading_amount_b=0,
         )
 
     def _default_data(self) -> Dict[str, Any]:
@@ -1130,6 +1132,10 @@ class NoteDB:
                                     custom_checklist=_normalize_custom_checklist(p.get("custom_checklist", None)),
                                     created_at=int(p.get("created_at", _now_epoch())),
                                     updated_at=int(p.get("updated_at", _now_epoch())),
+                                    chart_type_a=str(p.get("chart_type_a", "일봉")).strip() or "일봉",
+                                    chart_type_b=str(p.get("chart_type_b", "일봉")).strip() or "일봉",
+                                    trading_amount_a=int(p.get("trading_amount_a", 0)),
+                                    trading_amount_b=int(p.get("trading_amount_b", 0)),
                                 )
                             )
                     if not pages:
@@ -1159,6 +1165,10 @@ class NoteDB:
             "custom_checklist": pg.custom_checklist,
             "created_at": pg.created_at,
             "updated_at": pg.updated_at,
+            "chart_type_a": pg.chart_type_a,
+            "chart_type_b": pg.chart_type_b,
+            "trading_amount_a": pg.trading_amount_a,
+            "trading_amount_b": pg.trading_amount_b,
         }
 
     def _serialize_item(self, it: Item) -> Dict[str, Any]:
@@ -1876,6 +1886,7 @@ class NoteDB:
 class ZoomPanAnnotateView(QGraphicsView):
     imageDropped = pyqtSignal(str)
     strokesChanged = pyqtSignal()
+    transformChanged = pyqtSignal()  # 확대/축소 또는 변환 변경 시 발생
 
     def __init__(self) -> None:
         super().__init__()
@@ -1909,6 +1920,9 @@ class ZoomPanAnnotateView(QGraphicsView):
 
         self._strokes: Strokes = []
         self._stroke_items: List[QGraphicsPathItem] = []
+        
+        # 드래그 중 플래그 (드래그 중에는 위젯 위치 업데이트 방지)
+        self._is_dragging: bool = False
 
         self.set_mode_pan()
 
@@ -1944,6 +1958,7 @@ class ZoomPanAnnotateView(QGraphicsView):
         self._pixmap_item = None
         self._has_image = False
         self.resetTransform()
+        self.transformChanged.emit()
 
     def set_image_path(self, abs_path: str) -> None:
         pm = QPixmap(abs_path)
@@ -1968,12 +1983,14 @@ class ZoomPanAnnotateView(QGraphicsView):
     def fit_to_view(self) -> None:
         if not self._pixmap_item:
             self.resetTransform()
+            self.transformChanged.emit()
             return
         rect = self._pixmap_item.boundingRect()
         if rect.isNull():
             return
         self.resetTransform()
         self.fitInView(rect, Qt.KeepAspectRatio)
+        self.transformChanged.emit()
 
     def wheelEvent(self, event) -> None:
         if not self._has_image:
@@ -1990,6 +2007,47 @@ class ZoomPanAnnotateView(QGraphicsView):
         else:
             inv = 1.0 / self._zoom_factor_step
             self.scale(inv, inv)
+        # 확대/축소 후 위젯 위치 업데이트를 위한 시그널 발생 (드래그 중이 아닐 때만)
+        if not self._is_dragging:
+            self.transformChanged.emit()
+    
+    def mousePressEvent(self, event) -> None:
+        """마우스 누름 시 드래그 시작 감지"""
+        if not self._draw_mode and self.dragMode() == QGraphicsView.ScrollHandDrag:
+            # 드래그 모드일 때만 플래그 설정
+            self._is_dragging = True
+        super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event) -> None:
+        """마우스 놓을 때 드래그 종료 감지"""
+        was_dragging = self._is_dragging
+        if was_dragging and self.dragMode() == QGraphicsView.ScrollHandDrag:
+            self._is_dragging = False
+            # 드래그가 끝난 후 위젯 위치 업데이트
+            QTimer.singleShot(10, self.transformChanged.emit)
+        super().mouseReleaseEvent(event)
+    
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        """스크롤(드래그) 시 호출됨 - ScrollHandDrag에서 드래그할 때 이 메서드가 호출됨"""
+        if not self._is_dragging and self.dragMode() == QGraphicsView.ScrollHandDrag:
+            # 드래그 시작 감지
+            self._is_dragging = True
+            print(f"[DEBUG] scrollContentsBy - 드래그 시작 감지 - _is_dragging = {self._is_dragging}, dx={dx}, dy={dy}")
+        super().scrollContentsBy(dx, dy)
+    
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        """스크롤(드래그) 시 호출됨 - ScrollHandDrag에서 드래그할 때 이 메서드가 호출됨"""
+        if not self._is_dragging and self.dragMode() == QGraphicsView.ScrollHandDrag:
+            # 드래그 시작 감지
+            self._is_dragging = True
+        super().scrollContentsBy(dx, dy)
+    
+    def resizeEvent(self, event) -> None:
+        """Viewport 크기 변경 시 위젯 위치 업데이트"""
+        super().resizeEvent(event)
+        if self._has_image and not self._is_dragging:
+            # 약간의 지연을 두어 resize 완료 후 위치 업데이트
+            QTimer.singleShot(10, self.transformChanged.emit)
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
@@ -2066,6 +2124,10 @@ class ZoomPanAnnotateView(QGraphicsView):
             self._append_stroke(scene_pos, shift=shift)
             event.accept()
             return
+        # 드래그 모드이고 마우스 버튼이 눌려있으면 드래그 중으로 간주
+        if not self._draw_mode and self.dragMode() == QGraphicsView.ScrollHandDrag and event.buttons() & Qt.LeftButton:
+            if not self._is_dragging:
+                self._is_dragging = True
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -3339,6 +3401,59 @@ class MainWindow(QMainWindow):
         edit_cap.setPlaceholderTextCompat(f"{pane} 이미지 간단 설명 (hover/클릭 시 2~3줄 확장)")
         edit_cap.textChanged.connect(self._on_page_field_changed)
         edit_cap.expandedChanged.connect(lambda _: self._reposition_overlay(pane))
+        
+        # 거래대금 정보 위젯 (Caption 아래에 배치)
+        trading_info_widget = QWidget(vp)
+        trading_info_widget.setStyleSheet("""
+            QWidget {
+                background: rgba(255,255,255,235);
+                border: 1px solid #9A9A9A;
+                border-radius: 8px;
+                padding: 4px 8px;
+            }
+        """)
+        trading_info_layout = QHBoxLayout(trading_info_widget)
+        trading_info_layout.setContentsMargins(6, 4, 6, 4)
+        trading_info_layout.setSpacing(6)
+        
+        # 차트 타입 선택 (일봉/분봉)
+        combo_chart_type = QComboBox(trading_info_widget)
+        combo_chart_type.addItems(["일봉", "분봉"])
+        combo_chart_type.setFixedWidth(60)
+        combo_chart_type.currentTextChanged.connect(self._on_page_field_changed)
+        trading_info_layout.addWidget(combo_chart_type)
+        
+        # 거래대금 입력
+        edit_trading_amount = QLineEdit(trading_info_widget)
+        edit_trading_amount.setPlaceholderText("거래대금")
+        edit_trading_amount.setFixedWidth(65)  # 만 단위(5자리)에 맞춘 너비
+        edit_trading_amount.setValidator(QIntValidator(0, 99999))
+        edit_trading_amount.textChanged.connect(self._on_page_field_changed)
+        trading_info_layout.addWidget(edit_trading_amount)
+        
+        # 단위 표시 라벨
+        lbl_unit = QLabel("억", trading_info_widget)
+        lbl_unit.setStyleSheet("color: #666; font-size: 9pt;")
+        trading_info_layout.addWidget(lbl_unit)
+        
+        # 상태 표시 라벨
+        lbl_status = QLabel("", trading_info_widget)
+        lbl_status.setFixedWidth(50)
+        lbl_status.setAlignment(Qt.AlignCenter)
+        lbl_status.setStyleSheet("font-weight: 600; font-size: 10pt;")
+        trading_info_layout.addWidget(lbl_status)
+        
+        # addStretch() 제거 - 필요한 만큼만 너비 사용
+        
+        # 거래대금 변경 시 상태 업데이트 함수
+        def update_trading_status():
+            self._update_trading_status_for_pane(pane)
+        
+        combo_chart_type.currentTextChanged.connect(update_trading_status)
+        edit_trading_amount.textChanged.connect(update_trading_status)
+        
+        # 확대/축소 시 위젯 위치 업데이트
+        viewer.transformChanged.connect(lambda: self._reposition_overlay(pane))
 
         btn_anno_toggle = QToolButton(vp)
         btn_anno_toggle.setText("✎")
@@ -3530,12 +3645,115 @@ class MainWindow(QMainWindow):
         return {
             "viewer": viewer,
             "cap": edit_cap,
+            "trading_info": trading_info_widget,
+            "chart_type": combo_chart_type,
+            "trading_amount": edit_trading_amount,
+            "trading_status": lbl_status,
             "anno_toggle": btn_anno_toggle,
             # desc_toggle 제거됨 - splitter 핸들 버튼 사용
             "panel": anno_panel,
             "draw": btn_draw_mode,
         }
 
+    def _update_trading_status_for_pane(self, pane: str) -> None:
+        """특정 pane의 거래대금 상태 업데이트"""
+        ui = self._pane_ui.get(pane, {})
+        if not ui:
+            return
+        chart_type = ui.get("chart_type")
+        trading_amount = ui.get("trading_amount")
+        trading_status = ui.get("trading_status")
+        trading_info = ui.get("trading_info")
+        if not chart_type or not trading_amount or not trading_status:
+            return
+        
+        try:
+            chart_type_text = chart_type.currentText()
+            amount_text = trading_amount.text().strip()
+            if not amount_text:
+                trading_status.setText("")
+                trading_status.setStyleSheet("font-weight: 600; font-size: 10pt; color: #666;")
+                # 기본 스타일로 복원
+                if trading_info:
+                    trading_info.setStyleSheet("""
+                        QWidget {
+                            background: rgba(255,255,255,235);
+                            border: 1px solid #9A9A9A;
+                            border-radius: 8px;
+                            padding: 4px 8px;
+                        }
+                    """)
+                return
+            
+            amount = int(amount_text)
+            if chart_type_text == "일봉":
+                if amount >= 150:
+                    trading_status.setText("양호")
+                    trading_status.setStyleSheet("font-weight: 600; font-size: 10pt; color: #00AA00;")
+                    # 양호 상태: 연한 녹색 배경 + 녹색 테두리
+                    if trading_info:
+                        trading_info.setStyleSheet("""
+                            QWidget {
+                                background: rgba(200,255,200,240);
+                                border: 2px solid #00AA00;
+                                border-radius: 8px;
+                                padding: 4px 8px;
+                            }
+                        """)
+                else:
+                    trading_status.setText("주의")
+                    trading_status.setStyleSheet("font-weight: 600; font-size: 10pt; color: #FF6600;")
+                    # 주의 상태: 연한 주황색 배경 + 주황색 테두리
+                    if trading_info:
+                        trading_info.setStyleSheet("""
+                            QWidget {
+                                background: rgba(255,230,200,240);
+                                border: 2px solid #FF6600;
+                                border-radius: 8px;
+                                padding: 4px 8px;
+                            }
+                        """)
+            else:  # 분봉
+                if amount >= 10:
+                    trading_status.setText("양호")
+                    trading_status.setStyleSheet("font-weight: 600; font-size: 10pt; color: #00AA00;")
+                    # 양호 상태: 연한 녹색 배경 + 녹색 테두리
+                    if trading_info:
+                        trading_info.setStyleSheet("""
+                            QWidget {
+                                background: rgba(200,255,200,240);
+                                border: 2px solid #00AA00;
+                                border-radius: 8px;
+                                padding: 4px 8px;
+                            }
+                        """)
+                else:
+                    trading_status.setText("주의")
+                    trading_status.setStyleSheet("font-weight: 600; font-size: 10pt; color: #FF6600;")
+                    # 주의 상태: 연한 주황색 배경 + 주황색 테두리
+                    if trading_info:
+                        trading_info.setStyleSheet("""
+                            QWidget {
+                                background: rgba(255,230,200,240);
+                                border: 2px solid #FF6600;
+                                border-radius: 8px;
+                                padding: 4px 8px;
+                            }
+                        """)
+        except (ValueError, AttributeError):
+            trading_status.setText("")
+            trading_status.setStyleSheet("font-weight: 600; font-size: 10pt; color: #666;")
+            # 기본 스타일로 복원
+            if trading_info:
+                trading_info.setStyleSheet("""
+                    QWidget {
+                        background: rgba(255,255,255,235);
+                        border: 1px solid #9A9A9A;
+                        border-radius: 8px;
+                        padding: 4px 8px;
+                    }
+                """)
+    
     def _set_active_pane(self, pane: str) -> None:
         pane = "A" if pane not in ("A", "B") else pane
         self._active_pane = pane
@@ -3549,9 +3767,15 @@ class MainWindow(QMainWindow):
         viewer: Optional[ZoomPanAnnotateView] = ui.get("viewer")
         if viewer is None:
             return
+        # 드래그 중이면 위젯 위치 업데이트하지 않음
+        if hasattr(viewer, '_is_dragging') and viewer._is_dragging:
+            print(f"[DEBUG] _reposition_overlay 호출됨 (드래그 중이므로 무시) - pane={pane}, _is_dragging={viewer._is_dragging}")
+            return
+        print(f"[DEBUG] _reposition_overlay 실행 - pane={pane}, _is_dragging={getattr(viewer, '_is_dragging', False)}")
         vp = viewer.viewport()
 
         edit_cap: CollapsibleCaptionEdit = ui["cap"]
+        trading_info: QWidget = ui.get("trading_info")
         btn_anno_toggle: QToolButton = ui["anno_toggle"]
         anno_panel: QFrame = ui["panel"]
 
@@ -3566,13 +3790,32 @@ class MainWindow(QMainWindow):
         else:
             btn_anno_toggle.move(max(margin, w - btn_anno_toggle.width() - margin), margin)
 
+        # 거래대금 정보 위젯을 먼저 크기 조정하여 폭 계산
+        trading_info_width = None
+        if trading_info:
+            trading_info.adjustSize()
+            trading_info_width = trading_info.width()
+        
+        # Caption 폭을 거래대금 정보 위젯과 동일하게 설정
         cap_min = 260
         cap_max = 720
-        cap_right_limit = (anno_panel.x() - margin) if anno_panel.isVisible() else (btn_anno_toggle.x() - margin)
-        cap_w = min(cap_max, max(cap_min, cap_right_limit - margin))
-        cap_x = max(margin, cap_right_limit - cap_w)
+        
+        if trading_info_width:
+            # 거래대금 정보 위젯 폭을 기준으로 설정 (최소/최대 범위 내에서)
+            cap_w = min(cap_max, max(cap_min, trading_info_width))
+        else:
+            # 거래대금 정보 위젯이 없으면 기본값 사용
+            cap_w = cap_min
+        
+        # 좌측 정렬로 배치
+        cap_x = margin
         edit_cap.setFixedWidth(cap_w)
         edit_cap.move(cap_x, margin)
+        
+        # 거래대금 정보 위젯을 Caption 아래에 배치 (Caption과 동일한 폭, 좌측 정렬)
+        if trading_info:
+            trading_info.setFixedWidth(cap_w)
+            trading_info.move(cap_x, margin + edit_cap.height() + gap)
 
     # ---------------- Tree refresh ---------------- 
     def _refresh_nav_tree(self, select_current: bool = False) -> None:
@@ -4057,6 +4300,12 @@ class MainWindow(QMainWindow):
                     ui = self._pane_ui.get(pane, {})
                     if ui:
                         ui["cap"].setPlainText("")
+                        if "chart_type" in ui:
+                            ui["chart_type"].setCurrentText("일봉")
+                        if "trading_amount" in ui:
+                            ui["trading_amount"].clear()
+                        if "trading_status" in ui:
+                            ui["trading_status"].setText("")
                         ui["draw"].setChecked(False)
                         ui["panel"].setVisible(False)
                         ui["anno_toggle"].setVisible(True)
@@ -4083,8 +4332,24 @@ class MainWindow(QMainWindow):
 
             if self._pane_ui.get("A"):
                 self._pane_ui["A"]["cap"].setPlainText(pg.image_a_caption or "")
+                ui_a = self._pane_ui["A"]
+                if "chart_type" in ui_a and "trading_amount" in ui_a and "trading_status" in ui_a:
+                    chart_type_a = pg.chart_type_a if pg.chart_type_a in ["일봉", "분봉"] else "일봉"
+                    ui_a["chart_type"].setCurrentText(chart_type_a)
+                    amount_a = pg.trading_amount_a if pg.trading_amount_a > 0 else ""
+                    ui_a["trading_amount"].setText(str(amount_a) if amount_a else "")
+                    # 상태 수동 업데이트
+                    QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("A"))
             if self._pane_ui.get("B"):
                 self._pane_ui["B"]["cap"].setPlainText(pg.image_b_caption or "")
+                ui_b = self._pane_ui["B"]
+                if "chart_type" in ui_b and "trading_amount" in ui_b and "trading_status" in ui_b:
+                    chart_type_b = pg.chart_type_b if pg.chart_type_b in ["일봉", "분봉"] else "일봉"
+                    ui_b["chart_type"].setCurrentText(chart_type_b)
+                    amount_b = pg.trading_amount_b if pg.trading_amount_b > 0 else ""
+                    ui_b["trading_amount"].setText(str(amount_b) if amount_b else "")
+                    # 상태 수동 업데이트
+                    QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("B"))
 
             if self.viewer_a is not None:
                 if pg.image_a_path and os.path.exists(_abspath_from_rel(pg.image_a_path)):
@@ -4291,6 +4556,37 @@ class MainWindow(QMainWindow):
             pg.image_a_caption = new_cap_a; changed = True
         if pg.image_b_caption != new_cap_b:
             pg.image_b_caption = new_cap_b; changed = True
+        
+        # 거래대금 정보 수집
+        ui_a = self._pane_ui.get("A", {})
+        if ui_a:
+            chart_type_a = ui_a.get("chart_type")
+            trading_amount_a = ui_a.get("trading_amount")
+            if chart_type_a and trading_amount_a:
+                new_chart_type_a = chart_type_a.currentText()
+                try:
+                    new_amount_a = int(trading_amount_a.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_amount_a = 0
+                if pg.chart_type_a != new_chart_type_a:
+                    pg.chart_type_a = new_chart_type_a; changed = True
+                if pg.trading_amount_a != new_amount_a:
+                    pg.trading_amount_a = new_amount_a; changed = True
+        
+        ui_b = self._pane_ui.get("B", {})
+        if ui_b:
+            chart_type_b = ui_b.get("chart_type")
+            trading_amount_b = ui_b.get("trading_amount")
+            if chart_type_b and trading_amount_b:
+                new_chart_type_b = chart_type_b.currentText()
+                try:
+                    new_amount_b = int(trading_amount_b.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_amount_b = 0
+                if pg.chart_type_b != new_chart_type_b:
+                    pg.chart_type_b = new_chart_type_b; changed = True
+                if pg.trading_amount_b != new_amount_b:
+                    pg.trading_amount_b = new_amount_b; changed = True
 
         new_text = _strip_highlight_html(self.text_edit.toHtml())
         if pg.note_text != new_text:
@@ -5650,16 +5946,43 @@ class MainWindow(QMainWindow):
         elif (not desc_vis) and ideas_vis:
             self.notes_ideas_splitter.setSizes([0, total])
 
-    # ---------------- Event filter (active pane + resize overlay) ----------------
+    # ---------------- Event filter (active pane + resize overlay) ---------------- 
     def eventFilter(self, obj, event) -> bool:
         va = getattr(self, "viewer_a", None)
         vb = getattr(self, "viewer_b", None)
-        if va is not None and obj is va.viewport() and event.type() == QEvent.MouseButtonPress:
-            self._set_active_pane("A")
-            return False
-        if vb is not None and obj is vb.viewport() and event.type() == QEvent.MouseButtonPress:
-            self._set_active_pane("B")
-            return False
+        
+        # 드래그 감지: viewport에서 마우스 이벤트 감지
+        if va is not None and obj is va.viewport():
+            if event.type() == QEvent.MouseButtonPress:
+                self._set_active_pane("A")
+                # ScrollHandDrag 모드이고 왼쪽 버튼이면 드래그 시작
+                if va.dragMode() == QGraphicsView.ScrollHandDrag and event.button() == Qt.LeftButton:
+                    va._is_dragging = True
+                return False
+            elif event.type() == QEvent.MouseButtonRelease:
+                # 드래그 종료
+                if hasattr(va, '_is_dragging') and va._is_dragging:
+                    was_dragging = va._is_dragging
+                    va._is_dragging = False
+                    if was_dragging:
+                        QTimer.singleShot(10, va.transformChanged.emit)
+                return False
+        
+        if vb is not None and obj is vb.viewport():
+            if event.type() == QEvent.MouseButtonPress:
+                self._set_active_pane("B")
+                # ScrollHandDrag 모드이고 왼쪽 버튼이면 드래그 시작
+                if vb.dragMode() == QGraphicsView.ScrollHandDrag and event.button() == Qt.LeftButton:
+                    vb._is_dragging = True
+                return False
+            elif event.type() == QEvent.MouseButtonRelease:
+                # 드래그 종료
+                if hasattr(vb, '_is_dragging') and vb._is_dragging:
+                    was_dragging = vb._is_dragging
+                    vb._is_dragging = False
+                    if was_dragging:
+                        QTimer.singleShot(10, vb.transformChanged.emit)
+                return False
         if va is not None and obj is va.viewport() and event.type() == QEvent.Resize:
             self._reposition_overlay("A")
             return super().eventFilter(obj, event)
