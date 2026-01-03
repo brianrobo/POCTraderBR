@@ -620,7 +620,7 @@ class FlowLayout(QLayout):
 class CollapsibleCaptionEdit(QPlainTextEdit):
     expandedChanged = pyqtSignal(bool)
 
-    def __init__(self, parent=None, collapsed_h: int = 28, expanded_h: int = 84):
+    def __init__(self, parent=None, collapsed_h: int = 32, expanded_h: int = 84):
         super().__init__(parent)
         self._collapsed_h = int(collapsed_h)
         self._expanded_h = int(expanded_h)
@@ -3429,7 +3429,7 @@ class MainWindow(QMainWindow):
         caption_container_layout.setContentsMargins(0, 0, 0, 0)
         caption_container_layout.setSpacing(6)
         
-        edit_cap = CollapsibleCaptionEdit(caption_container, collapsed_h=28, expanded_h=84)
+        edit_cap = CollapsibleCaptionEdit(caption_container, collapsed_h=32, expanded_h=84)
         edit_cap.setPlaceholderTextCompat(f"{pane} 이미지 간단 설명 (hover/클릭 시 2~3줄 확장)")
         edit_cap.textChanged.connect(self._on_page_field_changed)
         edit_cap.expandedChanged.connect(lambda _: self._reposition_overlay(pane))
