@@ -2,7 +2,20 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.4  (2026-01-01)
+Version: 0.10.5  (2026-01-01)
+
+v0.10.5 변경 사항:
+- Chart A/B 년도/월 선택 기능 추가
+  AS-IS: 차트의 년도/월 정보를 기록할 방법 없음
+  TO-BE:
+    - Caption 위젯 우측에 년도/월 선택 ComboBox 추가
+    - 년도: 현재 년도 기준 과거 10년 ~ 미래 1년
+    - 월: 1월 ~ 12월
+    - 첫 번째 항목은 "-" (미선택)
+    - Caption 폭을 줄이고 년도/월 ComboBox를 우측에 배치
+    - 전체 폭은 거래대금 정보 위젯과 동일하게 유지
+    - Page 모델에 `chart_year_a/b`, `chart_month_a/b` 필드 추가 (int, 0은 미설정)
+    - DB 저장/로드 로직 업데이트
 
 v0.10.4 변경 사항:
 - Chart A/B 거래대금 정보 표시 기능
@@ -22,38 +35,6 @@ v0.10.4 변경 사항:
     - 드래그 중에는 위젯 위치 업데이트 방지 (`scrollContentsBy` 오버라이드)
     - 드래그 종료 후 위젯 위치 자동 복원
     - Viewport 크기 변경 시에도 위젯 위치 자동 업데이트
-
-v0.10.3 변경 사항:
-- Global Ideas 탭 이름 변경 기능
-  AS-IS: 탭 이름이 "Ideas 1", "Ideas 2" 등 고정된 형식
-  TO-BE:
-    - 탭 더블 클릭 시 이름 변경 다이얼로그 표시
-    - 사용자가 원하는 이름으로 탭 제목 지정 가능
-    - 변경된 이름이 자동으로 저장되어 앱 재시작 시에도 유지
-- 최근 작업 리스트 기능
-  AS-IS: 최근 작업한 item을 확인할 방법 없음
-  TO-BE:
-    - 좌측 네비게이션 트리 아래에 "최근 작업" 섹션 추가
-    - 최근 10개 item을 최신 순으로 표시
-    - 각 item에 카테고리 경로와 상대 시간 표시 (방금 전, 2시간 전, 어제 등)
-    - 클릭 시 해당 item으로 자동 이동 및 부모 폴더 자동 확장
-    - Item에 `last_accessed_at` 필드 추가하여 접근 시간 추적
-- 폴더 URL 링크 기능
-  AS-IS: 폴더에 관련 URL 정보를 저장할 방법 없음
-  TO-BE:
-    - Category에 `url` 필드 추가
-    - 우클릭 메뉴에 "Set URL..." / "Edit URL..." / "Open URL" / "Remove URL" 항목 추가
-    - URL이 있는 폴더는 이름 뒤에 🔗 이모지 및 파란색으로 표시
-    - 마우스 오버 시 툴팁에 URL 표시
-    - URL 클릭 시 기본 브라우저로 자동 열기
-- Global Ideas 자동 백업 기능
-  AS-IS: Global Ideas 내용 삭제/변경 시 복구 불가능
-  TO-BE:
-    - Global Ideas 변경 감지 시 자동 백업 생성
-    - `data/backups/global_ideas_backup_<timestamp>.json` 형식으로 저장
-    - 최근 20개 백업 파일만 유지 (자동 정리)
-    - 기존 DB 백업 시스템과 독립적으로 동작
-    - 백업 실패해도 저장은 계속 진행
 """
 
 import json
@@ -84,7 +65,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.4)"
+APP_TITLE = "Trader Chart Note (v0.10.5)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -811,6 +792,10 @@ class Page:
     chart_type_b: str = "일봉"  # "일봉" 또는 "분봉"
     trading_amount_a: int = 0  # 거래대금 (억 단위, 정수)
     trading_amount_b: int = 0  # 거래대금 (억 단위, 정수)
+    chart_year_a: int = 0  # 차트 년도 (0은 미설정)
+    chart_year_b: int = 0  # 차트 년도 (0은 미설정)
+    chart_month_a: int = 0  # 차트 월 (0은 미설정, 1-12)
+    chart_month_b: int = 0  # 차트 월 (0은 미설정, 1-12)
 
 
 @dataclass
@@ -866,6 +851,10 @@ class NoteDB:
             chart_type_b="일봉",
             trading_amount_a=0,
             trading_amount_b=0,
+            chart_year_a=0,
+            chart_year_b=0,
+            chart_month_a=0,
+            chart_month_b=0,
         )
 
     def _default_data(self) -> Dict[str, Any]:
@@ -1136,6 +1125,10 @@ class NoteDB:
                                     chart_type_b=str(p.get("chart_type_b", "일봉")).strip() or "일봉",
                                     trading_amount_a=int(p.get("trading_amount_a", 0)),
                                     trading_amount_b=int(p.get("trading_amount_b", 0)),
+                                    chart_year_a=int(p.get("chart_year_a", 0)),
+                                    chart_year_b=int(p.get("chart_year_b", 0)),
+                                    chart_month_a=int(p.get("chart_month_a", 0)),
+                                    chart_month_b=int(p.get("chart_month_b", 0)),
                                 )
                             )
                     if not pages:
@@ -1169,6 +1162,10 @@ class NoteDB:
             "chart_type_b": pg.chart_type_b,
             "trading_amount_a": pg.trading_amount_a,
             "trading_amount_b": pg.trading_amount_b,
+            "chart_year_a": pg.chart_year_a,
+            "chart_year_b": pg.chart_year_b,
+            "chart_month_a": pg.chart_month_a,
+            "chart_month_b": pg.chart_month_b,
         }
 
     def _serialize_item(self, it: Item) -> Dict[str, Any]:
@@ -3397,10 +3394,48 @@ class MainWindow(QMainWindow):
             return {}
         vp = viewer.viewport()
 
-        edit_cap = CollapsibleCaptionEdit(vp, collapsed_h=28, expanded_h=84)
+        # Caption과 년도/월 선택을 포함하는 컨테이너 위젯
+        caption_container = QWidget(vp)
+        caption_container_layout = QHBoxLayout(caption_container)
+        caption_container_layout.setContentsMargins(0, 0, 0, 0)
+        caption_container_layout.setSpacing(6)
+        
+        edit_cap = CollapsibleCaptionEdit(caption_container, collapsed_h=28, expanded_h=84)
         edit_cap.setPlaceholderTextCompat(f"{pane} 이미지 간단 설명 (hover/클릭 시 2~3줄 확장)")
         edit_cap.textChanged.connect(self._on_page_field_changed)
         edit_cap.expandedChanged.connect(lambda _: self._reposition_overlay(pane))
+        caption_container_layout.addWidget(edit_cap, 1)  # Caption은 확장 가능
+        
+        # 년도/월 선택 ComboBox
+        date_widget = QWidget(caption_container)
+        date_layout = QHBoxLayout(date_widget)
+        date_layout.setContentsMargins(0, 0, 0, 0)
+        date_layout.setSpacing(4)
+        
+        # 년도 ComboBox
+        combo_year = QComboBox(date_widget)
+        current_year = datetime.now().year
+        # 현재 년도 기준으로 과거 10년, 미래 1년
+        for year in range(current_year - 10, current_year + 2):
+            combo_year.addItem(str(year), year)
+        combo_year.insertItem(0, "-", 0)  # 첫 번째 항목: 미선택
+        combo_year.setCurrentIndex(0)
+        combo_year.setFixedWidth(70)
+        combo_year.currentIndexChanged.connect(self._on_page_field_changed)
+        date_layout.addWidget(combo_year)
+        
+        # 월 ComboBox
+        combo_month = QComboBox(date_widget)
+        combo_month.addItem("-", 0)  # 첫 번째 항목: 미선택
+        for month in range(1, 13):
+            combo_month.addItem(f"{month}월", month)
+        combo_month.setCurrentIndex(0)
+        combo_month.setFixedWidth(60)
+        combo_month.currentIndexChanged.connect(self._on_page_field_changed)
+        date_layout.addWidget(combo_month)
+        
+        date_widget.setFixedWidth(134)  # 70 + 4 + 60 = 134
+        caption_container_layout.addWidget(date_widget, 0)  # 년도/월은 고정 폭
         
         # 거래대금 정보 위젯 (Caption 아래에 배치)
         trading_info_widget = QWidget(vp)
@@ -3645,6 +3680,9 @@ class MainWindow(QMainWindow):
         return {
             "viewer": viewer,
             "cap": edit_cap,
+            "caption_container": caption_container,
+            "year": combo_year,
+            "month": combo_month,
             "trading_info": trading_info_widget,
             "chart_type": combo_chart_type,
             "trading_amount": edit_trading_amount,
@@ -3769,12 +3807,11 @@ class MainWindow(QMainWindow):
             return
         # 드래그 중이면 위젯 위치 업데이트하지 않음
         if hasattr(viewer, '_is_dragging') and viewer._is_dragging:
-            print(f"[DEBUG] _reposition_overlay 호출됨 (드래그 중이므로 무시) - pane={pane}, _is_dragging={viewer._is_dragging}")
             return
-        print(f"[DEBUG] _reposition_overlay 실행 - pane={pane}, _is_dragging={getattr(viewer, '_is_dragging', False)}")
         vp = viewer.viewport()
 
         edit_cap: CollapsibleCaptionEdit = ui["cap"]
+        caption_container: QWidget = ui.get("caption_container")
         trading_info: QWidget = ui.get("trading_info")
         btn_anno_toggle: QToolButton = ui["anno_toggle"]
         anno_panel: QFrame = ui["panel"]
@@ -3796,7 +3833,7 @@ class MainWindow(QMainWindow):
             trading_info.adjustSize()
             trading_info_width = trading_info.width()
         
-        # Caption 폭을 거래대금 정보 위젯과 동일하게 설정
+        # Caption 컨테이너 폭을 거래대금 정보 위젯과 동일하게 설정
         cap_min = 260
         cap_max = 720
         
@@ -3809,13 +3846,18 @@ class MainWindow(QMainWindow):
         
         # 좌측 정렬로 배치
         cap_x = margin
-        edit_cap.setFixedWidth(cap_w)
-        edit_cap.move(cap_x, margin)
+        if caption_container:
+            caption_container.setFixedWidth(cap_w)
+            caption_container.move(cap_x, margin)
+        else:
+            # caption_container가 없으면 기존 방식 사용
+            edit_cap.setFixedWidth(cap_w)
+            edit_cap.move(cap_x, margin)
         
         # 거래대금 정보 위젯을 Caption 아래에 배치 (Caption과 동일한 폭, 좌측 정렬)
         if trading_info:
             trading_info.setFixedWidth(cap_w)
-            trading_info.move(cap_x, margin + edit_cap.height() + gap)
+            trading_info.move(cap_x, margin + (caption_container.height() if caption_container else edit_cap.height()) + gap)
 
     # ---------------- Tree refresh ---------------- 
     def _refresh_nav_tree(self, select_current: bool = False) -> None:
@@ -4306,6 +4348,11 @@ class MainWindow(QMainWindow):
                             ui["trading_amount"].clear()
                         if "trading_status" in ui:
                             ui["trading_status"].setText("")
+                        # 년도/월 초기화
+                        if "year" in ui:
+                            ui["year"].setCurrentIndex(0)  # "-" 선택
+                        if "month" in ui:
+                            ui["month"].setCurrentIndex(0)  # "-" 선택
                         ui["draw"].setChecked(False)
                         ui["panel"].setVisible(False)
                         ui["anno_toggle"].setVisible(True)
@@ -4338,6 +4385,16 @@ class MainWindow(QMainWindow):
                     ui_a["chart_type"].setCurrentText(chart_type_a)
                     amount_a = pg.trading_amount_a if pg.trading_amount_a > 0 else ""
                     ui_a["trading_amount"].setText(str(amount_a) if amount_a else "")
+                    # 년도/월 로드
+                    if "year" in ui_a and "month" in ui_a:
+                        year_a = pg.chart_year_a if pg.chart_year_a > 0 else 0
+                        month_a = pg.chart_month_a if pg.chart_month_a > 0 else 0
+                        # 년도 ComboBox에서 해당 년도 찾기
+                        year_idx = ui_a["year"].findData(year_a) if year_a > 0 else 0
+                        ui_a["year"].setCurrentIndex(year_idx if year_idx >= 0 else 0)
+                        # 월 ComboBox에서 해당 월 찾기
+                        month_idx = ui_a["month"].findData(month_a) if month_a > 0 else 0
+                        ui_a["month"].setCurrentIndex(month_idx if month_idx >= 0 else 0)
                     # 상태 수동 업데이트
                     QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("A"))
             if self._pane_ui.get("B"):
@@ -4348,6 +4405,16 @@ class MainWindow(QMainWindow):
                     ui_b["chart_type"].setCurrentText(chart_type_b)
                     amount_b = pg.trading_amount_b if pg.trading_amount_b > 0 else ""
                     ui_b["trading_amount"].setText(str(amount_b) if amount_b else "")
+                    # 년도/월 로드
+                    if "year" in ui_b and "month" in ui_b:
+                        year_b = pg.chart_year_b if pg.chart_year_b > 0 else 0
+                        month_b = pg.chart_month_b if pg.chart_month_b > 0 else 0
+                        # 년도 ComboBox에서 해당 년도 찾기
+                        year_idx = ui_b["year"].findData(year_b) if year_b > 0 else 0
+                        ui_b["year"].setCurrentIndex(year_idx if year_idx >= 0 else 0)
+                        # 월 ComboBox에서 해당 월 찾기
+                        month_idx = ui_b["month"].findData(month_b) if month_b > 0 else 0
+                        ui_b["month"].setCurrentIndex(month_idx if month_idx >= 0 else 0)
                     # 상태 수동 업데이트
                     QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("B"))
 
@@ -4557,11 +4624,13 @@ class MainWindow(QMainWindow):
         if pg.image_b_caption != new_cap_b:
             pg.image_b_caption = new_cap_b; changed = True
         
-        # 거래대금 정보 수집
+        # 거래대금 정보 및 년도/월 수집
         ui_a = self._pane_ui.get("A", {})
         if ui_a:
             chart_type_a = ui_a.get("chart_type")
             trading_amount_a = ui_a.get("trading_amount")
+            year_a = ui_a.get("year")
+            month_a = ui_a.get("month")
             if chart_type_a and trading_amount_a:
                 new_chart_type_a = chart_type_a.currentText()
                 try:
@@ -4572,11 +4641,25 @@ class MainWindow(QMainWindow):
                     pg.chart_type_a = new_chart_type_a; changed = True
                 if pg.trading_amount_a != new_amount_a:
                     pg.trading_amount_a = new_amount_a; changed = True
+            # 년도/월 저장
+            if year_a and month_a:
+                try:
+                    new_year_a = year_a.currentData() if year_a.currentData() else 0
+                    new_month_a = month_a.currentData() if month_a.currentData() else 0
+                except (ValueError, AttributeError):
+                    new_year_a = 0
+                    new_month_a = 0
+                if pg.chart_year_a != new_year_a:
+                    pg.chart_year_a = new_year_a; changed = True
+                if pg.chart_month_a != new_month_a:
+                    pg.chart_month_a = new_month_a; changed = True
         
         ui_b = self._pane_ui.get("B", {})
         if ui_b:
             chart_type_b = ui_b.get("chart_type")
             trading_amount_b = ui_b.get("trading_amount")
+            year_b = ui_b.get("year")
+            month_b = ui_b.get("month")
             if chart_type_b and trading_amount_b:
                 new_chart_type_b = chart_type_b.currentText()
                 try:
@@ -4587,6 +4670,18 @@ class MainWindow(QMainWindow):
                     pg.chart_type_b = new_chart_type_b; changed = True
                 if pg.trading_amount_b != new_amount_b:
                     pg.trading_amount_b = new_amount_b; changed = True
+            # 년도/월 저장
+            if year_b and month_b:
+                try:
+                    new_year_b = year_b.currentData() if year_b.currentData() else 0
+                    new_month_b = month_b.currentData() if month_b.currentData() else 0
+                except (ValueError, AttributeError):
+                    new_year_b = 0
+                    new_month_b = 0
+                if pg.chart_year_b != new_year_b:
+                    pg.chart_year_b = new_year_b; changed = True
+                if pg.chart_month_b != new_month_b:
+                    pg.chart_month_b = new_month_b; changed = True
 
         new_text = _strip_highlight_html(self.text_edit.toHtml())
         if pg.note_text != new_text:
