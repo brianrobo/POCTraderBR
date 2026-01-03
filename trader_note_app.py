@@ -2,7 +2,18 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.5  (2026-01-01)
+Version: 0.10.6  (2026-01-01)
+
+v0.10.6 변경 사항:
+- 최근 작업 리스트에 URL 입력창 추가
+  AS-IS: 빠르게 URL을 입력하고 이동할 방법 없음
+  TO-BE:
+    - "최근 작업" 라벨 바로 아래에 URL 입력창 및 이동 버튼 추가
+    - URL 입력 후 Enter 키 또는 이동 버튼(→) 클릭으로 브라우저 열기
+    - URL 자동 보정 (http:// 또는 https://가 없으면 자동 추가)
+    - URL 유효성 검사 및 에러 처리
+    - 앱 재시작 시 입력한 URL 자동 복원 (ui_state에 저장)
+    - 기존 폴더 URL 기능과 동일한 방식으로 브라우저 열기
 
 v0.10.5 변경 사항:
 - Chart A/B 년도/월 선택 기능 추가
@@ -16,25 +27,6 @@ v0.10.5 변경 사항:
     - 전체 폭은 거래대금 정보 위젯과 동일하게 유지
     - Page 모델에 `chart_year_a/b`, `chart_month_a/b` 필드 추가 (int, 0은 미설정)
     - DB 저장/로드 로직 업데이트
-
-v0.10.4 변경 사항:
-- Chart A/B 거래대금 정보 표시 기능
-  AS-IS: 차트에 거래대금 정보를 기록할 방법 없음
-  TO-BE:
-    - Chart A/B 각각에 거래대금 정보 위젯 추가
-    - 일봉/분봉 선택 ComboBox 추가
-    - 거래대금 입력 필드 (정수, 억 단위, 만 단위까지)
-    - 자동 상태 판단: 일봉 150억 이상/미만, 분봉 10억 이상/미만
-    - 상태별 배경색 및 테두리 변경 (양호: 녹색, 주의: 주황색)
-    - Caption과 동일한 폭으로 좌측 정렬 배치
-    - Page 모델에 `chart_type_a/b`, `trading_amount_a/b` 필드 추가
-- Chart 확대/축소 및 드래그 시 위젯 위치 관리 개선
-  AS-IS: 이미지 확대/축소 또는 드래그 시 위젯 위치가 잘못 표시됨
-  TO-BE:
-    - 확대/축소 시 위젯 위치 자동 업데이트 (`transformChanged` 시그널)
-    - 드래그 중에는 위젯 위치 업데이트 방지 (`scrollContentsBy` 오버라이드)
-    - 드래그 종료 후 위젯 위치 자동 복원
-    - Viewport 크기 변경 시에도 위젯 위치 자동 업데이트
 """
 
 import json
@@ -65,7 +57,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.5)"
+APP_TITLE = "Trader Chart Note (v0.10.6)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -2773,6 +2765,43 @@ class MainWindow(QMainWindow):
         recent_label.setStyleSheet("font-weight: 700; color: #666; padding: 4px 0px;")
         left_layout.addWidget(recent_label)
         
+        # URL 입력 섹션 (최근 작업 라벨 바로 아래에 배치)
+        url_widget = QWidget()
+        url_layout = QHBoxLayout(url_widget)
+        url_layout.setContentsMargins(0, 4, 0, 4)
+        url_layout.setSpacing(4)
+        
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("URL 입력...")
+        self.url_input.returnPressed.connect(self._open_url_from_input)  # Enter 키로도 이동 가능
+        url_layout.addWidget(self.url_input, 1)
+        
+        btn_open_url = QToolButton()
+        btn_open_url.setText("→")
+        btn_open_url.setToolTip("URL 열기")
+        btn_open_url.setFixedWidth(32)
+        btn_open_url.setStyleSheet("""
+            QToolButton {
+                background: #5A8DFF;
+                color: white;
+                border: 1px solid #4A7DEF;
+                border-radius: 4px;
+                font-weight: 600;
+                font-size: 12pt;
+            }
+            QToolButton:hover {
+                background: #6A9DFF;
+            }
+            QToolButton:pressed {
+                background: #4A7DEF;
+            }
+        """)
+        btn_open_url.clicked.connect(self._open_url_from_input)
+        url_layout.addWidget(btn_open_url, 0)
+        
+        left_layout.addWidget(url_widget)
+        
+        # 작업 리스트 영역
         self.recent_items_list = QListWidget()
         self.recent_items_list.setMaximumHeight(200)
         self.recent_items_list.itemClicked.connect(self._on_recent_item_clicked)
@@ -4137,6 +4166,12 @@ class MainWindow(QMainWindow):
             self.current_item_id = ""
 
         self.current_page_index = int(page_idx) if isinstance(page_idx, int) else 0
+        
+        # URL 입력창 내용 복원
+        if hasattr(self, 'url_input'):
+            saved_url = str(self.db.ui_state.get("url_input_text", "") or "")
+            self.url_input.setText(saved_url)
+        
         it = self.current_item()
         if it and it.pages:
             self.current_page_index = max(0, min(self.current_page_index, len(it.pages) - 1))
@@ -4160,6 +4195,9 @@ class MainWindow(QMainWindow):
         self.db.ui_state["desc_visible"] = bool(self._desc_visible)
         self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
         self.db.ui_state["trace_visible"] = bool(self._trace_visible)
+        # URL 입력창 내용 저장
+        if hasattr(self, 'url_input'):
+            self.db.ui_state["url_input_text"] = self.url_input.text().strip()
         if self.text_container.isVisible():
             self._remember_page_splitter_sizes()
         if self.notes_left.isVisible() and self.ideas_panel.isVisible():
@@ -4906,6 +4944,28 @@ class MainWindow(QMainWindow):
             list_item = QListWidgetItem(f"{it.name}\n{path_str} • {time_str}")
             list_item.setData(Qt.UserRole, item.id)  # item ID 저장
             self.recent_items_list.addItem(list_item)
+    
+    def _open_url_from_input(self) -> None:
+        """URL 입력창에서 URL을 읽어 브라우저로 열기"""
+        url_text = self.url_input.text().strip()
+        if not url_text:
+            return
+        
+        # URL 자동 보정 (http:// 또는 https://가 없으면 추가)
+        url = url_text
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        
+        # URL 유효성 검사 (간단한 형식 체크)
+        if not ("." in url.replace("http://", "").replace("https://", "")):
+            QMessageBox.warning(self, "Invalid URL", "올바른 URL 형식이 아닙니다.")
+            return
+        
+        # 브라우저로 열기
+        try:
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"URL을 열 수 없습니다:\n{str(e)}")
     
     def _on_recent_item_clicked(self, list_item: QListWidgetItem) -> None:
         """최근 작업 리스트에서 item 클릭 시 해당 item으로 이동"""
