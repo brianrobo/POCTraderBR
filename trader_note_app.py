@@ -2,7 +2,39 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.2  (2026-01-01)
+Version: 0.10.3  (2026-01-01)
+
+v0.10.3 변경 사항:
+- Global Ideas 탭 이름 변경 기능
+  AS-IS: 탭 이름이 "Ideas 1", "Ideas 2" 등 고정된 형식
+  TO-BE:
+    - 탭 더블 클릭 시 이름 변경 다이얼로그 표시
+    - 사용자가 원하는 이름으로 탭 제목 지정 가능
+    - 변경된 이름이 자동으로 저장되어 앱 재시작 시에도 유지
+- 최근 작업 리스트 기능
+  AS-IS: 최근 작업한 item을 확인할 방법 없음
+  TO-BE:
+    - 좌측 네비게이션 트리 아래에 "최근 작업" 섹션 추가
+    - 최근 10개 item을 최신 순으로 표시
+    - 각 item에 카테고리 경로와 상대 시간 표시 (방금 전, 2시간 전, 어제 등)
+    - 클릭 시 해당 item으로 자동 이동 및 부모 폴더 자동 확장
+    - Item에 `last_accessed_at` 필드 추가하여 접근 시간 추적
+- 폴더 URL 링크 기능
+  AS-IS: 폴더에 관련 URL 정보를 저장할 방법 없음
+  TO-BE:
+    - Category에 `url` 필드 추가
+    - 우클릭 메뉴에 "Set URL..." / "Edit URL..." / "Open URL" / "Remove URL" 항목 추가
+    - URL이 있는 폴더는 이름 뒤에 🔗 이모지 및 파란색으로 표시
+    - 마우스 오버 시 툴팁에 URL 표시
+    - URL 클릭 시 기본 브라우저로 자동 열기
+- Global Ideas 자동 백업 기능
+  AS-IS: Global Ideas 내용 삭제/변경 시 복구 불가능
+  TO-BE:
+    - Global Ideas 변경 감지 시 자동 백업 생성
+    - `data/backups/global_ideas_backup_<timestamp>.json` 형식으로 저장
+    - 최근 20개 백업 파일만 유지 (자동 정리)
+    - 기존 DB 백업 시스템과 독립적으로 동작
+    - 백업 실패해도 저장은 계속 진행
 
 v0.10.2 변경 사항:
 - 트리 확장/축소 상태 저장 및 복원 기능
@@ -29,15 +61,6 @@ v0.10.2 변경 사항:
     - `ExpandableTreeWidget` 커스텀 클래스 추가
     - 아이콘 영역(왼쪽 20px) 클릭 시 확장/축소
     - 단일 클릭 및 더블 클릭 모두 지원
-
-v0.10.1 변경 사항:
-- 아이템 이름 충돌 방지 개선
-  AS-IS: 이미지 저장 시 `{아이템이름}_{ID일부}` 형식 사용 (이론적 충돌 가능성)
-  TO-BE:
-    - 전체 UUID만 사용하여 폴더명 생성 (`it.id.replace("-", "_")`)
-    - UUID는 고유하므로 충돌 불가능
-    - 같은 이름의 아이템이 여러 폴더에 있어도 안전
-    - 파일시스템 호환성을 위해 하이픈을 언더스코어로 변경
 """
 
 import json
@@ -52,7 +75,8 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QRect, QPoint, QEvent, QSize
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QRect, QPoint, QEvent, QSize, QUrl
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtGui import (
     QImage, QPixmap, QPainterPath, QPen, QColor, QPainter, QIcon,
     QTextCharFormat, QTextListFormat, QTextBlockFormat, QTextCursor, QFont, QBrush, QKeySequence
@@ -63,13 +87,14 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QWidget, QInputDialog, QComboBox, QCheckBox, QGroupBox, QPushButton,
     QLayout, QWidgetItem, QFrame, QTreeWidget, QTreeWidgetItem, QMenu, QPlainTextEdit,
     QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
-    QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea
+    QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea, QListWidget, QListWidgetItem
 )
 
-APP_TITLE = "Trader Chart Note (v0.10.2)"
+APP_TITLE = "Trader Chart Note (v0.10.3)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
+MAX_IDEAS_BACKUPS = 20  # Global Ideas 최대 백업 파일 개수
 MAX_DATA_SIZE_MB = 50  # 최대 데이터 크기 (MB)
 ASSETS_DIR = "assets"
 ROOT_CATEGORY_ID = "__ROOT__"  # ROOT 폴더 고정 ID (삭제 불가)
@@ -93,6 +118,30 @@ def _now_epoch() -> int:
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _format_relative_time(timestamp: int) -> str:
+    """상대 시간 포맷팅 (예: "방금 전", "2시간 전", "어제", "2025-01-01")"""
+    if timestamp <= 0:
+        return "없음"
+    
+    now = _now_epoch()
+    diff = now - timestamp
+    
+    if diff < 60:
+        return "방금 전"
+    elif diff < 3600:
+        minutes = diff // 60
+        return f"{minutes}분 전"
+    elif diff < 86400:
+        hours = diff // 3600
+        return f"{hours}시간 전"
+    elif diff < 172800:  # 2일 미만
+        return "어제"
+    else:
+        # 날짜 형식으로 표시
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.strftime("%Y-%m-%d")
 
 
 def _ensure_dir(path: str) -> None:
@@ -154,6 +203,65 @@ def _cleanup_old_backups() -> None:
         
         # MAX_BACKUPS개 초과 시 오래된 것 삭제
         for mtime, filepath in backup_files[MAX_BACKUPS:]:
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _backup_global_ideas(ideas_data: List[Dict[str, str]]) -> Optional[str]:
+    """Global Ideas 백업 생성"""
+    if not ideas_data:
+        return None
+    
+    try:
+        _ensure_dir(BACKUP_DIR)
+        timestamp = _now_epoch()
+        backup_filename = f"global_ideas_backup_{timestamp}.json"
+        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        
+        # Global Ideas 데이터만 저장
+        backup_data = {
+            "timestamp": timestamp,
+            "global_ideas": ideas_data.copy()
+        }
+        
+        with open(backup_path, "w", encoding="utf-8") as f:
+            json.dump(backup_data, f, ensure_ascii=False, indent=2)
+        
+        # 오래된 Global Ideas 백업 파일 정리
+        _cleanup_old_ideas_backups()
+        
+        return backup_path
+    except Exception as e:
+        # 백업 실패해도 저장은 계속 진행
+        print(f"[DEBUG] Global Ideas 백업 실패: {str(e)}")
+        return None
+
+
+def _cleanup_old_ideas_backups() -> None:
+    """오래된 Global Ideas 백업 파일 정리 (최근 MAX_IDEAS_BACKUPS개만 유지)"""
+    try:
+        if not os.path.exists(BACKUP_DIR):
+            return
+        
+        backup_files = []
+        for filename in os.listdir(BACKUP_DIR):
+            if filename.startswith("global_ideas_backup_") and filename.endswith(".json"):
+                filepath = os.path.join(BACKUP_DIR, filename)
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    backup_files.append((mtime, filepath))
+                except Exception:
+                    continue
+        
+        # 최신순으로 정렬
+        backup_files.sort(reverse=True)
+        
+        # MAX_IDEAS_BACKUPS개 초과 시 오래된 것 삭제
+        for mtime, filepath in backup_files[MAX_IDEAS_BACKUPS:]:
             try:
                 os.remove(filepath)
             except Exception:
@@ -714,6 +822,7 @@ class Item:
     category_id: str
     pages: List[Page]
     last_page_index: int = 0
+    last_accessed_at: int = 0  # 마지막 접근 시간 (epoch timestamp)
 
 
 @dataclass
@@ -723,6 +832,7 @@ class Category:
     parent_id: Optional[str]
     child_ids: List[str]
     item_ids: List[str]
+    url: str = ""  # 폴더 관련 URL 링크
 
 
 class NoteDB:
@@ -765,7 +875,7 @@ class NoteDB:
             "updated_at": now,
             "root_category_ids": [ROOT_CATEGORY_ID],
             "categories": [
-                {"id": ROOT_CATEGORY_ID, "name": "ROOT", "parent_id": None, "child_ids": [], "item_ids": []}
+                {"id": ROOT_CATEGORY_ID, "name": "ROOT", "parent_id": None, "child_ids": [], "item_ids": [], "url": ""}
             ],
             "items": [],
             "ui_state": {
@@ -981,10 +1091,12 @@ class NoteDB:
                         child_ids = []
                     if not isinstance(item_ids, list):
                         item_ids = []
+                    url = str(c.get("url", "")).strip() or ""
                     self.categories[cid] = Category(
                         id=cid, name=name, parent_id=parent_id,
                         child_ids=[str(x) for x in child_ids if str(x)],
                         item_ids=[str(x) for x in item_ids if str(x)],
+                        url=url,
                     )
                 except Exception:
                     continue
@@ -1023,8 +1135,10 @@ class NoteDB:
                     if not pages:
                         pages = [self.new_page()]
 
+                    last_accessed_at = int(it.get("last_accessed_at", 0))
                     self.items[iid] = Item(
-                        id=iid, name=name, category_id=cat_id, pages=pages, last_page_index=last_page_index
+                        id=iid, name=name, category_id=cat_id, pages=pages, 
+                        last_page_index=last_page_index, last_accessed_at=last_accessed_at
                     )
                 except Exception:
                     continue
@@ -1053,6 +1167,7 @@ class NoteDB:
             "name": it.name,
             "category_id": it.category_id,
             "last_page_index": it.last_page_index,
+            "last_accessed_at": it.last_accessed_at,
             "pages": [self._serialize_page(p) for p in it.pages],
         }
 
@@ -1063,6 +1178,7 @@ class NoteDB:
             "parent_id": c.parent_id,
             "child_ids": list(c.child_ids),
             "item_ids": list(c.item_ids),
+            "url": c.url,
         }
 
     def _migrate_old_format(self, old_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1178,7 +1294,8 @@ class NoteDB:
                 name="ROOT",
                 parent_id=None,
                 child_ids=[],
-                item_ids=[]
+                item_ids=[],
+                url=""
             )
             print(f"[DEBUG] ROOT 폴더 자동 생성")
         
@@ -1318,7 +1435,7 @@ class NoteDB:
         if parent_id and parent_id not in self.categories:
             parent_id = None
         cid = _uuid()
-        c = Category(id=cid, name=name, parent_id=parent_id, child_ids=[], item_ids=[])
+        c = Category(id=cid, name=name, parent_id=parent_id, child_ids=[], item_ids=[], url="")
         self.categories[cid] = c
         if parent_id:
             self.categories[parent_id].child_ids.append(cid)
@@ -2257,6 +2374,7 @@ class MainWindow(QMainWindow):
             self._load_current_item_page_to_ui(clear_only=True)
 
         self._load_global_ideas_to_ui()
+        self._update_recent_items_list()  # 최근 작업 리스트 초기화
 
         ideas_vis = bool(self.db.ui_state.get("global_ideas_visible", False))
         self._set_global_ideas_visible(ideas_vis, persist=False)
@@ -2590,6 +2708,16 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(ctrl)
         left_layout.addWidget(self.nav_tree, 1)
+        
+        # 최근 작업 섹션
+        recent_label = QLabel("최근 작업")
+        recent_label.setStyleSheet("font-weight: 700; color: #666; padding: 4px 0px;")
+        left_layout.addWidget(recent_label)
+        
+        self.recent_items_list = QListWidget()
+        self.recent_items_list.setMaximumHeight(200)
+        self.recent_items_list.itemClicked.connect(self._on_recent_item_clicked)
+        left_layout.addWidget(self.recent_items_list)
 
         # Right panel: vertical split (top content + bottom trace)
         right_panel = QWidget()
@@ -3042,6 +3170,8 @@ class MainWindow(QMainWindow):
         self.ideas_tabs = QTabWidget()
         self.ideas_tabs.setTabsClosable(False)  # X 버튼 제거
         self.ideas_tabs.currentChanged.connect(self._on_ideas_tab_changed)
+        # 탭 더블 클릭 시 이름 변경
+        self.ideas_tabs.tabBarDoubleClicked.connect(self._on_ideas_tab_double_clicked)
         
         # 탭 추가/삭제 버튼 (page 추가/삭제와 동일한 스타일)
         ideas_header = QWidget()
@@ -3471,7 +3601,12 @@ class MainWindow(QMainWindow):
             # 자식이 있으면 사각형 + 아이콘 사용
             has_children = bool(c.child_ids or c.item_ids)
             
-            q = QTreeWidgetItem([c.name])
+            # URL이 있으면 폴더 이름에 링크 표시 추가
+            display_name = c.name
+            if c.url and c.url.strip():
+                display_name = f"{c.name} 🔗"
+            
+            q = QTreeWidgetItem([display_name])
             q.setData(0, self.NODE_TYPE_ROLE, "category")
             q.setData(0, self.CATEGORY_ID_ROLE, c.id)
             q.setFlags(q.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
@@ -3484,6 +3619,12 @@ class MainWindow(QMainWindow):
             f = q.font(0)
             f.setBold(True)
             q.setFont(0, f)
+            
+            # URL이 있으면 툴팁에 표시 및 색상 변경
+            if c.url and c.url.strip():
+                q.setToolTip(0, f"URL: {c.url}\n우클릭하여 열기")
+                # URL이 있는 폴더는 파란색으로 표시
+                q.setForeground(0, QColor("#0066CC"))
             
             if parent_q is None:
                 self.nav_tree.addTopLevelItem(q)
@@ -3620,6 +3761,10 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
         if node_type == "category":
+            cid = str(item.data(0, self.CATEGORY_ID_ROLE) or "")
+            cat = self.db.get_category(cid) if cid else None
+            has_url = cat and cat.url and cat.url.strip()
+            
             act_add_folder = menu.addAction("+ Folder (sub)")
             act_add_item = menu.addAction("+ Item")
             menu.addSeparator()
@@ -3628,6 +3773,14 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             act_up = menu.addAction("Move Folder Up")
             act_down = menu.addAction("Move Folder Down")
+            menu.addSeparator()
+            # URL 관련 메뉴
+            if has_url:
+                act_open_url = menu.addAction("Open URL")
+                act_edit_url = menu.addAction("Edit URL...")
+                act_remove_url = menu.addAction("Remove URL")
+            else:
+                act_set_url = menu.addAction("Set URL...")
             chosen = menu.exec_(self.nav_tree.viewport().mapToGlobal(pos))
             if not chosen:
                 return
@@ -3643,6 +3796,14 @@ class MainWindow(QMainWindow):
                 self.move_folder(-1)
             elif chosen == act_down:
                 self.move_folder(+1)
+            elif has_url and chosen == act_open_url:
+                self._open_folder_url(cid)
+            elif has_url and chosen == act_edit_url:
+                self._edit_folder_url(cid)
+            elif has_url and chosen == act_remove_url:
+                self._remove_folder_url(cid)
+            elif not has_url and chosen == act_set_url:
+                self._set_folder_url(cid)
             return
 
         if node_type == "item":
@@ -3819,6 +3980,11 @@ class MainWindow(QMainWindow):
                     self.trace(f"경고: 아이템 '{it.name}'에 페이지가 없습니다. 기본 페이지를 생성합니다.", "WARN")
                     it.pages = [self.db.new_page()]
                 self.current_page_index = max(0, min(it.last_page_index, len(it.pages) - 1))
+                
+                # 마지막 접근 시간 업데이트
+                it.last_accessed_at = _now_epoch()
+                self._update_recent_items_list()
+                
                 self._save_ui_state()
 
                 self._show_placeholder(False)
@@ -4099,6 +4265,8 @@ class MainWindow(QMainWindow):
             try:
                 new_global_ideas = self._collect_ideas_tabs_from_ui()
                 if self.db.global_ideas != new_global_ideas:
+                    # Global Ideas 변경 시 백업 생성
+                    _backup_global_ideas(self.db.global_ideas)
                     self.db.global_ideas = new_global_ideas
                     self._save_ui_state()
                     self._save_db_with_warning()
@@ -4110,6 +4278,8 @@ class MainWindow(QMainWindow):
         # Ideas 탭들 수집
         new_global_ideas = self._collect_ideas_tabs_from_ui()
         if self.db.global_ideas != new_global_ideas:
+            # Global Ideas 변경 시 백업 생성
+            _backup_global_ideas(self.db.global_ideas)
             self.db.global_ideas = new_global_ideas
             changed = True
 
@@ -4271,6 +4441,26 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(self.ideas_tab_editors):
             self._set_active_rich_edit(self.ideas_tab_editors[index])
     
+    def _on_ideas_tab_double_clicked(self, index: int) -> None:
+        """Ideas 탭 더블 클릭 시 이름 변경"""
+        if index < 0 or index >= self.ideas_tabs.count():
+            return
+        
+        current_name = self.ideas_tabs.tabText(index)
+        new_name, ok = QInputDialog.getText(
+            self,
+            "탭 이름 변경",
+            "새 탭 이름:",
+            text=current_name
+        )
+        
+        if ok and new_name.strip():
+            new_name = new_name.strip()
+            # 탭 이름 업데이트
+            self.ideas_tabs.setTabText(index, new_name)
+            # 데이터 저장
+            self._on_page_field_changed()
+    
     def _clear_ideas_tabs(self) -> None:
         """Ideas 탭들 모두 제거"""
         while self.ideas_tabs.count() > 0:
@@ -4287,6 +4477,86 @@ class MainWindow(QMainWindow):
                 content = _strip_highlight_html(editor.toHtml())
                 out.append({"name": name, "content": content})
         return out
+    
+    def _update_recent_items_list(self) -> None:
+        """최근 작업 리스트 업데이트"""
+        self.recent_items_list.clear()
+        
+        # 모든 item을 수집하고 last_accessed_at으로 정렬
+        items_with_time = []
+        for item in self.db.items.values():
+            if item.last_accessed_at > 0:
+                items_with_time.append(item)
+        
+        # 최신 순으로 정렬 (최근 10개만)
+        items_with_time.sort(key=lambda x: x.last_accessed_at, reverse=True)
+        items_with_time = items_with_time[:10]
+        
+        # 리스트에 추가
+        for item in items_with_time:
+            found = self.db.find_item(item.id)
+            if not found:
+                continue
+            it, cat = found
+            
+            # 카테고리 경로 생성
+            cat_path = []
+            current_cat = cat
+            while current_cat:
+                cat_path.insert(0, current_cat.name)
+                if current_cat.parent_id:
+                    current_cat = self.db.get_category(current_cat.parent_id)
+                else:
+                    break
+            
+            path_str = " > ".join(cat_path) if cat_path else "ROOT"
+            time_str = _format_relative_time(item.last_accessed_at)
+            
+            list_item = QListWidgetItem(f"{it.name}\n{path_str} • {time_str}")
+            list_item.setData(Qt.UserRole, item.id)  # item ID 저장
+            self.recent_items_list.addItem(list_item)
+    
+    def _on_recent_item_clicked(self, list_item: QListWidgetItem) -> None:
+        """최근 작업 리스트에서 item 클릭 시 해당 item으로 이동"""
+        item_id = list_item.data(Qt.UserRole)
+        if not item_id:
+            return
+        
+        # 트리에서 해당 item 찾기
+        found = self.db.find_item(item_id)
+        if not found:
+            return
+        
+        it, cat = found
+        
+        # 트리에서 해당 item 찾아서 선택
+        def find_item_in_tree(parent_item, target_id):
+            for i in range(parent_item.childCount()):
+                child = parent_item.child(i)
+                node_type = child.data(0, self.NODE_TYPE_ROLE)
+                if node_type == "item":
+                    if str(child.data(0, self.ITEM_ID_ROLE) or "") == target_id:
+                        return child
+                elif node_type == "category":
+                    result = find_item_in_tree(child, target_id)
+                    if result:
+                        return result
+            return None
+        
+        # 트리에서 item 찾기
+        for i in range(self.nav_tree.topLevelItemCount()):
+            top_item = self.nav_tree.topLevelItem(i)
+            found_item = find_item_in_tree(top_item, item_id)
+            if found_item:
+                # 부모 폴더들 확장
+                parent = found_item.parent()
+                while parent:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                
+                # item 선택
+                self.nav_tree.setCurrentItem(found_item)
+                return
 
     # ---------------- Page navigation ----------------
     def go_prev_page(self) -> None:
@@ -4760,6 +5030,7 @@ class MainWindow(QMainWindow):
         self.db.rename_item(iid, new_name.strip())
         self._save_db_with_warning()
         self._refresh_nav_tree(select_current=True)
+        self._update_recent_items_list()  # 최근 작업 리스트 업데이트
 
     def delete_item(self) -> None:
         itw = self.nav_tree.currentItem()
@@ -4804,8 +5075,72 @@ class MainWindow(QMainWindow):
         self._save_ui_state()
         self._save_db_with_warning()
         self._refresh_nav_tree(select_current=True)
+        self._update_recent_items_list()  # 최근 작업 리스트 업데이트
         self._load_current_item_page_to_ui(clear_only=(not self.current_item_id))
 
+    def _set_folder_url(self, cid: str) -> None:
+        """폴더에 URL 설정"""
+        cat = self.db.get_category(cid)
+        if not cat:
+            return
+        
+        url, ok = QInputDialog.getText(
+            self,
+            "Set Folder URL",
+            "URL을 입력하세요:",
+            text=cat.url if cat.url else ""
+        )
+        
+        if ok:
+            url = url.strip()
+            # URL 유효성 검사 (간단한 검사)
+            if url and not (url.startswith("http://") or url.startswith("https://")):
+                url = "https://" + url
+            
+            cat.url = url
+            self._save_db_with_warning()
+            self._refresh_nav_tree(select_current=True)
+    
+    def _edit_folder_url(self, cid: str) -> None:
+        """폴더 URL 편집"""
+        self._set_folder_url(cid)  # 동일한 로직 사용
+    
+    def _remove_folder_url(self, cid: str) -> None:
+        """폴더 URL 제거"""
+        cat = self.db.get_category(cid)
+        if not cat:
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Remove URL",
+            f"'{cat.name}' 폴더의 URL을 제거하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            cat.url = ""
+            self._save_db_with_warning()
+            self._refresh_nav_tree(select_current=True)
+    
+    def _open_folder_url(self, cid: str) -> None:
+        """폴더 URL을 브라우저로 열기"""
+        cat = self.db.get_category(cid)
+        if not cat or not cat.url or not cat.url.strip():
+            QMessageBox.warning(self, "No URL", "이 폴더에 설정된 URL이 없습니다.")
+            return
+        
+        url = cat.url.strip()
+        # URL 유효성 검사
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        
+        try:
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"URL을 열 수 없습니다:\n{str(e)}")
+    
     def move_item(self, direction: int) -> None:
         itw = self.nav_tree.currentItem()
         if not itw or itw.data(0, self.NODE_TYPE_ROLE) != "item":
