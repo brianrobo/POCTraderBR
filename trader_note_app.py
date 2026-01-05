@@ -2,7 +2,16 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.6  (2026-01-01)
+Version: 0.10.7  (2026-01-01)
+
+v0.10.7 변경 사항:
+- Global Ideas 저장 실패 원인 분석 및 패치
+  AS-IS: Global Ideas 변경 시 저장 실패가 발생해도 예외가 무시되어 사용자가 알 수 없음
+  TO-BE:
+    - 예외 처리 개선: `except Exception: pass` 제거 및 적절한 에러 처리 추가
+    - 저장 실패 시 명시적인 에러 메시지 표시 (QMessageBox)
+    - 백업 파일 생성 여부를 사용자에게 알림
+    - 에러 로그 출력으로 디버깅 용이성 향상
 
 v0.10.6 변경 사항:
 - 최근 작업 리스트에 URL 입력창 추가
@@ -57,7 +66,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.6)"
+APP_TITLE = "Trader Chart Note (v0.10.7)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -4639,9 +4648,24 @@ class MainWindow(QMainWindow):
                     _backup_global_ideas(self.db.global_ideas)
                     self.db.global_ideas = new_global_ideas
                     self._save_ui_state()
-                    self._save_db_with_warning()
-            except Exception:
-                pass
+                    # 저장 실패 시 명시적으로 처리
+                    save_ok = self._save_db_with_warning()
+                    if not save_ok:
+                        self.trace("Global Ideas 저장 실패 - 백업은 생성되었지만 DB 저장에 실패했습니다", "ERROR")
+            except Exception as e:
+                # 예외 발생 시 로깅하고 사용자에게 알림
+                error_msg = f"Global Ideas 저장 중 오류 발생: {str(e)}"
+                self.trace(error_msg, "ERROR")
+                print(f"[ERROR] {error_msg}")
+                # 백업은 생성되었을 수 있으므로 사용자에게 알림
+                QMessageBox.warning(
+                    self,
+                    "저장 오류",
+                    f"Global Ideas 저장 중 오류가 발생했습니다.\n\n"
+                    f"오류: {str(e)}\n\n"
+                    f"백업 파일은 생성되었을 수 있습니다. "
+                    f"앱을 재시작하면 이전 내용이 복구될 수 있습니다."
+                )
             return
 
         changed = False
