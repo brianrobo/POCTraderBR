@@ -2,7 +2,19 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.8  (2026-01-01)
+Version: 0.10.9  (2026-01-01)
+
+v0.10.9 변경 사항:
+- 폴더 조회 횟수 표시 기능 추가
+  AS-IS: 강의 폴더를 몇 번 봤는지 확인할 방법 없음
+  TO-BE:
+    - Category 모델에 `view_count` 필드 추가 (기본값 0)
+    - 폴더 이름 우측에 조회 횟수 표시: "강의명 (3)" 형식
+    - URL이 있으면 "강의명 (3) 🔗" 형식으로 표시
+    - 폴더 우클릭 메뉴에 "Set View Count..." 추가
+    - 조회 횟수를 수동으로 입력 및 수정 가능
+    - DB 저장/로드 로직에 view_count 포함
+    - 기존 데이터와 호환성 유지 (기본값 0)
 
 v0.10.8 변경 사항:
 - Global Interests 기능 추가 (최근 관심 종목 노트)
@@ -15,39 +27,6 @@ v0.10.8 변경 사항:
     - 서식 및 색상 지원 (Ideas와 동일)
     - 데이터 자동 저장 및 복원
     - UI 상태 저장 및 복원 (패널 표시/숨김)
-
-v0.10.7 변경 사항:
-- Global Ideas 저장 실패 원인 분석 및 패치
-  AS-IS: Global Ideas 변경 시 저장 실패가 발생해도 예외가 무시되어 사용자가 알 수 없음
-  TO-BE:
-    - 예외 처리 개선: `except Exception: pass` 제거 및 적절한 에러 처리 추가
-    - 저장 실패 시 명시적인 에러 메시지 표시 (QMessageBox)
-    - 백업 파일 생성 여부를 사용자에게 알림
-    - 에러 로그 출력으로 디버깅 용이성 향상
-
-v0.10.6 변경 사항:
-- 최근 작업 리스트에 URL 입력창 추가
-  AS-IS: 빠르게 URL을 입력하고 이동할 방법 없음
-  TO-BE:
-    - "최근 작업" 라벨 바로 아래에 URL 입력창 및 이동 버튼 추가
-    - URL 입력 후 Enter 키 또는 이동 버튼(→) 클릭으로 브라우저 열기
-    - URL 자동 보정 (http:// 또는 https://가 없으면 자동 추가)
-    - URL 유효성 검사 및 에러 처리
-    - 앱 재시작 시 입력한 URL 자동 복원 (ui_state에 저장)
-    - 기존 폴더 URL 기능과 동일한 방식으로 브라우저 열기
-
-v0.10.5 변경 사항:
-- Chart A/B 년도/월 선택 기능 추가
-  AS-IS: 차트의 년도/월 정보를 기록할 방법 없음
-  TO-BE:
-    - Caption 위젯 우측에 년도/월 선택 ComboBox 추가
-    - 년도: 현재 년도 기준 과거 10년 ~ 미래 1년
-    - 월: 1월 ~ 12월
-    - 첫 번째 항목은 "-" (미선택)
-    - Caption 폭을 줄이고 년도/월 ComboBox를 우측에 배치
-    - 전체 폭은 거래대금 정보 위젯과 동일하게 유지
-    - Page 모델에 `chart_year_a/b`, `chart_month_a/b` 필드 추가 (int, 0은 미설정)
-    - DB 저장/로드 로직 업데이트
 """
 
 import json
@@ -78,7 +57,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.8)"
+APP_TITLE = "Trader Chart Note (v0.10.9)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -829,6 +808,7 @@ class Category:
     child_ids: List[str]
     item_ids: List[str]
     url: str = ""  # 폴더 관련 URL 링크
+    view_count: int = 0  # 강의/URL 조회 횟수
 
 
 class NoteDB:
@@ -1110,11 +1090,13 @@ class NoteDB:
                     if not isinstance(item_ids, list):
                         item_ids = []
                     url = str(c.get("url", "")).strip() or ""
+                    view_count = int(c.get("view_count", 0)) if isinstance(c.get("view_count"), (int, str)) else 0
                     self.categories[cid] = Category(
                         id=cid, name=name, parent_id=parent_id,
                         child_ids=[str(x) for x in child_ids if str(x)],
                         item_ids=[str(x) for x in item_ids if str(x)],
                         url=url,
+                        view_count=view_count,
                     )
                 except Exception:
                     continue
@@ -1213,6 +1195,7 @@ class NoteDB:
             "child_ids": list(c.child_ids),
             "item_ids": list(c.item_ids),
             "url": c.url,
+            "view_count": c.view_count,
         }
 
     def _migrate_old_format(self, old_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1241,6 +1224,8 @@ class NoteDB:
                 "parent_id": parent_id,
                 "child_ids": [],
                 "item_ids": [],
+                "url": str(cat_obj.get("url", "")).strip() or "",
+                "view_count": int(cat_obj.get("view_count", 0)) if isinstance(cat_obj.get("view_count"), (int, str)) else 0,
             }
             new_data["categories"].append(new_cat)
             
@@ -4033,10 +4018,17 @@ class MainWindow(QMainWindow):
             # 자식이 있으면 사각형 + 아이콘 사용
             has_children = bool(c.child_ids or c.item_ids)
             
-            # URL이 있으면 폴더 이름에 링크 표시 추가
+            # 폴더 이름 표시: 조회 횟수와 URL 링크 표시
             display_name = c.name
+            # 조회 횟수가 0보다 크면 표시
+            if c.view_count > 0:
+                display_name = f"{c.name} ({c.view_count})"
+            # URL이 있으면 링크 표시 추가
             if c.url and c.url.strip():
-                display_name = f"{c.name} 🔗"
+                if c.view_count > 0:
+                    display_name = f"{c.name} ({c.view_count}) 🔗"
+                else:
+                    display_name = f"{c.name} 🔗"
             
             q = QTreeWidgetItem([display_name])
             q.setData(0, self.NODE_TYPE_ROLE, "category")
@@ -4213,6 +4205,9 @@ class MainWindow(QMainWindow):
                 act_remove_url = menu.addAction("Remove URL")
             else:
                 act_set_url = menu.addAction("Set URL...")
+            menu.addSeparator()
+            # 조회 횟수 설정 메뉴
+            act_set_view_count = menu.addAction("Set View Count...")
             chosen = menu.exec_(self.nav_tree.viewport().mapToGlobal(pos))
             if not chosen:
                 return
@@ -4236,6 +4231,8 @@ class MainWindow(QMainWindow):
                 self._remove_folder_url(cid)
             elif not has_url and chosen == act_set_url:
                 self._set_folder_url(cid)
+            elif chosen == act_set_view_count:
+                self._set_folder_view_count(cid)
             return
 
         if node_type == "item":
@@ -5868,6 +5865,37 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl(url))
         except Exception as e:
             QMessageBox.critical(self, "Error", f"URL을 열 수 없습니다:\n{str(e)}")
+    
+    def _set_folder_view_count(self, cid: str) -> None:
+        """폴더 조회 횟수 설정"""
+        cat = self.db.get_category(cid)
+        if not cat:
+            return
+        
+        current_count = cat.view_count
+        count_str, ok = QInputDialog.getText(
+            self,
+            "Set View Count",
+            f"'{cat.name}' 폴더의 조회 횟수를 입력하세요:",
+            text=str(current_count) if current_count > 0 else "0"
+        )
+        
+        if ok:
+            try:
+                # 입력값이 비어있으면 0으로 처리
+                if not count_str.strip():
+                    new_count = 0
+                else:
+                    new_count = int(count_str.strip())
+                    # 음수는 0으로 처리
+                    if new_count < 0:
+                        new_count = 0
+                
+                cat.view_count = new_count
+                self._save_db_with_warning()
+                self._refresh_nav_tree(select_current=True)
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Input", "숫자를 입력해주세요.")
     
     def move_item(self, direction: int) -> None:
         itw = self.nav_tree.currentItem()
