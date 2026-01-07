@@ -2,7 +2,19 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.7  (2026-01-01)
+Version: 0.10.8  (2026-01-01)
+
+v0.10.8 변경 사항:
+- Global Interests 기능 추가 (최근 관심 종목 노트)
+  AS-IS: 최근 관심 종목을 기록할 전역 노트 기능 없음
+  TO-BE:
+    - Ideas 버튼 아래에 Interest 버튼 추가 (⭐ Interest)
+    - Interest 패널 추가 (Ideas 패널과 동일한 구조)
+    - 탭 기반 노트 작성 기능 (최대 5개 탭 제한)
+    - 각 탭별로 이름 변경 가능 (더블 클릭)
+    - 서식 및 색상 지원 (Ideas와 동일)
+    - 데이터 자동 저장 및 복원
+    - UI 상태 저장 및 복원 (패널 표시/숨김)
 
 v0.10.7 변경 사항:
 - Global Ideas 저장 실패 원인 분석 및 패치
@@ -66,7 +78,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.7)"
+APP_TITLE = "Trader Chart Note (v0.10.8)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -828,6 +840,7 @@ class NoteDB:
         self.root_category_ids: List[str] = []
         self.ui_state: Dict[str, Any] = {}
         self.global_ideas: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 10개
+        self.global_interests: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 5개
         self.load()
 
     @staticmethod
@@ -875,6 +888,7 @@ class NoteDB:
                 "selected_item_id": "",
                 "current_page_index": 0,
                 "global_ideas_visible": False,
+                "global_interests_visible": False,
                 "desc_visible": True,
                 "page_splitter_sizes": None,
                 "notes_splitter_sizes": None,
@@ -882,6 +896,7 @@ class NoteDB:
                 "right_vsplit_sizes": None,
             },
             "global_ideas": [],
+            "global_interests": [],
         }
 
     def load(self) -> None:
@@ -944,6 +959,16 @@ class NoteDB:
             self.global_ideas = []
         else:
             self.global_ideas = []
+        
+        # global_interests 로드
+        interests_raw = self.data.get("global_interests", [])
+        if isinstance(interests_raw, list):
+            self.global_interests = interests_raw
+        elif isinstance(interests_raw, str):
+            # 이전 형식 (문자열)이면 빈 리스트로 초기화
+            self.global_interests = []
+        else:
+            self.global_interests = []
     
     def _initialize_db(self) -> None:
         """DB를 기본 데이터로 초기화"""
@@ -1022,6 +1047,7 @@ class NoteDB:
         self.data["updated_at"] = _now_epoch()
         self.data["ui_state"] = self.ui_state.copy() if isinstance(self.ui_state, dict) else {}
         self.data["global_ideas"] = self.global_ideas.copy() if isinstance(self.global_ideas, list) else []
+        self.data["global_interests"] = self.global_interests.copy() if isinstance(self.global_interests, list) else []
         self.data["root_category_ids"] = list(self.root_category_ids)
         print(f"[DEBUG] 기본 데이터 설정 완료 - root_category_ids: {self.data['root_category_ids']}")
         
@@ -1200,6 +1226,7 @@ class NoteDB:
             "items": [],
             "ui_state": old_data.get("ui_state", {}),
             "global_ideas": old_data.get("global_ideas", []),
+            "global_interests": old_data.get("global_interests", []),
         }
         
         def extract_categories(cat_obj: Dict[str, Any], parent_id: Optional[str] = None) -> None:
@@ -1670,6 +1697,7 @@ class NoteDB:
             self.data["updated_at"] = _now_epoch()
             self.data["ui_state"] = self.ui_state.copy() if isinstance(self.ui_state, dict) else {}
             self.data["global_ideas"] = self.global_ideas.copy() if isinstance(self.global_ideas, list) else []
+            self.data["global_interests"] = self.global_interests.copy() if isinstance(self.global_interests, list) else []
             self.data["root_category_ids"] = list(self.root_category_ids)
             
             try:
@@ -2434,10 +2462,13 @@ class MainWindow(QMainWindow):
             self._load_current_item_page_to_ui(clear_only=True)
 
         self._load_global_ideas_to_ui()
+        self._load_global_interests_to_ui()
         self._update_recent_items_list()  # 최근 작업 리스트 초기화
 
         ideas_vis = bool(self.db.ui_state.get("global_ideas_visible", False))
         self._set_global_ideas_visible(ideas_vis, persist=False)
+        interests_vis = bool(self.db.ui_state.get("global_interests_visible", False))
+        self._set_global_interests_visible(interests_vis, persist=False)
         self._set_desc_visible(bool(self.db.ui_state.get("desc_visible", True)), persist=False)
         self._set_trace_visible(self._trace_visible, persist=False)
 
@@ -3138,6 +3169,32 @@ class MainWindow(QMainWindow):
         """)
         self.btn_ideas.toggled.connect(self._on_toggle_ideas)
 
+        self.btn_interests = QToolButton(); self.btn_interests.setText("⭐ Interest"); self.btn_interests.setCheckable(True)
+        self.btn_interests.setFixedSize(100, 32)  # 더 크고 부각되도록
+        self.btn_interests.setToolTip("Toggle Global Interests panel (최근 관심 종목)")
+        self.btn_interests.setStyleSheet("""
+            QToolButton {
+                font-weight: 600;
+                font-size: 10pt;
+                background: #F0F0F0;
+                border: 2px solid #CCCCCC;
+                border-radius: 6px;
+            }
+            QToolButton:hover {
+                background: #E8E8E8;
+                border: 2px solid #999999;
+            }
+            QToolButton:checked {
+                background: #FFF3E0;
+                border: 2px solid #FF9800;
+                color: #E65100;
+            }
+            QToolButton:checked:hover {
+                background: #FFE0B2;
+            }
+        """)
+        self.btn_interests.toggled.connect(self._on_toggle_interests)
+
         row1 = QWidget(); r1 = QHBoxLayout(row1); r1.setContentsMargins(0,0,0,0); r1.setSpacing(6)
         self.text_title = QLabel("Description / Notes"); self.text_title.setStyleSheet("font-weight: 600;")
         r1.addWidget(self.text_title)
@@ -3147,6 +3204,7 @@ class MainWindow(QMainWindow):
         r1.addWidget(self.btn_fmt_underline)
         r1.addStretch(1)
         r1.addWidget(self.btn_ideas)
+        r1.addWidget(self.btn_interests)
 
         row2 = QWidget(); r2 = QHBoxLayout(row2); r2.setContentsMargins(0,0,0,0); r2.setSpacing(6)
         r2.addWidget(self.btn_col_default)
@@ -3297,10 +3355,61 @@ class MainWindow(QMainWindow):
         # Ideas 탭 데이터 저장
         self.ideas_tab_editors: List[QTextEdit] = []  # 각 탭의 QTextEdit 저장
 
+        # Interest 패널
+        self.interests_panel = QFrame()
+        self.interests_panel.setFrameShape(QFrame.StyledPanel)
+        self.interests_panel.setMinimumWidth(320)
+        self.interests_panel.setStyleSheet("""
+            QFrame {
+                background: #FAFAFA;
+                border: 1px solid #D0D0D0;
+                border-radius: 10px;
+            }
+        """)
+        interests_l = QVBoxLayout(self.interests_panel)
+        interests_l.setContentsMargins(10,10,10,10)
+        interests_l.setSpacing(6)
+        
+        # Interest 탭 위젯
+        self.interests_tabs = QTabWidget()
+        self.interests_tabs.setTabsClosable(False)  # X 버튼 제거
+        self.interests_tabs.currentChanged.connect(self._on_interests_tab_changed)
+        # 탭 더블 클릭 시 이름 변경
+        self.interests_tabs.tabBarDoubleClicked.connect(self._on_interests_tab_double_clicked)
+        
+        # 탭 추가/삭제 버튼
+        interests_header = QWidget()
+        interests_header_l = QHBoxLayout(interests_header)
+        interests_header_l.setContentsMargins(0, 0, 0, 0)
+        interests_header_l.setSpacing(6)
+        self.lbl_interests = QLabel("Global Interests"); self.lbl_interests.setStyleSheet("font-weight: 700;")
+        interests_header_l.addWidget(self.lbl_interests)
+        interests_header_l.addStretch()
+        self.btn_del_interests_tab = QToolButton()
+        self.btn_del_interests_tab.setText("−")
+        self.btn_del_interests_tab.setFixedSize(32, 26)
+        self.btn_del_interests_tab.setToolTip("Delete Current Tab (현재 탭 삭제)")
+        self.btn_del_interests_tab.clicked.connect(self._on_delete_current_interests_tab)
+        self.btn_add_interests_tab = QToolButton()
+        self.btn_add_interests_tab.setText("+")
+        self.btn_add_interests_tab.setFixedSize(32, 26)
+        self.btn_add_interests_tab.setToolTip("Add Interests Tab (최대 5개)")
+        self.btn_add_interests_tab.clicked.connect(self._on_add_interests_tab)
+        interests_header_l.addWidget(self.btn_del_interests_tab)
+        interests_header_l.addWidget(self.btn_add_interests_tab)
+        
+        interests_l.addWidget(interests_header)
+        interests_l.addWidget(self.interests_tabs, 1)
+        
+        # Interest 탭 데이터 저장
+        self.interests_tab_editors: List[QTextEdit] = []  # 각 탭의 QTextEdit 저장
+
         self.notes_ideas_splitter.addWidget(self.notes_left)
         self.notes_ideas_splitter.addWidget(self.ideas_panel)
+        self.notes_ideas_splitter.addWidget(self.interests_panel)
         self.notes_ideas_splitter.setStretchFactor(0, 3)
         self.notes_ideas_splitter.setStretchFactor(1, 1)
+        self.notes_ideas_splitter.setStretchFactor(2, 1)
 
         text_layout.addWidget(self.fmt_row)
         text_layout.addWidget(self.notes_ideas_splitter, 1)
@@ -4203,13 +4312,14 @@ class MainWindow(QMainWindow):
         self.db.ui_state["current_page_index"] = self.current_page_index
         self.db.ui_state["desc_visible"] = bool(self._desc_visible)
         self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
+        self.db.ui_state["global_interests_visible"] = bool(self.interests_panel.isVisible())
         self.db.ui_state["trace_visible"] = bool(self._trace_visible)
         # URL 입력창 내용 저장
         if hasattr(self, 'url_input'):
             self.db.ui_state["url_input_text"] = self.url_input.text().strip()
         if self.text_container.isVisible():
             self._remember_page_splitter_sizes()
-        if self.notes_left.isVisible() and self.ideas_panel.isVisible():
+        if self.notes_left.isVisible() or self.ideas_panel.isVisible() or self.interests_panel.isVisible():
             self._remember_notes_splitter_sizes()
         self._remember_right_vsplit_sizes()
         # 트리 확장 상태 저장
@@ -4647,11 +4757,17 @@ class MainWindow(QMainWindow):
                     # Global Ideas 변경 시 백업 생성
                     _backup_global_ideas(self.db.global_ideas)
                     self.db.global_ideas = new_global_ideas
+                
+                new_global_interests = self._collect_interests_tabs_from_ui()
+                if self.db.global_interests != new_global_interests:
+                    self.db.global_interests = new_global_interests
+                
+                if self.db.global_ideas != new_global_ideas or self.db.global_interests != new_global_interests:
                     self._save_ui_state()
                     # 저장 실패 시 명시적으로 처리
                     save_ok = self._save_db_with_warning()
                     if not save_ok:
-                        self.trace("Global Ideas 저장 실패 - 백업은 생성되었지만 DB 저장에 실패했습니다", "ERROR")
+                        self.trace("Global Ideas/Interests 저장 실패 - 백업은 생성되었지만 DB 저장에 실패했습니다", "ERROR")
             except Exception as e:
                 # 예외 발생 시 로깅하고 사용자에게 알림
                 error_msg = f"Global Ideas 저장 중 오류 발생: {str(e)}"
@@ -4675,6 +4791,12 @@ class MainWindow(QMainWindow):
             # Global Ideas 변경 시 백업 생성
             _backup_global_ideas(self.db.global_ideas)
             self.db.global_ideas = new_global_ideas
+            changed = True
+        
+        # Interests 탭들 수집
+        new_global_interests = self._collect_interests_tabs_from_ui()
+        if self.db.global_interests != new_global_interests:
+            self.db.global_interests = new_global_interests
             changed = True
 
         capA = self._pane_ui.get("A", {}).get("cap")
@@ -4927,6 +5049,137 @@ class MainWindow(QMainWindow):
             name = self.ideas_tabs.tabText(i)
             if i < len(self.ideas_tab_editors):
                 editor = self.ideas_tab_editors[i]
+                content = _strip_highlight_html(editor.toHtml())
+                out.append({"name": name, "content": content})
+        return out
+    
+    def _load_global_interests_to_ui(self) -> None:
+        """Interests 탭들을 UI에 로드"""
+        self._loading_ui = True
+        try:
+            # 기존 탭들 모두 제거
+            self._clear_interests_tabs()
+            
+            # 데이터에서 탭들 로드
+            if not self.db.global_interests:
+                # 탭이 없으면 기본 탭 하나 생성
+                self._add_interests_tab_ui("Interest 1", "")
+            else:
+                for interest in self.db.global_interests:
+                    name = str(interest.get("name", "")).strip() or "Interest"
+                    content = str(interest.get("content", "") or "")
+                    self._add_interests_tab_ui(name, content)
+        finally:
+            self._loading_ui = False
+    
+    def _add_interests_tab_ui(self, name: str, content: str) -> None:
+        """Interests 탭 UI 추가"""
+        if len(self.interests_tab_editors) >= 5:
+            QMessageBox.warning(self, "최대 개수", "Interests 탭은 최대 5개까지 추가할 수 있습니다.")
+            return
+        
+        tab_widget = QWidget()
+        tab_layout = QVBoxLayout(tab_widget)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+        
+        editor = QTextEdit()
+        editor.setPlaceholderText("최근 관심 종목을 여기에 작성하세요... (서식/색상 가능)")
+        if content:
+            editor.setHtml(content) if _looks_like_html(content) else editor.setPlainText(content)
+        editor.textChanged.connect(self._on_page_field_changed)
+        editor.installEventFilter(self)
+        editor.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
+        editor.setTabChangesFocus(False)
+        
+        tab_layout.addWidget(editor)
+        self.interests_tab_editors.append(editor)
+        
+        tab_index = self.interests_tabs.addTab(tab_widget, name)
+        self.interests_tabs.setCurrentIndex(tab_index)
+    
+    def _on_add_interests_tab(self) -> None:
+        """Interests 탭 추가"""
+        if len(self.interests_tab_editors) >= 5:
+            QMessageBox.warning(self, "최대 개수", "Interests 탭은 최대 5개까지 추가할 수 있습니다.")
+            return
+        
+        tab_num = len(self.interests_tab_editors) + 1
+        name = f"Interest {tab_num}"
+        self._add_interests_tab_ui(name, "")
+    
+    def _on_delete_current_interests_tab(self) -> None:
+        """현재 선택된 Interests 탭 삭제"""
+        current_index = self.interests_tabs.currentIndex()
+        if current_index < 0:
+            return
+        
+        if len(self.interests_tab_editors) <= 1:
+            QMessageBox.warning(self, "최소 개수", "Interests 탭은 최소 1개는 유지해야 합니다.")
+            return
+        
+        if 0 <= current_index < len(self.interests_tab_editors):
+            # 탭 이름 가져오기
+            tab_name = self.interests_tabs.tabText(current_index)
+            
+            # 사용자 확인
+            reply = QMessageBox.question(
+                self,
+                "탭 삭제 확인",
+                f"'{tab_name}' 탭을 삭제하시겠습니까?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.interests_tab_editors.pop(current_index)
+                self.interests_tabs.removeTab(current_index)
+                
+                # 삭제 후 현재 탭이 유효한지 확인하고 활성 편집기 설정
+                new_index = self.interests_tabs.currentIndex()
+                if 0 <= new_index < len(self.interests_tab_editors):
+                    self._set_active_rich_edit(self.interests_tab_editors[new_index])
+                
+                self._on_page_field_changed()
+    
+    def _on_interests_tab_changed(self, index: int) -> None:
+        """Interests 탭 변경 시"""
+        if 0 <= index < len(self.interests_tab_editors):
+            self._set_active_rich_edit(self.interests_tab_editors[index])
+    
+    def _on_interests_tab_double_clicked(self, index: int) -> None:
+        """Interests 탭 더블 클릭 시 이름 변경"""
+        if index < 0 or index >= self.interests_tabs.count():
+            return
+        
+        current_name = self.interests_tabs.tabText(index)
+        new_name, ok = QInputDialog.getText(
+            self,
+            "탭 이름 변경",
+            "새 탭 이름:",
+            text=current_name
+        )
+        
+        if ok and new_name.strip():
+            new_name = new_name.strip()
+            # 탭 이름 업데이트
+            self.interests_tabs.setTabText(index, new_name)
+            # 데이터 저장
+            self._on_page_field_changed()
+    
+    def _clear_interests_tabs(self) -> None:
+        """Interests 탭들 모두 제거"""
+        while self.interests_tabs.count() > 0:
+            self.interests_tabs.removeTab(0)
+        self.interests_tab_editors.clear()
+    
+    def _collect_interests_tabs_from_ui(self) -> List[Dict[str, str]]:
+        """Interests 탭들에서 데이터 수집"""
+        out: List[Dict[str, str]] = []
+        for i in range(self.interests_tabs.count()):
+            name = self.interests_tabs.tabText(i)
+            if i < len(self.interests_tab_editors):
+                editor = self.interests_tab_editors[i]
                 content = _strip_highlight_html(editor.toHtml())
                 out.append({"name": name, "content": content})
         return out
@@ -5957,6 +6210,20 @@ class MainWindow(QMainWindow):
             self.db.ui_state["global_ideas_visible"] = bool(visible)
             self._save_db_with_warning()
 
+    # ---------------- Interests panel toggle ----------------
+    def _on_toggle_interests(self, checked: bool) -> None:
+        self._set_global_interests_visible(checked, persist=True)
+
+    def _set_global_interests_visible(self, visible: bool, persist: bool = True) -> None:
+        if (not visible) and self.notes_left.isVisible() and self.interests_panel.isVisible():
+            self._remember_notes_splitter_sizes()
+        self.interests_panel.setVisible(bool(visible))
+        self.btn_interests.blockSignals(True); self.btn_interests.setChecked(bool(visible)); self.btn_interests.blockSignals(False)
+        self._update_text_area_layout()
+        if persist:
+            self.db.ui_state["global_interests_visible"] = bool(visible)
+            self._save_db_with_warning()
+
     # ---------------- Description toggle ----------------
     def _on_toggle_desc_clicked(self) -> None:
         """Splitter 핸들 버튼 클릭 시 호출"""
@@ -5967,7 +6234,7 @@ class MainWindow(QMainWindow):
         self._set_desc_visible(bool(checked), persist=True)
 
     def _set_desc_visible(self, visible: bool, persist: bool = True) -> None:
-        if (not visible) and self.notes_left.isVisible() and self.ideas_panel.isVisible():
+        if (not visible) and (self.notes_left.isVisible() or self.ideas_panel.isVisible() or self.interests_panel.isVisible()):
             self._remember_notes_splitter_sizes()
         self._desc_visible = bool(visible)
         self.notes_left.setVisible(self._desc_visible)
@@ -6112,18 +6379,47 @@ class MainWindow(QMainWindow):
 
     def _update_text_area_layout(self) -> None:
         ideas_vis = bool(self.ideas_panel.isVisible())
+        interests_vis = bool(self.interests_panel.isVisible())
         desc_vis = bool(self._desc_visible)
-        if not desc_vis and not ideas_vis:
+        if not desc_vis and not ideas_vis and not interests_vis:
             self._collapse_text_container(True)
             return
         self._collapse_text_container(False)
         total = max(1, self.notes_ideas_splitter.width())
-        if desc_vis and ideas_vis:
-            self._apply_notes_splitter_sizes_both_visible(total)
-        elif desc_vis and (not ideas_vis):
-            self.notes_ideas_splitter.setSizes([total, 0])
-        elif (not desc_vis) and ideas_vis:
-            self.notes_ideas_splitter.setSizes([0, total])
+        
+        # 3개 패널 모두 고려한 크기 설정
+        visible_count = sum([desc_vis, ideas_vis, interests_vis])
+        if visible_count == 3:
+            # 모두 보이는 경우: 3:1:1 비율
+            left = max(220, int(total * 0.6))
+            mid = max(160, int(total * 0.2))
+            right = max(160, total - left - mid)
+            self.notes_ideas_splitter.setSizes([left if desc_vis else 0, 
+                                                 mid if ideas_vis else 0, 
+                                                 right if interests_vis else 0])
+        elif visible_count == 2:
+            if desc_vis and ideas_vis:
+                self._apply_notes_splitter_sizes_both_visible(total)
+                # interests는 0으로 설정
+                sizes = self.notes_ideas_splitter.sizes()
+                self.notes_ideas_splitter.setSizes([sizes[0], sizes[1], 0])
+            elif desc_vis and interests_vis:
+                # desc와 interests만 보이는 경우
+                left = max(220, int(total * 0.6))
+                right = max(160, total - left)
+                self.notes_ideas_splitter.setSizes([left, 0, right])
+            elif ideas_vis and interests_vis:
+                # ideas와 interests만 보이는 경우
+                left = max(160, int(total * 0.5))
+                right = max(160, total - left)
+                self.notes_ideas_splitter.setSizes([0, left, right])
+        elif visible_count == 1:
+            if desc_vis:
+                self.notes_ideas_splitter.setSizes([total, 0, 0])
+            elif ideas_vis:
+                self.notes_ideas_splitter.setSizes([0, total, 0])
+            elif interests_vis:
+                self.notes_ideas_splitter.setSizes([0, 0, total])
 
     # ---------------- Event filter (active pane + resize overlay) ---------------- 
     def eventFilter(self, obj, event) -> bool:
