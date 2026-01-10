@@ -2,7 +2,20 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.10  (2026-01-01)
+Version: 0.10.11  (2026-01-10)
+
+v0.10.11 변경 사항:
+- Item 주력 제품/서비스 설명 및 유통 비율 기능 추가
+  AS-IS: 종목의 주력 제품/서비스와 유통 비율 정보를 확인할 방법 없음
+  TO-BE:
+    - Item 모델에 `business_description` 필드 추가 (주력 제품/서비스 설명, 최대 15자)
+    - Item 모델에 `distribution_ratio` 필드 추가 (유통 비율, 0-100%)
+    - Item 마우스 오버 시 툴팁으로 표시: "간단한 설명..." [35%] 형식
+    - Item 우클릭 메뉴에 "Edit Business Info..." 추가
+    - 주력 제품/서비스 설명 및 유통 비율 편집 다이얼로그 제공
+    - 링크된 Item인 경우 원본 Item의 정보 표시 및 수정
+    - DB 저장/로드 로직에 business_description, distribution_ratio 포함
+    - 기존 데이터와 호환성 유지 (기본값: "", 0)
 
 v0.10.10 변경 사항:
 - Item 레퍼런스(링크) 기능 추가
@@ -16,18 +29,6 @@ v0.10.10 변경 사항:
     - 트리에서 레퍼런스 아이템을 시각적으로 구분 (회색 표시, 링크 아이콘)
     - 원본 Item 삭제 시 링크된 Item들의 링크 자동 해제
     - DB 저장/로드 로직에 linked_item_id 포함 (기존 데이터 호환)
-
-v0.10.9 변경 사항:
-- 폴더 조회 횟수 표시 기능 추가
-  AS-IS: 강의 폴더를 몇 번 봤는지 확인할 방법 없음
-  TO-BE:
-    - Category 모델에 `view_count` 필드 추가 (기본값 0)
-    - 폴더 이름 우측에 조회 횟수 표시: "강의명 (3)" 형식
-    - URL이 있으면 "강의명 (3) 🔗" 형식으로 표시
-    - 폴더 우클릭 메뉴에 "Set View Count..." 추가
-    - 조회 횟수를 수동으로 입력 및 수정 가능
-    - DB 저장/로드 로직에 view_count 포함
-    - 기존 데이터와 호환성 유지 (기본값 0)
 """
 
 import json
@@ -58,7 +59,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.10)"
+APP_TITLE = "Trader Chart Note (v0.10.11)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -800,6 +801,8 @@ class Item:
     last_page_index: int = 0
     last_accessed_at: int = 0  # 마지막 접근 시간 (epoch timestamp)
     linked_item_id: Optional[str] = None  # 링크된 원본 Item ID (None이면 일반 Item, 값이 있으면 링크된 Item)
+    business_description: str = ""  # 주력 제품/서비스 간단 설명 (최대 15자)
+    distribution_ratio: int = 0  # 유통 비율 (0-100%, 최대 3자리)
 
 
 @dataclass
@@ -1149,10 +1152,14 @@ class NoteDB:
                     linked_item_id = str(it.get("linked_item_id", "")).strip() or None
                     if not linked_item_id:
                         linked_item_id = None
+                    business_description = str(it.get("business_description", "")).strip()[:15]  # 최대 15자
+                    distribution_ratio = max(0, min(100, int(it.get("distribution_ratio", 0))))  # 0-100 범위
                     self.items[iid] = Item(
                         id=iid, name=name, category_id=cat_id, pages=pages, 
                         last_page_index=last_page_index, last_accessed_at=last_accessed_at,
-                        linked_item_id=linked_item_id
+                        linked_item_id=linked_item_id,
+                        business_description=business_description,
+                        distribution_ratio=distribution_ratio
                     )
                 except Exception:
                     continue
@@ -1194,6 +1201,11 @@ class NoteDB:
         }
         if it.linked_item_id:
             result["linked_item_id"] = it.linked_item_id
+        if it.business_description:
+            result["business_description"] = it.business_description
+        # distribution_ratio는 0도 유효한 값이므로 항상 저장
+        if it.distribution_ratio is not None and it.distribution_ratio >= 0:
+            result["distribution_ratio"] = it.distribution_ratio
         return result
 
     def _serialize_category(self, c: Category) -> Dict[str, Any]:
@@ -1269,6 +1281,13 @@ class NoteDB:
                     linked_item_id = item.get("linked_item_id")
                     if linked_item_id:
                         new_item["linked_item_id"] = str(linked_item_id).strip() or None
+                    # business_description과 distribution_ratio 추가 (마이그레이션 호환성)
+                    business_description = item.get("business_description")
+                    if business_description:
+                        new_item["business_description"] = str(business_description).strip()[:15]
+                    distribution_ratio = item.get("distribution_ratio")
+                    if distribution_ratio is not None:
+                        new_item["distribution_ratio"] = max(0, min(100, int(distribution_ratio)))
                     new_data["items"].append(new_item)
         
         # root 객체에서 시작
@@ -1306,6 +1325,13 @@ class NoteDB:
                 linked_item_id = item.get("linked_item_id")
                 if linked_item_id:
                     root_item["linked_item_id"] = str(linked_item_id).strip() or None
+                # business_description과 distribution_ratio 추가 (마이그레이션 호환성)
+                business_description = item.get("business_description")
+                if business_description:
+                    root_item["business_description"] = str(business_description).strip()[:15]
+                distribution_ratio = item.get("distribution_ratio")
+                if distribution_ratio is not None:
+                    root_item["distribution_ratio"] = max(0, min(100, int(distribution_ratio)))
                 new_data["items"].append(root_item)
         
         return new_data
@@ -4036,6 +4062,16 @@ class MainWindow(QMainWindow):
         
         # 표준 아이콘 준비
         file_icon = self.style().standardIcon(QStyle.SP_FileIcon)
+        # 링크 아이콘 생성 (🔗 기호 사용)
+        link_pixmap = QPixmap(16, 16)
+        link_pixmap.fill(Qt.transparent)
+        link_painter = QPainter(link_pixmap)
+        link_painter.setRenderHint(QPainter.Antialiasing)
+        link_painter.setPen(QPen(QColor("#666666"), 2))
+        link_painter.setFont(QFont("Arial", 12))
+        link_painter.drawText(0, 0, 16, 16, Qt.AlignCenter, "🔗")
+        link_painter.end()
+        link_icon = QIcon(link_pixmap)
 
         item_to_qitem: Dict[str, QTreeWidgetItem] = {}
         cat_to_qitem: Dict[str, QTreeWidgetItem] = {}
@@ -4105,12 +4141,35 @@ class MainWindow(QMainWindow):
                 qi.setFlags(qi.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                 
                 # ✅ Item(File) icon
-                qi.setIcon(0, file_icon)
+                if it.linked_item_id:
+                    qi.setIcon(0, link_icon)  # 링크 아이콘
+                else:
+                    qi.setIcon(0, file_icon)  # 일반 파일 아이콘
+                
+                # 툴팁 생성
+                tooltip_parts = []
+                
+                # 링크된 Item 정보
+                if it.linked_item_id:
+                    tooltip_parts.append(f"링크된 Item (원본: {original.name if original else '삭제됨'})")
+                
+                # 주력 제품/서비스 설명 및 유통 비율
+                business_info_parts = []
+                if it.business_description and it.business_description.strip():
+                    business_info_parts.append(it.business_description.strip())
+                if it.distribution_ratio > 0:
+                    business_info_parts.append(f"[{it.distribution_ratio}%]")
+                
+                if business_info_parts:
+                    tooltip_parts.append(" ".join(business_info_parts))
+                
+                # 툴팁 설정
+                if tooltip_parts:
+                    qi.setToolTip(0, "\n".join(tooltip_parts))
                 
                 # 링크된 Item은 다른 색상으로 표시
                 if it.linked_item_id:
                     qi.setForeground(0, QColor("#666666"))
-                    qi.setToolTip(0, f"링크된 Item (원본: {original.name if original else '삭제됨'})")
                 
                 q.addChild(qi)
                 item_to_qitem[it.id] = qi
@@ -4290,6 +4349,7 @@ class MainWindow(QMainWindow):
                 act_create_ref = menu.addAction("Create Reference...")
             menu.addSeparator()
             act_rename = menu.addAction("Rename Item")
+            act_edit_business = menu.addAction("Edit Business Info...")
             act_delete = menu.addAction("Delete Item")
             act_move_to_folder = menu.addAction("Move Item to Folder...")
             menu.addSeparator()
@@ -4304,6 +4364,8 @@ class MainWindow(QMainWindow):
                 self._create_reference_item(iid)
             elif chosen == act_rename:
                 self.rename_item()
+            elif chosen == act_edit_business:
+                self._edit_item_business_info(iid)
             elif chosen == act_delete:
                 self.delete_item()
             elif chosen == act_move_to_folder:
@@ -5981,6 +6043,80 @@ class MainWindow(QMainWindow):
         self._show_placeholder(False)
         self._load_current_item_page_to_ui()
 
+    def _edit_item_business_info(self, iid: str) -> None:
+        """Item의 주력 제품/서비스 설명 및 유통 비율 편집"""
+        it = self.db.get_item(iid)
+        if not it:
+            return
+        
+        # 다이얼로그 생성
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Business Info")
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # 주력 제품/서비스 설명 입력
+        desc_label = QLabel("주력 제품/서비스 설명 (최대 15자):")
+        layout.addWidget(desc_label)
+        desc_input = QLineEdit()
+        desc_input.setMaxLength(15)
+        desc_input.setText(it.business_description or "")
+        layout.addWidget(desc_input)
+        
+        # 유통 비율 입력
+        ratio_label = QLabel("유통 비율 (0-100%):")
+        layout.addWidget(ratio_label)
+        ratio_input = QLineEdit()
+        ratio_input.setMaxLength(3)
+        ratio_input.setText(str(it.distribution_ratio) if it.distribution_ratio > 0 else "")
+        layout.addWidget(ratio_input)
+        
+        # 버튼
+        button_layout = QHBoxLayout()
+        ok_button = QPushButton("OK")
+        cancel_button = QPushButton("Cancel")
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+        
+        dialog.setLayout(layout)
+        
+        ok_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        
+        # 값 검증 및 저장
+        business_description = desc_input.text().strip()[:15]  # 최대 15자
+        ratio_text = ratio_input.text().strip()
+        distribution_ratio = 0
+        if ratio_text:
+            try:
+                distribution_ratio = max(0, min(100, int(ratio_text)))  # 0-100 범위
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Input", "유통 비율은 0-100 사이의 숫자여야 합니다.")
+                return
+        
+        # 원본 Item을 가져와서 수정 (링크된 Item인 경우 원본 수정)
+        it = self.db.get_item(iid)
+        if not it:
+            return
+        # 링크된 Item인 경우 원본 Item 가져오기
+        if it.linked_item_id:
+            actual_item = self.db.get_item(it.linked_item_id)
+            if not actual_item:
+                return
+        else:
+            actual_item = it
+        
+        actual_item.business_description = business_description
+        actual_item.distribution_ratio = distribution_ratio
+        
+        self._save_db_with_warning()
+        self._refresh_nav_tree(select_current=True)
+    
     def rename_item(self) -> None:
         itw = self.nav_tree.currentItem()
         if not itw or itw.data(0, self.NODE_TYPE_ROLE) != "item":
