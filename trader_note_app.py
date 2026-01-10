@@ -2,7 +2,20 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.9  (2026-01-01)
+Version: 0.10.10  (2026-01-01)
+
+v0.10.10 변경 사항:
+- Item 레퍼런스(링크) 기능 추가
+  AS-IS: 다른 폴더에서 동일 종목을 다룰 때 Item을 복제해야 함
+  TO-BE:
+    - Item 모델에 `linked_item_id` 필드 추가 (레퍼런스 Item ID)
+    - Item 우클릭 메뉴에 "Create Reference..." 추가
+    - 레퍼런스 아이템 생성 시 원본 Item을 참조
+    - 레퍼런스 아이템 선택 시 원본 Item의 데이터 표시 및 수정
+    - 레퍼런스 아이템을 다른 폴더로 이동 가능 (기존 이동 기능 활용)
+    - 트리에서 레퍼런스 아이템을 시각적으로 구분 (회색 표시, 링크 아이콘)
+    - 원본 Item 삭제 시 링크된 Item들의 링크 자동 해제
+    - DB 저장/로드 로직에 linked_item_id 포함 (기존 데이터 호환)
 
 v0.10.9 변경 사항:
 - 폴더 조회 횟수 표시 기능 추가
@@ -15,18 +28,6 @@ v0.10.9 변경 사항:
     - 조회 횟수를 수동으로 입력 및 수정 가능
     - DB 저장/로드 로직에 view_count 포함
     - 기존 데이터와 호환성 유지 (기본값 0)
-
-v0.10.8 변경 사항:
-- Global Interests 기능 추가 (최근 관심 종목 노트)
-  AS-IS: 최근 관심 종목을 기록할 전역 노트 기능 없음
-  TO-BE:
-    - Ideas 버튼 아래에 Interest 버튼 추가 (⭐ Interest)
-    - Interest 패널 추가 (Ideas 패널과 동일한 구조)
-    - 탭 기반 노트 작성 기능 (최대 5개 탭 제한)
-    - 각 탭별로 이름 변경 가능 (더블 클릭)
-    - 서식 및 색상 지원 (Ideas와 동일)
-    - 데이터 자동 저장 및 복원
-    - UI 상태 저장 및 복원 (패널 표시/숨김)
 """
 
 import json
@@ -53,11 +54,11 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QWidget, QInputDialog, QComboBox, QCheckBox, QGroupBox, QPushButton,
     QLayout, QWidgetItem, QFrame, QTreeWidget, QTreeWidgetItem, QMenu, QPlainTextEdit,
     QAbstractItemView, QButtonGroup, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
-    QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea, QListWidget, QListWidgetItem
+    QStyleOptionViewItem, QSplitterHandle, QTabWidget, QScrollArea, QListWidget, QListWidgetItem, QDialog
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.9)"
+APP_TITLE = "Trader Chart Note (v0.10.10)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -798,6 +799,7 @@ class Item:
     pages: List[Page]
     last_page_index: int = 0
     last_accessed_at: int = 0  # 마지막 접근 시간 (epoch timestamp)
+    linked_item_id: Optional[str] = None  # 링크된 원본 Item ID (None이면 일반 Item, 값이 있으면 링크된 Item)
 
 
 @dataclass
@@ -1144,9 +1146,13 @@ class NoteDB:
                         pages = [self.new_page()]
 
                     last_accessed_at = int(it.get("last_accessed_at", 0))
+                    linked_item_id = str(it.get("linked_item_id", "")).strip() or None
+                    if not linked_item_id:
+                        linked_item_id = None
                     self.items[iid] = Item(
                         id=iid, name=name, category_id=cat_id, pages=pages, 
-                        last_page_index=last_page_index, last_accessed_at=last_accessed_at
+                        last_page_index=last_page_index, last_accessed_at=last_accessed_at,
+                        linked_item_id=linked_item_id
                     )
                 except Exception:
                     continue
@@ -1178,7 +1184,7 @@ class NoteDB:
         }
 
     def _serialize_item(self, it: Item) -> Dict[str, Any]:
-        return {
+        result = {
             "id": it.id,
             "name": it.name,
             "category_id": it.category_id,
@@ -1186,6 +1192,9 @@ class NoteDB:
             "last_accessed_at": it.last_accessed_at,
             "pages": [self._serialize_page(p) for p in it.pages],
         }
+        if it.linked_item_id:
+            result["linked_item_id"] = it.linked_item_id
+        return result
 
     def _serialize_category(self, c: Category) -> Dict[str, Any]:
         return {
@@ -1256,6 +1265,10 @@ class NoteDB:
                         "last_page_index": int(item.get("last_page_index", 0)),
                         "pages": item.get("pages", []),
                     }
+                    # linked_item_id가 있으면 추가 (마이그레이션 호환성)
+                    linked_item_id = item.get("linked_item_id")
+                    if linked_item_id:
+                        new_item["linked_item_id"] = str(linked_item_id).strip() or None
                     new_data["items"].append(new_item)
         
         # root 객체에서 시작
@@ -1282,13 +1295,18 @@ class NoteDB:
             for item in root_items:
                 iid = str(item.get("id", _uuid()))
                 new_data["categories"][-1]["item_ids"].append(iid)
-                new_data["items"].append({
+                root_item = {
                     "id": iid,
                     "name": str(item.get("name", "Item")).strip() or "Item",
                     "category_id": temp_root_id,
                     "last_page_index": int(item.get("last_page_index", 0)),
                     "pages": item.get("pages", []),
-                })
+                }
+                # linked_item_id가 있으면 추가 (마이그레이션 호환성)
+                linked_item_id = item.get("linked_item_id")
+                if linked_item_id:
+                    root_item["linked_item_id"] = str(linked_item_id).strip() or None
+                new_data["items"].append(root_item)
         
         return new_data
 
@@ -1385,9 +1403,12 @@ class NoteDB:
         #     self.categories[root0].item_ids.append(iid)
 
         for it in self.items.values():
-            if not it.pages:
+            # 링크된 Item은 pages가 빈 리스트일 수 있으므로 강제로 생성하지 않음
+            if not it.linked_item_id and not it.pages:
                 it.pages = [self.new_page()]
-            it.last_page_index = max(0, min(int(it.last_page_index), len(it.pages) - 1))
+            # pages가 있으면 last_page_index 검증
+            if it.pages:
+                it.last_page_index = max(0, min(int(it.last_page_index), len(it.pages) - 1))
 
     def _all_category_ids_in_stable_order(self) -> List[str]:
         out: List[str] = []
@@ -1589,12 +1610,14 @@ class NoteDB:
         self._ensure_integrity()
         return True
 
-    def add_item(self, name: str, category_id: str) -> Item:
+    def add_item(self, name: str, category_id: str, linked_item_id: Optional[str] = None) -> Item:
         name = (name or "").strip() or "New Item"
         if category_id not in self.categories:
             category_id = self.root_category_ids[0] if self.root_category_ids else ""
         iid = _uuid()
-        it = Item(id=iid, name=name, category_id=category_id, pages=[self.new_page()], last_page_index=0)
+        # 링크된 Item이면 pages는 빈 리스트로 생성 (원본 Item의 pages 사용)
+        pages = [] if linked_item_id else [self.new_page()]
+        it = Item(id=iid, name=name, category_id=category_id, pages=pages, last_page_index=0, linked_item_id=linked_item_id)
         self.items[iid] = it
         if category_id and category_id in self.categories:
             self.categories[category_id].item_ids.append(iid)
@@ -1658,6 +1681,13 @@ class NoteDB:
             return False
         # 마지막 아이템도 삭제 허용 (빈 상태 허용)
         it = self.items[iid]
+        
+        # 원본 Item을 참조하는 링크된 Item들을 찾아서 링크 해제
+        # (링크된 Item은 유지하되, 고아 상태로 만들기)
+        for linked_item_id, linked_item in self.items.items():
+            if linked_item.linked_item_id == iid:
+                linked_item.linked_item_id = None  # 링크 해제
+        
         cat = self.categories.get(it.category_id)
         if cat:
             cat.item_ids = [x for x in cat.item_ids if x != iid]
@@ -4060,13 +4090,27 @@ class MainWindow(QMainWindow):
                 it = self.db.get_item(iid)
                 if not it:
                     continue
-                qi = QTreeWidgetItem([it.name])
+                # 링크된 Item이면 표시 이름에 링크 표시 추가
+                display_name = it.name
+                if it.linked_item_id:
+                    original = self.db.get_item(it.linked_item_id)
+                    if original:
+                        display_name = f"{it.name} → {original.name}"
+                    else:
+                        display_name = f"{it.name} → (삭제됨)"
+                
+                qi = QTreeWidgetItem([display_name])
                 qi.setData(0, self.NODE_TYPE_ROLE, "item")
                 qi.setData(0, self.ITEM_ID_ROLE, it.id)
                 qi.setFlags(qi.flags() | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                 
                 # ✅ Item(File) icon
                 qi.setIcon(0, file_icon)
+                
+                # 링크된 Item은 다른 색상으로 표시
+                if it.linked_item_id:
+                    qi.setForeground(0, QColor("#666666"))
+                    qi.setToolTip(0, f"링크된 Item (원본: {original.name if original else '삭제됨'})")
                 
                 q.addChild(qi)
                 item_to_qitem[it.id] = qi
@@ -4236,7 +4280,14 @@ class MainWindow(QMainWindow):
             return
 
         if node_type == "item":
+            iid = str(item.data(0, self.ITEM_ID_ROLE) or "")
+            it = self.db.get_item(iid) if iid else None
+            # 원본 Item만 레퍼런스 생성 가능 (이미 링크된 Item이 아닌 경우)
+            can_create_reference = it and not it.linked_item_id
+            
             act_add_item = menu.addAction("+ Item (same folder)")
+            if can_create_reference:
+                act_create_ref = menu.addAction("Create Reference...")
             menu.addSeparator()
             act_rename = menu.addAction("Rename Item")
             act_delete = menu.addAction("Delete Item")
@@ -4249,6 +4300,8 @@ class MainWindow(QMainWindow):
                 return
             if chosen == act_add_item:
                 self.add_item()
+            elif can_create_reference and chosen == act_create_ref:
+                self._create_reference_item(iid)
             elif chosen == act_rename:
                 self.rename_item()
             elif chosen == act_delete:
@@ -4294,7 +4347,18 @@ class MainWindow(QMainWindow):
             self.current_page_index = 0
 
     def current_item(self) -> Optional[Item]:
-        return self.db.get_item(self.current_item_id) if self.current_item_id else None
+        """현재 선택된 Item 반환 (링크된 Item이면 원본 Item 반환)"""
+        if not self.current_item_id:
+            return None
+        it = self.db.get_item(self.current_item_id)
+        if not it:
+            return None
+        # 링크된 Item이면 원본 Item 반환
+        if it.linked_item_id:
+            original = self.db.get_item(it.linked_item_id)
+            if original:
+                return original
+        return it
 
     def current_page(self) -> Optional[Page]:
         it = self.current_item()
@@ -5709,12 +5773,128 @@ class MainWindow(QMainWindow):
         if not cid:
             self.trace("아이템 생성 취소 - category_id 없음", "DEBUG")
             return
-        name, ok = QInputDialog.getText(self, "Add Item", "Item name (in folder):", text="New Item")
-        if not ok or not (name or "").strip():
+        
+        # 링크 옵션 선택 다이얼로그
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Item")
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(300)
+        layout = QVBoxLayout(dialog)
+        
+        layout.addWidget(QLabel("Item 추가 방법을 선택하세요:"))
+        
+        btn_new = QPushButton("새 Item 생성")
+        btn_link = QPushButton("기존 Item 링크")
+        btn_cancel = QPushButton("취소")
+        
+        layout.addWidget(btn_new)
+        layout.addWidget(btn_link)
+        layout.addWidget(btn_cancel)
+        
+        choice = None
+        
+        def on_new():
+            nonlocal choice
+            choice = "new"
+            dialog.accept()
+        
+        def on_link():
+            nonlocal choice
+            choice = "link"
+            dialog.accept()
+        
+        def on_cancel():
+            dialog.reject()
+        
+        btn_new.clicked.connect(on_new)
+        btn_link.clicked.connect(on_link)
+        btn_cancel.clicked.connect(on_cancel)
+        
+        if dialog.exec_() != QDialog.Accepted or choice is None:
             return
-        self.trace(f"아이템 생성 시작 - 이름: {name.strip()}, category_id: {cid}", "DEBUG")
-        it = self.db.add_item(name.strip(), cid)
-        self.trace(f"아이템 생성 완료 - ID: {it.id}, category_id: {it.category_id}", "DEBUG")
+        
+        if choice == "new":
+            # 새 Item 생성
+            name, ok = QInputDialog.getText(self, "Add Item", "Item name (in folder):", text="New Item")
+            if not ok or not (name or "").strip():
+                return
+            self.trace(f"아이템 생성 시작 - 이름: {name.strip()}, category_id: {cid}", "DEBUG")
+            it = self.db.add_item(name.strip(), cid)
+            self.trace(f"아이템 생성 완료 - ID: {it.id}, category_id: {it.category_id}", "DEBUG")
+        else:
+            # 기존 Item 링크
+            # 링크할 Item 선택 다이얼로그
+            link_dialog = QDialog(self)
+            link_dialog.setWindowTitle("Link to Existing Item")
+            link_dialog.setMinimumWidth(500)
+            link_dialog.setMinimumHeight(400)
+            link_layout = QVBoxLayout(link_dialog)
+            
+            link_layout.addWidget(QLabel("링크할 Item을 선택하세요:"))
+            
+            item_list = QListWidget()
+            # 링크되지 않은 Item만 표시 (원본 Item만)
+            for item_id, item in self.db.items.items():
+                if not item.linked_item_id:  # 링크되지 않은 원본 Item만
+                    # 폴더 경로 포함하여 표시
+                    cat = self.db.get_category(item.category_id)
+                    cat_name = cat.name if cat else "Unknown"
+                    display_text = f"{item.name} (폴더: {cat_name})"
+                    list_item = QListWidgetItem(display_text)
+                    list_item.setData(Qt.UserRole, item_id)
+                    item_list.addItem(list_item)
+            
+            if item_list.count() == 0:
+                QMessageBox.information(self, "No Items", "링크할 수 있는 Item이 없습니다.")
+                return
+            
+            link_layout.addWidget(item_list)
+            
+            btn_link_ok = QPushButton("링크")
+            btn_link_cancel = QPushButton("취소")
+            btn_layout = QHBoxLayout()
+            btn_layout.addWidget(btn_link_ok)
+            btn_layout.addWidget(btn_link_cancel)
+            link_layout.addLayout(btn_layout)
+            
+            selected_item_id = None
+            
+            def on_link_ok():
+                nonlocal selected_item_id
+                current = item_list.currentItem()
+                if current:
+                    selected_item_id = current.data(Qt.UserRole)
+                    link_dialog.accept()
+            
+            def on_link_cancel():
+                link_dialog.reject()
+            
+            btn_link_ok.clicked.connect(on_link_ok)
+            btn_link_cancel.clicked.connect(on_link_cancel)
+            
+            if link_dialog.exec_() != QDialog.Accepted or not selected_item_id:
+                return
+            
+            # 링크된 Item 생성
+            original_item = self.db.get_item(selected_item_id)
+            if not original_item:
+                QMessageBox.warning(self, "Error", "선택한 Item을 찾을 수 없습니다.")
+                return
+            
+            # 링크된 Item의 이름은 원본과 동일하게 설정 (또는 사용자 입력)
+            name, ok = QInputDialog.getText(
+                self, "Link Item", 
+                f"링크된 Item 이름 (기본값: {original_item.name}):", 
+                text=original_item.name
+            )
+            if not ok or not (name or "").strip():
+                return
+            
+            self.trace(f"링크 아이템 생성 시작 - 이름: {name.strip()}, 원본 ID: {selected_item_id}, category_id: {cid}", "DEBUG")
+            it = self.db.add_item(name.strip(), cid, linked_item_id=selected_item_id)
+            self.trace(f"링크 아이템 생성 완료 - ID: {it.id}, category_id: {it.category_id}", "DEBUG")
+        
         self.current_category_id = cid
         self.current_item_id = it.id
         self.current_page_index = 0
@@ -5737,6 +5917,66 @@ class MainWindow(QMainWindow):
                 "다시 시도하거나 파일이 잠겨있는지 확인해주세요."
             )
             return
+        self._refresh_nav_tree(select_current=True)
+        self._show_placeholder(False)
+        self._load_current_item_page_to_ui()
+
+    def _create_reference_item(self, original_item_id: str) -> None:
+        """선택된 Item을 원본으로 하는 레퍼런스 Item 생성"""
+        self._flush_page_fields_to_model_and_save()
+        
+        original_item = self.db.get_item(original_item_id)
+        if not original_item:
+            QMessageBox.warning(self, "Error", "원본 Item을 찾을 수 없습니다.")
+            return
+        
+        # 이미 링크된 Item이면 레퍼런스 생성 불가
+        if original_item.linked_item_id:
+            QMessageBox.warning(self, "Error", "이미 링크된 Item은 레퍼런스를 생성할 수 없습니다.")
+            return
+        
+        # 현재 Item이 있는 폴더에 레퍼런스 생성
+        category_id = original_item.category_id
+        if not category_id or category_id not in self.db.categories:
+            QMessageBox.warning(self, "Error", "폴더를 찾을 수 없습니다.")
+            return
+        
+        # 레퍼런스 Item 이름 입력
+        name, ok = QInputDialog.getText(
+            self, "Create Reference", 
+            f"레퍼런스 Item 이름 (기본값: {original_item.name}):", 
+            text=original_item.name
+        )
+        if not ok or not (name or "").strip():
+            return
+        
+        # 링크된 Item 생성
+        self.trace(f"레퍼런스 아이템 생성 시작 - 이름: {name.strip()}, 원본 ID: {original_item_id}, category_id: {category_id}", "DEBUG")
+        linked_item = self.db.add_item(name.strip(), category_id, linked_item_id=original_item_id)
+        self.trace(f"레퍼런스 아이템 생성 완료 - ID: {linked_item.id}, category_id: {linked_item.category_id}", "DEBUG")
+        
+        # 저장
+        save_ok = self._save_db_with_warning()
+        if not save_ok:
+            # 저장 실패 시 롤백
+            if linked_item.id in self.db.items:
+                del self.db.items[linked_item.id]
+            cat = self.db.categories.get(category_id)
+            if cat and linked_item.id in cat.item_ids:
+                cat.item_ids.remove(linked_item.id)
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                f"레퍼런스 Item '{name.strip()}' 생성은 되었지만 저장에 실패했습니다.\n\n"
+                "Item이 저장되지 않았으므로 앱을 종료하면 사라집니다."
+            )
+            return
+        
+        # 트리 새로고침 및 선택
+        self.current_category_id = category_id
+        self.current_item_id = linked_item.id
+        self.current_page_index = 0
+        self._save_ui_state()
         self._refresh_nav_tree(select_current=True)
         self._show_placeholder(False)
         self._load_current_item_page_to_ui()
@@ -5765,10 +6005,21 @@ class MainWindow(QMainWindow):
         it = self.db.get_item(iid)
         if not it:
             return
+        
+        # 원본 Item을 참조하는 링크된 Item들이 있는지 확인
+        linked_items = [linked_item for linked_item in self.db.items.values() if linked_item.linked_item_id == iid]
+        linked_items_names = [li.name for li in linked_items[:3]]  # 최대 3개만 표시
+        warning_msg = f"Delete item '{it.name}' and all its pages?\n(This cannot be undone.)"
+        if linked_items:
+            warning_msg += f"\n\n⚠️ Warning: This item has {len(linked_items)} reference(s) that will be unlinked:\n"
+            for name in linked_items_names:
+                warning_msg += f"  - {name}\n"
+            if len(linked_items) > 3:
+                warning_msg += f"  ... and {len(linked_items) - 3} more\n"
+        
         # 마지막 아이템도 삭제 허용 (빈 상태 허용)
         reply = QMessageBox.question(
-            self, "Delete Item",
-            f"Delete item '{it.name}' and all its pages?\n(This cannot be undone.)",
+            self, "Delete Item", warning_msg,
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
