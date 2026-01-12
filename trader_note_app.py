@@ -2,7 +2,21 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.11  (2026-01-10)
+Version: 0.10.12  (2026-01-13)
+
+v0.10.12 변경 사항:
+- Chart 이미지 주식 보유 정보 기능 추가
+  AS-IS: 종목의 유통 주식수 및 기관/외인/개인 보유 비율 정보를 기록할 방법 없음
+  TO-BE:
+    - Page 모델에 주식 보유 정보 필드 추가 (유통 주식수, 기관/외인/개인 보유 주식수)
+    - trading_info_widget 아래에 주식 보유 정보 입력 위젯 추가
+    - 유통 주식수 입력 및 기관/외인/개인 보유 주식수 입력
+    - 보유 비율(%) 자동 계산 및 표시 (유통 주식수 대비)
+    - Chart 뷰 상단 우측에 floating 토글 버튼(📊) 추가
+    - 위젯 기본 숨김 상태로 화면 공간 절약
+    - 각 Pane(A/B)별로 독립적으로 동작
+    - DB 저장/로드 로직에 주식 보유 정보 필드 포함
+    - 기존 데이터와 호환성 유지 (기본값: 0)
 
 v0.10.11 변경 사항:
 - Item 주력 제품/서비스 설명 및 유통 비율 기능 추가
@@ -16,19 +30,6 @@ v0.10.11 변경 사항:
     - 링크된 Item인 경우 원본 Item의 정보 표시 및 수정
     - DB 저장/로드 로직에 business_description, distribution_ratio 포함
     - 기존 데이터와 호환성 유지 (기본값: "", 0)
-
-v0.10.10 변경 사항:
-- Item 레퍼런스(링크) 기능 추가
-  AS-IS: 다른 폴더에서 동일 종목을 다룰 때 Item을 복제해야 함
-  TO-BE:
-    - Item 모델에 `linked_item_id` 필드 추가 (레퍼런스 Item ID)
-    - Item 우클릭 메뉴에 "Create Reference..." 추가
-    - 레퍼런스 아이템 생성 시 원본 Item을 참조
-    - 레퍼런스 아이템 선택 시 원본 Item의 데이터 표시 및 수정
-    - 레퍼런스 아이템을 다른 폴더로 이동 가능 (기존 이동 기능 활용)
-    - 트리에서 레퍼런스 아이템을 시각적으로 구분 (회색 표시, 링크 아이콘)
-    - 원본 Item 삭제 시 링크된 Item들의 링크 자동 해제
-    - DB 저장/로드 로직에 linked_item_id 포함 (기존 데이터 호환)
 """
 
 import json
@@ -59,7 +60,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.11)"
+APP_TITLE = "Trader Chart Note (v0.10.12)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -790,6 +791,14 @@ class Page:
     chart_year_b: int = 0  # 차트 년도 (0은 미설정)
     chart_month_a: int = 0  # 차트 월 (0은 미설정, 1-12)
     chart_month_b: int = 0  # 차트 월 (0은 미설정, 1-12)
+    circulation_stock_a: int = 0  # 유통 주식수 (주 단위)
+    circulation_stock_b: int = 0  # 유통 주식수 (주 단위)
+    institution_holdings_a: int = 0  # 기관 보유 주식수 (주 단위)
+    institution_holdings_b: int = 0  # 기관 보유 주식수 (주 단위)
+    foreign_holdings_a: int = 0  # 외인 보유 주식수 (주 단위)
+    foreign_holdings_b: int = 0  # 외인 보유 주식수 (주 단위)
+    individual_holdings_a: int = 0  # 개인 보유 주식수 (주 단위)
+    individual_holdings_b: int = 0  # 개인 보유 주식수 (주 단위)
 
 
 @dataclass
@@ -854,6 +863,14 @@ class NoteDB:
             chart_year_b=0,
             chart_month_a=0,
             chart_month_b=0,
+            circulation_stock_a=0,
+            circulation_stock_b=0,
+            institution_holdings_a=0,
+            institution_holdings_b=0,
+            foreign_holdings_a=0,
+            foreign_holdings_b=0,
+            individual_holdings_a=0,
+            individual_holdings_b=0,
         )
 
     def _default_data(self) -> Dict[str, Any]:
@@ -1143,6 +1160,14 @@ class NoteDB:
                                     chart_year_b=int(p.get("chart_year_b", 0)),
                                     chart_month_a=int(p.get("chart_month_a", 0)),
                                     chart_month_b=int(p.get("chart_month_b", 0)),
+                                    circulation_stock_a=int(p.get("circulation_stock_a", 0)),
+                                    circulation_stock_b=int(p.get("circulation_stock_b", 0)),
+                                    institution_holdings_a=int(p.get("institution_holdings_a", 0)),
+                                    institution_holdings_b=int(p.get("institution_holdings_b", 0)),
+                                    foreign_holdings_a=int(p.get("foreign_holdings_a", 0)),
+                                    foreign_holdings_b=int(p.get("foreign_holdings_b", 0)),
+                                    individual_holdings_a=int(p.get("individual_holdings_a", 0)),
+                                    individual_holdings_b=int(p.get("individual_holdings_b", 0)),
                                 )
                             )
                     if not pages:
@@ -1188,6 +1213,14 @@ class NoteDB:
             "chart_year_b": pg.chart_year_b,
             "chart_month_a": pg.chart_month_a,
             "chart_month_b": pg.chart_month_b,
+            "circulation_stock_a": pg.circulation_stock_a,
+            "circulation_stock_b": pg.circulation_stock_b,
+            "institution_holdings_a": pg.institution_holdings_a,
+            "institution_holdings_b": pg.institution_holdings_b,
+            "foreign_holdings_a": pg.foreign_holdings_a,
+            "foreign_holdings_b": pg.foreign_holdings_b,
+            "individual_holdings_a": pg.individual_holdings_a,
+            "individual_holdings_b": pg.individual_holdings_b,
         }
 
     def _serialize_item(self, it: Item) -> Dict[str, Any]:
@@ -3675,8 +3708,131 @@ class MainWindow(QMainWindow):
         combo_chart_type.currentTextChanged.connect(update_trading_status)
         edit_trading_amount.textChanged.connect(update_trading_status)
         
+        # 주식 보유 정보 위젯 (trading_info_widget 아래에 배치)
+        holdings_info_widget = QWidget(vp)
+        holdings_info_widget.setStyleSheet("""
+            QWidget {
+                background: rgba(255,255,255,235);
+                border: 1px solid #9A9A9A;
+                border-radius: 8px;
+                padding: 6px 8px;
+            }
+        """)
+        holdings_info_layout = QVBoxLayout(holdings_info_widget)
+        holdings_info_layout.setContentsMargins(6, 6, 6, 6)
+        holdings_info_layout.setSpacing(6)
+        
+        # 유통 주식수 입력 행
+        circulation_row = QWidget(holdings_info_widget)
+        circulation_layout = QHBoxLayout(circulation_row)
+        circulation_layout.setContentsMargins(0, 0, 0, 0)
+        circulation_layout.setSpacing(6)
+        
+        lbl_circulation = QLabel("유통주식수:", circulation_row)
+        lbl_circulation.setFixedWidth(50)  # 70 -> 50으로 줄임
+        circulation_layout.addWidget(lbl_circulation)
+        
+        edit_circulation = QLineEdit(circulation_row)
+        edit_circulation.setPlaceholderText("주식수")
+        edit_circulation.setFixedWidth(100)
+        edit_circulation.setValidator(QIntValidator(0, 999999999))
+        edit_circulation.textChanged.connect(self._on_page_field_changed)
+        circulation_layout.addWidget(edit_circulation)
+        
+        lbl_circulation_unit = QLabel("주", circulation_row)
+        lbl_circulation_unit.setStyleSheet("color: #666; font-size: 9pt;")
+        circulation_layout.addWidget(lbl_circulation_unit)
+        circulation_layout.addStretch()
+        
+        holdings_info_layout.addWidget(circulation_row)
+        
+        # 기관/외인/개인 보유 주식수 입력 행
+        holdings_rows = []
+        holdings_types = [
+            ("기관", "institution"),
+            ("외인", "foreign"),
+            ("개인", "individual")
+        ]
+        
+        for label_text, key in holdings_types:
+            row = QWidget(holdings_info_widget)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+            
+            lbl = QLabel(f"{label_text}:", row)
+            lbl.setFixedWidth(50)  # 70 -> 50으로 줄임
+            row_layout.addWidget(lbl)
+            
+            edit = QLineEdit(row)
+            edit.setPlaceholderText("보유주식수")
+            edit.setFixedWidth(100)
+            edit.setValidator(QIntValidator(0, 999999999))
+            edit.textChanged.connect(self._on_page_field_changed)
+            row_layout.addWidget(edit)
+            
+            lbl_unit = QLabel("주", row)
+            lbl_unit.setStyleSheet("color: #666; font-size: 9pt;")
+            row_layout.addWidget(lbl_unit)
+            
+            # 보유 비율 표시 라벨
+            lbl_ratio = QLabel("", row)
+            lbl_ratio.setFixedWidth(80)  # 60 -> 80으로 늘림
+            lbl_ratio.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            lbl_ratio.setStyleSheet("color: #0066CC; font-weight: 600; font-size: 9pt;")
+            row_layout.addWidget(lbl_ratio)
+            
+            row_layout.addStretch()
+            
+            holdings_info_layout.addWidget(row)
+            holdings_rows.append({
+                "label": label_text,
+                "key": key,
+                "edit": edit,
+                "ratio": lbl_ratio
+            })
+        
+        # 보유 비율 자동 계산 함수
+        def update_holdings_ratios():
+            try:
+                circulation = int(edit_circulation.text() or 0)
+                if circulation > 0:
+                    for row_data in holdings_rows:
+                        holdings = int(row_data["edit"].text() or 0)
+                        ratio = (holdings / circulation) * 100
+                        row_data["ratio"].setText(f"{ratio:.2f}%")
+                else:
+                    for row_data in holdings_rows:
+                        row_data["ratio"].setText("")
+            except (ValueError, ZeroDivisionError):
+                for row_data in holdings_rows:
+                    row_data["ratio"].setText("")
+        
+        edit_circulation.textChanged.connect(update_holdings_ratios)
+        for row_data in holdings_rows:
+            row_data["edit"].textChanged.connect(update_holdings_ratios)
+        
+        # 주식 보유 정보 위젯은 기본적으로 숨김
+        holdings_info_widget.setVisible(False)
+        
         # 확대/축소 시 위젯 위치 업데이트
         viewer.transformChanged.connect(lambda: self._reposition_overlay(pane))
+
+        # 주식 보유 정보 토글 버튼 (상단 우측)
+        btn_holdings_toggle = QToolButton(vp)
+        btn_holdings_toggle.setText("📊")
+        btn_holdings_toggle.setToolTip(f"Toggle Holdings Info ({pane})")
+        btn_holdings_toggle.setAutoRaise(True)
+        btn_holdings_toggle.setFixedSize(34, 30)
+        btn_holdings_toggle.setCheckable(True)
+        btn_holdings_toggle.setChecked(False)
+        
+        def toggle_holdings_info():
+            is_visible = btn_holdings_toggle.isChecked()
+            holdings_info_widget.setVisible(is_visible)
+            self._reposition_overlay(pane)
+        
+        btn_holdings_toggle.toggled.connect(toggle_holdings_info)
 
         btn_anno_toggle = QToolButton(vp)
         btn_anno_toggle.setText("✎")
@@ -3875,6 +4031,12 @@ class MainWindow(QMainWindow):
             "chart_type": combo_chart_type,
             "trading_amount": edit_trading_amount,
             "trading_status": lbl_status,
+            "holdings_info": holdings_info_widget,
+            "circulation_stock": edit_circulation,
+            "institution_holdings": holdings_rows[0]["edit"],
+            "foreign_holdings": holdings_rows[1]["edit"],
+            "individual_holdings": holdings_rows[2]["edit"],
+            "holdings_toggle": btn_holdings_toggle,
             "anno_toggle": btn_anno_toggle,
             # desc_toggle 제거됨 - splitter 핸들 버튼 사용
             "panel": anno_panel,
@@ -4001,6 +4163,8 @@ class MainWindow(QMainWindow):
         edit_cap: CollapsibleCaptionEdit = ui["cap"]
         caption_container: QWidget = ui.get("caption_container")
         trading_info: QWidget = ui.get("trading_info")
+        holdings_info: QWidget = ui.get("holdings_info")
+        btn_holdings_toggle: QToolButton = ui.get("holdings_toggle")
         btn_anno_toggle: QToolButton = ui["anno_toggle"]
         anno_panel: QFrame = ui["panel"]
 
@@ -4008,12 +4172,23 @@ class MainWindow(QMainWindow):
         margin = 10
         gap = 6
 
+        # 버튼 위치 계산 (상단 우측부터 배치)
+        button_gap = 4
+        button_y = margin
+        
         if anno_panel.isVisible():
             panel_x = max(margin, w - anno_panel.width() - margin)
             anno_panel.move(panel_x, margin)
-            btn_anno_toggle.move(max(margin, panel_x - margin - btn_anno_toggle.width()), margin)
+            btn_anno_x = max(margin, panel_x - margin - btn_anno_toggle.width())
+            btn_anno_toggle.move(btn_anno_x, button_y)
         else:
-            btn_anno_toggle.move(max(margin, w - btn_anno_toggle.width() - margin), margin)
+            btn_anno_x = max(margin, w - btn_anno_toggle.width() - margin)
+            btn_anno_toggle.move(btn_anno_x, button_y)
+        
+        # holdings_toggle 버튼을 anno_toggle 왼쪽에 배치
+        if btn_holdings_toggle:
+            btn_holdings_x = btn_anno_x - btn_holdings_toggle.width() - button_gap
+            btn_holdings_toggle.move(max(margin, btn_holdings_x), button_y)
 
         # 거래대금 정보 위젯을 먼저 크기 조정하여 폭 계산
         trading_info_width = None
@@ -4046,6 +4221,14 @@ class MainWindow(QMainWindow):
         if trading_info:
             trading_info.setFixedWidth(cap_w)
             trading_info.move(cap_x, margin + (caption_container.height() if caption_container else edit_cap.height()) + gap)
+        
+        # 주식 보유 정보 위젯을 거래대금 정보 위젯 아래에 배치 (visible일 때만)
+        if holdings_info and holdings_info.isVisible():
+            holdings_info.setFixedWidth(cap_w)
+            holdings_info_y = margin + (caption_container.height() if caption_container else edit_cap.height()) + gap
+            if trading_info:
+                holdings_info_y += trading_info.height() + gap
+            holdings_info.move(cap_x, holdings_info_y)
 
     # ---------------- Tree refresh ---------------- 
     def _refresh_nav_tree(self, select_current: bool = False) -> None:
@@ -4675,6 +4858,16 @@ class MainWindow(QMainWindow):
                         # 월 ComboBox에서 해당 월 찾기
                         month_idx = ui_a["month"].findData(month_a) if month_a > 0 else 0
                         ui_a["month"].setCurrentIndex(month_idx if month_idx >= 0 else 0)
+                    # 주식 보유 정보 로드
+                    if "circulation_stock" in ui_a and "institution_holdings" in ui_a:
+                        circulation_a = pg.circulation_stock_a if pg.circulation_stock_a > 0 else ""
+                        ui_a["circulation_stock"].setText(str(circulation_a) if circulation_a else "")
+                        institution_a = pg.institution_holdings_a if pg.institution_holdings_a > 0 else ""
+                        ui_a["institution_holdings"].setText(str(institution_a) if institution_a else "")
+                        foreign_a = pg.foreign_holdings_a if pg.foreign_holdings_a > 0 else ""
+                        ui_a["foreign_holdings"].setText(str(foreign_a) if foreign_a else "")
+                        individual_a = pg.individual_holdings_a if pg.individual_holdings_a > 0 else ""
+                        ui_a["individual_holdings"].setText(str(individual_a) if individual_a else "")
                     # 상태 수동 업데이트
                     QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("A"))
             if self._pane_ui.get("B"):
@@ -4695,6 +4888,16 @@ class MainWindow(QMainWindow):
                         # 월 ComboBox에서 해당 월 찾기
                         month_idx = ui_b["month"].findData(month_b) if month_b > 0 else 0
                         ui_b["month"].setCurrentIndex(month_idx if month_idx >= 0 else 0)
+                    # 주식 보유 정보 로드
+                    if "circulation_stock" in ui_b and "institution_holdings" in ui_b:
+                        circulation_b = pg.circulation_stock_b if pg.circulation_stock_b > 0 else ""
+                        ui_b["circulation_stock"].setText(str(circulation_b) if circulation_b else "")
+                        institution_b = pg.institution_holdings_b if pg.institution_holdings_b > 0 else ""
+                        ui_b["institution_holdings"].setText(str(institution_b) if institution_b else "")
+                        foreign_b = pg.foreign_holdings_b if pg.foreign_holdings_b > 0 else ""
+                        ui_b["foreign_holdings"].setText(str(foreign_b) if foreign_b else "")
+                        individual_b = pg.individual_holdings_b if pg.individual_holdings_b > 0 else ""
+                        ui_b["individual_holdings"].setText(str(individual_b) if individual_b else "")
                     # 상태 수동 업데이트
                     QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("B"))
 
@@ -4960,6 +5163,39 @@ class MainWindow(QMainWindow):
                     pg.chart_year_a = new_year_a; changed = True
                 if pg.chart_month_a != new_month_a:
                     pg.chart_month_a = new_month_a; changed = True
+            # 주식 보유 정보 수집 (Pane A)
+            circulation_stock_a = ui_a.get("circulation_stock")
+            institution_holdings_a = ui_a.get("institution_holdings")
+            foreign_holdings_a = ui_a.get("foreign_holdings")
+            individual_holdings_a = ui_a.get("individual_holdings")
+            if circulation_stock_a:
+                try:
+                    new_circulation_a = int(circulation_stock_a.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_circulation_a = 0
+                if pg.circulation_stock_a != new_circulation_a:
+                    pg.circulation_stock_a = new_circulation_a; changed = True
+            if institution_holdings_a:
+                try:
+                    new_institution_a = int(institution_holdings_a.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_institution_a = 0
+                if pg.institution_holdings_a != new_institution_a:
+                    pg.institution_holdings_a = new_institution_a; changed = True
+            if foreign_holdings_a:
+                try:
+                    new_foreign_a = int(foreign_holdings_a.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_foreign_a = 0
+                if pg.foreign_holdings_a != new_foreign_a:
+                    pg.foreign_holdings_a = new_foreign_a; changed = True
+            if individual_holdings_a:
+                try:
+                    new_individual_a = int(individual_holdings_a.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_individual_a = 0
+                if pg.individual_holdings_a != new_individual_a:
+                    pg.individual_holdings_a = new_individual_a; changed = True
         
         ui_b = self._pane_ui.get("B", {})
         if ui_b:
@@ -4989,6 +5225,39 @@ class MainWindow(QMainWindow):
                     pg.chart_year_b = new_year_b; changed = True
                 if pg.chart_month_b != new_month_b:
                     pg.chart_month_b = new_month_b; changed = True
+            # 주식 보유 정보 수집 (Pane B)
+            circulation_stock_b = ui_b.get("circulation_stock")
+            institution_holdings_b = ui_b.get("institution_holdings")
+            foreign_holdings_b = ui_b.get("foreign_holdings")
+            individual_holdings_b = ui_b.get("individual_holdings")
+            if circulation_stock_b:
+                try:
+                    new_circulation_b = int(circulation_stock_b.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_circulation_b = 0
+                if pg.circulation_stock_b != new_circulation_b:
+                    pg.circulation_stock_b = new_circulation_b; changed = True
+            if institution_holdings_b:
+                try:
+                    new_institution_b = int(institution_holdings_b.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_institution_b = 0
+                if pg.institution_holdings_b != new_institution_b:
+                    pg.institution_holdings_b = new_institution_b; changed = True
+            if foreign_holdings_b:
+                try:
+                    new_foreign_b = int(foreign_holdings_b.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_foreign_b = 0
+                if pg.foreign_holdings_b != new_foreign_b:
+                    pg.foreign_holdings_b = new_foreign_b; changed = True
+            if individual_holdings_b:
+                try:
+                    new_individual_b = int(individual_holdings_b.text().strip() or "0")
+                except (ValueError, AttributeError):
+                    new_individual_b = 0
+                if pg.individual_holdings_b != new_individual_b:
+                    pg.individual_holdings_b = new_individual_b; changed = True
 
         new_text = _strip_highlight_html(self.text_edit.toHtml())
         if pg.note_text != new_text:
