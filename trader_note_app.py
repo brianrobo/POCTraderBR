@@ -2,7 +2,17 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.12  (2026-01-13)
+Version: 0.10.13  (2026-01-14)
+
+v0.10.13 변경 사항:
+- 타이틀 바에 현재 선택된 폴더/아이템 이름 표시 기능 추가
+  AS-IS: 현재 선택된 폴더나 아이템을 확인하려면 트리뷰를 봐야 함
+  TO-BE:
+    - 좌측 트리뷰에서 폴더 선택 시 타이틀 바에 폴더 이름 표시
+    - 좌측 트리뷰에서 아이템 선택 시 타이틀 바에 "폴더명 > 아이템명" 형식으로 표시
+    - 링크된 아이템인 경우 "폴더명 > 링크명 → 원본명" 형식으로 표시
+    - 선택 변경 시 자동으로 타이틀 업데이트
+    - 선택이 없을 때는 기본 타이틀만 표시
 
 v0.10.12 변경 사항:
 - Chart 이미지 주식 보유 정보 기능 추가
@@ -17,19 +27,6 @@ v0.10.12 변경 사항:
     - 각 Pane(A/B)별로 독립적으로 동작
     - DB 저장/로드 로직에 주식 보유 정보 필드 포함
     - 기존 데이터와 호환성 유지 (기본값: 0)
-
-v0.10.11 변경 사항:
-- Item 주력 제품/서비스 설명 및 유통 비율 기능 추가
-  AS-IS: 종목의 주력 제품/서비스와 유통 비율 정보를 확인할 방법 없음
-  TO-BE:
-    - Item 모델에 `business_description` 필드 추가 (주력 제품/서비스 설명, 최대 15자)
-    - Item 모델에 `distribution_ratio` 필드 추가 (유통 비율, 0-100%)
-    - Item 마우스 오버 시 툴팁으로 표시: "간단한 설명..." [35%] 형식
-    - Item 우클릭 메뉴에 "Edit Business Info..." 추가
-    - 주력 제품/서비스 설명 및 유통 비율 편집 다이얼로그 제공
-    - 링크된 Item인 경우 원본 Item의 정보 표시 및 수정
-    - DB 저장/로드 로직에 business_description, distribution_ratio 포함
-    - 기존 데이터와 호환성 유지 (기본값: "", 0)
 """
 
 import json
@@ -60,7 +57,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.12)"
+APP_TITLE = "Trader Chart Note (v0.10.13)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -2526,6 +2523,7 @@ class MainWindow(QMainWindow):
         # Splitter 핸들 초기 상태 설정 (위젯 추가 후 핸들이 생성되므로 지연 처리)
         QTimer.singleShot(100, lambda: self._update_splitter_handle_state())
         self._refresh_nav_tree(select_current=True)
+        self._update_window_title()  # 초기 타이틀 설정
 
         # 시작 상태가 Folder라면 placeholder(빈 캔버스)로
         if self.current_item_id:
@@ -4688,6 +4686,7 @@ class MainWindow(QMainWindow):
         try:
             item = self.nav_tree.currentItem()
             if not item:
+                self._update_window_title()
                 return
 
             node_type = item.data(0, self.NODE_TYPE_ROLE)
@@ -4705,20 +4704,24 @@ class MainWindow(QMainWindow):
                 self._show_placeholder(True)  # 핵심
                 self._load_current_item_page_to_ui(clear_only=True)  # 필드 정리
                 self.trace(f"Selected folder: {item.text(0)}", "INFO")
+                self._update_window_title()
                 return
 
             # Item 선택: 편집 영역 표시
             if node_type == "item":
                 iid = str(item.data(0, self.ITEM_ID_ROLE) or "")
                 if not iid:
+                    self._update_window_title()
                     return
                 if iid == self.current_item_id:
                     self._show_placeholder(False)
+                    self._update_window_title()
                     return
 
                 self._flush_page_fields_to_model_and_save()
                 found = self.db.find_item(iid)
                 if not found:
+                    self._update_window_title()
                     return
                 it, cat = found
                 self.current_item_id = it.id
@@ -4738,11 +4741,62 @@ class MainWindow(QMainWindow):
                 self._show_placeholder(False)
                 self._load_current_item_page_to_ui()
                 self.trace(f"Selected item: {it.name}", "INFO")
+                self._update_window_title()
                 return
         except Exception as e:
             self.trace(f"트리 선택 변경 중 오류 발생: {str(e)}", "ERROR")
             import traceback
             self.trace(traceback.format_exc(), "ERROR")
+    
+    def _update_window_title(self) -> None:
+        """현재 선택된 폴더 또는 아이템 이름을 타이틀 바에 표시"""
+        # nav_tree가 아직 생성되지 않았으면 기본 타이틀만 표시
+        if not hasattr(self, 'nav_tree') or self.nav_tree is None:
+            self.setWindowTitle(APP_TITLE)
+            return
+        
+        item = self.nav_tree.currentItem()
+        if not item:
+            self.setWindowTitle(APP_TITLE)
+            return
+        
+        node_type = item.data(0, self.NODE_TYPE_ROLE)
+        if node_type == "category":
+            # 폴더 선택 시: 폴더 이름만 표시
+            cid = str(item.data(0, self.CATEGORY_ID_ROLE) or "")
+            cat = self.db.get_category(cid) if cid else None
+            if cat:
+                # 조회 횟수와 URL 표시 제거하고 순수 이름만 사용
+                folder_name = cat.name
+                self.setWindowTitle(f"{APP_TITLE} - {folder_name}")
+            else:
+                self.setWindowTitle(APP_TITLE)
+        elif node_type == "item":
+            # 아이템 선택 시: 폴더명 > 아이템명 형식으로 표시
+            iid = str(item.data(0, self.ITEM_ID_ROLE) or "")
+            it = self.db.get_item(iid) if iid else None
+            if it:
+                # 링크된 아이템인 경우 원본 아이템 이름 표시
+                if it.linked_item_id:
+                    original = self.db.get_item(it.linked_item_id)
+                    if original:
+                        item_name = f"{it.name} → {original.name}"
+                    else:
+                        item_name = f"{it.name} → (삭제됨)"
+                else:
+                    item_name = it.name
+                
+                # 폴더 이름 가져오기
+                cat = self.db.get_category(it.category_id) if it.category_id else None
+                if cat:
+                    folder_name = cat.name
+                    self.setWindowTitle(f"{APP_TITLE} - {folder_name} > {item_name}")
+                else:
+                    self.setWindowTitle(f"{APP_TITLE} - {item_name}")
+            else:
+                self.setWindowTitle(APP_TITLE)
+        else:
+            self.setWindowTitle(APP_TITLE)
     
     def _on_tree_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """트리 아이템 더블 클릭 처리 (아이콘 영역이 아닌 경우에만 선택 처리)"""
