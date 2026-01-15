@@ -2,7 +2,18 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.13  (2026-01-14)
+Version: 0.10.14  (2026-01-16)
+
+v0.10.14 변경 사항:
+- Chart 화면 보유량 위젯에 유통비율 표시 기능 추가
+  AS-IS: Item의 유통비율(distribution_ratio)을 Chart 화면에서 확인할 방법 없음
+  TO-BE:
+    - 유통 주식수 입력란 우측에 유통비율 표시 추가
+    - Item의 distribution_ratio 값을 읽기 전용으로 표시
+    - Edit Business Info에서 설정한 유통비율이 자동으로 반영됨
+    - 유통비율 표시는 숫자와 %만 표시하여 간소화
+    - 유통 주식수 단위 위치를 기관/외인/개인과 동일하게 정렬
+    - 유통비율 숫자 폭 최적화
 
 v0.10.13 변경 사항:
 - 타이틀 바에 현재 선택된 폴더/아이템 이름 표시 기능 추가
@@ -13,20 +24,6 @@ v0.10.13 변경 사항:
     - 링크된 아이템인 경우 "폴더명 > 링크명 → 원본명" 형식으로 표시
     - 선택 변경 시 자동으로 타이틀 업데이트
     - 선택이 없을 때는 기본 타이틀만 표시
-
-v0.10.12 변경 사항:
-- Chart 이미지 주식 보유 정보 기능 추가
-  AS-IS: 종목의 유통 주식수 및 기관/외인/개인 보유 비율 정보를 기록할 방법 없음
-  TO-BE:
-    - Page 모델에 주식 보유 정보 필드 추가 (유통 주식수, 기관/외인/개인 보유 주식수)
-    - trading_info_widget 아래에 주식 보유 정보 입력 위젯 추가
-    - 유통 주식수 입력 및 기관/외인/개인 보유 주식수 입력
-    - 보유 비율(%) 자동 계산 및 표시 (유통 주식수 대비)
-    - Chart 뷰 상단 우측에 floating 토글 버튼(📊) 추가
-    - 위젯 기본 숨김 상태로 화면 공간 절약
-    - 각 Pane(A/B)별로 독립적으로 동작
-    - DB 저장/로드 로직에 주식 보유 정보 필드 포함
-    - 기존 데이터와 호환성 유지 (기본값: 0)
 """
 
 import json
@@ -57,7 +54,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.13)"
+APP_TITLE = "Trader Chart Note (v0.10.14)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -3740,7 +3737,20 @@ class MainWindow(QMainWindow):
         lbl_circulation_unit = QLabel("주", circulation_row)
         lbl_circulation_unit.setStyleSheet("color: #666; font-size: 9pt;")
         circulation_layout.addWidget(lbl_circulation_unit)
+        
+        # 유통비율 표시 (Item의 distribution_ratio 값, 읽기 전용) - 숫자와 %만 표시
+        # 기관/외인/개인과 동일한 위치에 맞추기 위해 addStretch() 추가
         circulation_layout.addStretch()
+        
+        lbl_circulation_ratio_value = QLabel("", circulation_row)
+        lbl_circulation_ratio_value.setFixedWidth(40)
+        lbl_circulation_ratio_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lbl_circulation_ratio_value.setStyleSheet("color: #0066CC; font-weight: 600; font-size: 9pt;")
+        circulation_layout.addWidget(lbl_circulation_ratio_value)
+        
+        lbl_circulation_ratio_unit = QLabel("%", circulation_row)
+        lbl_circulation_ratio_unit.setStyleSheet("color: #666; font-size: 9pt;")
+        circulation_layout.addWidget(lbl_circulation_ratio_unit)
         
         holdings_info_layout.addWidget(circulation_row)
         
@@ -4031,6 +4041,7 @@ class MainWindow(QMainWindow):
             "trading_status": lbl_status,
             "holdings_info": holdings_info_widget,
             "circulation_stock": edit_circulation,
+            "circulation_ratio": lbl_circulation_ratio_value,
             "institution_holdings": holdings_rows[0]["edit"],
             "foreign_holdings": holdings_rows[1]["edit"],
             "individual_holdings": holdings_rows[2]["edit"],
@@ -4916,6 +4927,11 @@ class MainWindow(QMainWindow):
                     if "circulation_stock" in ui_a and "institution_holdings" in ui_a:
                         circulation_a = pg.circulation_stock_a if pg.circulation_stock_a > 0 else ""
                         ui_a["circulation_stock"].setText(str(circulation_a) if circulation_a else "")
+                        # 유통비율은 Item의 distribution_ratio 값 표시 (읽기 전용)
+                        if "circulation_ratio" in ui_a:
+                            it = self.current_item()
+                            ratio = it.distribution_ratio if it and it.distribution_ratio > 0 else 0
+                            ui_a["circulation_ratio"].setText(str(ratio) if ratio > 0 else "")
                         institution_a = pg.institution_holdings_a if pg.institution_holdings_a > 0 else ""
                         ui_a["institution_holdings"].setText(str(institution_a) if institution_a else "")
                         foreign_a = pg.foreign_holdings_a if pg.foreign_holdings_a > 0 else ""
@@ -4946,6 +4962,11 @@ class MainWindow(QMainWindow):
                     if "circulation_stock" in ui_b and "institution_holdings" in ui_b:
                         circulation_b = pg.circulation_stock_b if pg.circulation_stock_b > 0 else ""
                         ui_b["circulation_stock"].setText(str(circulation_b) if circulation_b else "")
+                        # 유통비율은 Item의 distribution_ratio 값 표시 (읽기 전용)
+                        if "circulation_ratio" in ui_b:
+                            it = self.current_item()
+                            ratio = it.distribution_ratio if it and it.distribution_ratio > 0 else 0
+                            ui_b["circulation_ratio"].setText(str(ratio) if ratio > 0 else "")
                         institution_b = pg.institution_holdings_b if pg.institution_holdings_b > 0 else ""
                         ui_b["institution_holdings"].setText(str(institution_b) if institution_b else "")
                         foreign_b = pg.foreign_holdings_b if pg.foreign_holdings_b > 0 else ""
@@ -5229,6 +5250,7 @@ class MainWindow(QMainWindow):
                     new_circulation_a = 0
                 if pg.circulation_stock_a != new_circulation_a:
                     pg.circulation_stock_a = new_circulation_a; changed = True
+            # 유통비율은 Item의 distribution_ratio 값이므로 저장하지 않음
             if institution_holdings_a:
                 try:
                     new_institution_a = int(institution_holdings_a.text().strip() or "0")
@@ -5291,6 +5313,7 @@ class MainWindow(QMainWindow):
                     new_circulation_b = 0
                 if pg.circulation_stock_b != new_circulation_b:
                     pg.circulation_stock_b = new_circulation_b; changed = True
+            # 유통비율은 Item의 distribution_ratio 값이므로 저장하지 않음
             if institution_holdings_b:
                 try:
                     new_institution_b = int(institution_holdings_b.text().strip() or "0")
@@ -6439,6 +6462,15 @@ class MainWindow(QMainWindow):
         
         self._save_db_with_warning()
         self._refresh_nav_tree(select_current=True)
+        
+        # 유통비율 표시 업데이트 (현재 선택된 아이템이 변경된 아이템인 경우)
+        if self.current_item_id == iid or (it.linked_item_id and self.current_item_id == it.linked_item_id):
+            # 현재 아이템의 유통비율 표시 업데이트
+            for pane in ("A", "B"):
+                ui = self._pane_ui.get(pane, {})
+                if ui and "circulation_ratio" in ui:
+                    ratio = actual_item.distribution_ratio if actual_item.distribution_ratio > 0 else 0
+                    ui["circulation_ratio"].setText(str(ratio) if ratio > 0 else "")
     
     def rename_item(self) -> None:
         itw = self.nav_tree.currentItem()
