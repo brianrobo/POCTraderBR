@@ -2,7 +2,19 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.14  (2026-01-16)
+Version: 0.10.15  (2026-01-21)
+
+v0.10.15 변경 사항:
+- 주식 보유 정보 입력 필드에 숫자 콤마 포맷팅 기능 추가
+  AS-IS: 유통 주식수 및 기관/외인/개인 보유 주식수 입력 시 가독성이 떨어짐
+  TO-BE:
+    - 유통 주식수 입력 필드에 세 자리마다 콤마 자동 포맷팅
+    - 기관/외인/개인 보유 주식수 입력 필드에 세 자리마다 콤마 자동 포맷팅
+    - 입력 시 실시간으로 콤마 포맷팅 적용
+    - 저장 시 콤마 제거 후 숫자만 저장
+    - 로드 시 숫자에 콤마 포맷팅하여 표시
+    - 보유 비율 계산 시 콤마 포함 텍스트에서도 정상 동작
+    - 커서 위치 보정으로 입력 중 자연스러운 동작
 
 v0.10.14 변경 사항:
 - Chart 화면 보유량 위젯에 유통비율 표시 기능 추가
@@ -14,16 +26,6 @@ v0.10.14 변경 사항:
     - 유통비율 표시는 숫자와 %만 표시하여 간소화
     - 유통 주식수 단위 위치를 기관/외인/개인과 동일하게 정렬
     - 유통비율 숫자 폭 최적화
-
-v0.10.13 변경 사항:
-- 타이틀 바에 현재 선택된 폴더/아이템 이름 표시 기능 추가
-  AS-IS: 현재 선택된 폴더나 아이템을 확인하려면 트리뷰를 봐야 함
-  TO-BE:
-    - 좌측 트리뷰에서 폴더 선택 시 타이틀 바에 폴더 이름 표시
-    - 좌측 트리뷰에서 아이템 선택 시 타이틀 바에 "폴더명 > 아이템명" 형식으로 표시
-    - 링크된 아이템인 경우 "폴더명 > 링크명 → 원본명" 형식으로 표시
-    - 선택 변경 시 자동으로 타이틀 업데이트
-    - 선택이 없을 때는 기본 타이틀만 표시
 """
 
 import json
@@ -54,7 +56,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.14)"
+APP_TITLE = "Trader Chart Note (v0.10.15)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -3717,6 +3719,43 @@ class MainWindow(QMainWindow):
         holdings_info_layout.setContentsMargins(6, 6, 6, 6)
         holdings_info_layout.setSpacing(6)
         
+        # 숫자 포맷팅 헬퍼 함수
+        def format_number_with_comma(text: str) -> str:
+            """숫자 문자열에 콤마 추가"""
+            # 콤마 제거 후 숫자만 추출
+            digits = ''.join(filter(str.isdigit, text))
+            if not digits:
+                return ""
+            # 숫자에 콤마 추가
+            return f"{int(digits):,}"
+        
+        def on_circulation_text_changed(text: str):
+            """유통 주식수 입력 필드 텍스트 변경 핸들러"""
+            # 포맷팅 중 무한 루프 방지
+            if getattr(edit_circulation, '_formatting', False):
+                return
+            edit_circulation._formatting = True
+            try:
+                # 현재 커서 위치 저장
+                cursor_pos = edit_circulation.cursorPosition()
+                # 콤마 제거 후 숫자만 추출
+                digits = ''.join(filter(str.isdigit, text))
+                if digits:
+                    formatted = f"{int(digits):,}"
+                    # 포맷팅된 텍스트 설정
+                    if edit_circulation.text() != formatted:
+                        edit_circulation.setText(formatted)
+                        # 커서 위치 조정 (콤마 추가로 인한 위치 변화 보정)
+                        new_pos = min(cursor_pos + (formatted.count(',') - text.count(',')), len(formatted))
+                        edit_circulation.setCursorPosition(new_pos)
+                elif text:
+                    # 숫자가 아닌 문자가 있으면 제거
+                    edit_circulation.setText("")
+                # 변경 이벤트 발생
+                self._on_page_field_changed()
+            finally:
+                edit_circulation._formatting = False
+        
         # 유통 주식수 입력 행
         circulation_row = QWidget(holdings_info_widget)
         circulation_layout = QHBoxLayout(circulation_row)
@@ -3731,7 +3770,7 @@ class MainWindow(QMainWindow):
         edit_circulation.setPlaceholderText("주식수")
         edit_circulation.setFixedWidth(100)
         edit_circulation.setValidator(QIntValidator(0, 999999999))
-        edit_circulation.textChanged.connect(self._on_page_field_changed)
+        edit_circulation.textChanged.connect(on_circulation_text_changed)
         circulation_layout.addWidget(edit_circulation)
         
         lbl_circulation_unit = QLabel("주", circulation_row)
@@ -3762,6 +3801,35 @@ class MainWindow(QMainWindow):
             ("개인", "individual")
         ]
         
+        def create_holdings_edit_handler(edit_widget):
+            """보유 주식수 입력 필드 텍스트 변경 핸들러 생성"""
+            def on_text_changed(text: str):
+                # 포맷팅 중 무한 루프 방지
+                if getattr(edit_widget, '_formatting', False):
+                    return
+                edit_widget._formatting = True
+                try:
+                    # 현재 커서 위치 저장
+                    cursor_pos = edit_widget.cursorPosition()
+                    # 콤마 제거 후 숫자만 추출
+                    digits = ''.join(filter(str.isdigit, text))
+                    if digits:
+                        formatted = f"{int(digits):,}"
+                        # 포맷팅된 텍스트 설정
+                        if edit_widget.text() != formatted:
+                            edit_widget.setText(formatted)
+                            # 커서 위치 조정 (콤마 추가로 인한 위치 변화 보정)
+                            new_pos = min(cursor_pos + (formatted.count(',') - text.count(',')), len(formatted))
+                            edit_widget.setCursorPosition(new_pos)
+                    elif text:
+                        # 숫자가 아닌 문자가 있으면 제거
+                        edit_widget.setText("")
+                    # 변경 이벤트 발생
+                    self._on_page_field_changed()
+                finally:
+                    edit_widget._formatting = False
+            return on_text_changed
+        
         for label_text, key in holdings_types:
             row = QWidget(holdings_info_widget)
             row_layout = QHBoxLayout(row)
@@ -3776,7 +3844,7 @@ class MainWindow(QMainWindow):
             edit.setPlaceholderText("보유주식수")
             edit.setFixedWidth(100)
             edit.setValidator(QIntValidator(0, 999999999))
-            edit.textChanged.connect(self._on_page_field_changed)
+            edit.textChanged.connect(create_holdings_edit_handler(edit))
             row_layout.addWidget(edit)
             
             lbl_unit = QLabel("주", row)
@@ -3803,10 +3871,13 @@ class MainWindow(QMainWindow):
         # 보유 비율 자동 계산 함수
         def update_holdings_ratios():
             try:
-                circulation = int(edit_circulation.text() or 0)
+                # 콤마 제거 후 숫자 추출
+                circulation_text = edit_circulation.text().replace(',', '') if edit_circulation.text() else ""
+                circulation = int(circulation_text or 0)
                 if circulation > 0:
                     for row_data in holdings_rows:
-                        holdings = int(row_data["edit"].text() or 0)
+                        holdings_text = row_data["edit"].text().replace(',', '') if row_data["edit"].text() else ""
+                        holdings = int(holdings_text or 0)
                         ratio = (holdings / circulation) * 100
                         row_data["ratio"].setText(f"{ratio:.2f}%")
                 else:
@@ -4926,18 +4997,34 @@ class MainWindow(QMainWindow):
                     # 주식 보유 정보 로드
                     if "circulation_stock" in ui_a and "institution_holdings" in ui_a:
                         circulation_a = pg.circulation_stock_a if pg.circulation_stock_a > 0 else ""
-                        ui_a["circulation_stock"].setText(str(circulation_a) if circulation_a else "")
+                        # 콤마 포맷팅하여 표시
+                        if circulation_a:
+                            ui_a["circulation_stock"].setText(f"{circulation_a:,}")
+                        else:
+                            ui_a["circulation_stock"].setText("")
                         # 유통비율은 Item의 distribution_ratio 값 표시 (읽기 전용)
                         if "circulation_ratio" in ui_a:
                             it = self.current_item()
                             ratio = it.distribution_ratio if it and it.distribution_ratio > 0 else 0
                             ui_a["circulation_ratio"].setText(str(ratio) if ratio > 0 else "")
                         institution_a = pg.institution_holdings_a if pg.institution_holdings_a > 0 else ""
-                        ui_a["institution_holdings"].setText(str(institution_a) if institution_a else "")
+                        # 콤마 포맷팅하여 표시
+                        if institution_a:
+                            ui_a["institution_holdings"].setText(f"{institution_a:,}")
+                        else:
+                            ui_a["institution_holdings"].setText("")
                         foreign_a = pg.foreign_holdings_a if pg.foreign_holdings_a > 0 else ""
-                        ui_a["foreign_holdings"].setText(str(foreign_a) if foreign_a else "")
+                        # 콤마 포맷팅하여 표시
+                        if foreign_a:
+                            ui_a["foreign_holdings"].setText(f"{foreign_a:,}")
+                        else:
+                            ui_a["foreign_holdings"].setText("")
                         individual_a = pg.individual_holdings_a if pg.individual_holdings_a > 0 else ""
-                        ui_a["individual_holdings"].setText(str(individual_a) if individual_a else "")
+                        # 콤마 포맷팅하여 표시
+                        if individual_a:
+                            ui_a["individual_holdings"].setText(f"{individual_a:,}")
+                        else:
+                            ui_a["individual_holdings"].setText("")
                     # 상태 수동 업데이트
                     QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("A"))
             if self._pane_ui.get("B"):
@@ -4961,18 +5048,34 @@ class MainWindow(QMainWindow):
                     # 주식 보유 정보 로드
                     if "circulation_stock" in ui_b and "institution_holdings" in ui_b:
                         circulation_b = pg.circulation_stock_b if pg.circulation_stock_b > 0 else ""
-                        ui_b["circulation_stock"].setText(str(circulation_b) if circulation_b else "")
+                        # 콤마 포맷팅하여 표시
+                        if circulation_b:
+                            ui_b["circulation_stock"].setText(f"{circulation_b:,}")
+                        else:
+                            ui_b["circulation_stock"].setText("")
                         # 유통비율은 Item의 distribution_ratio 값 표시 (읽기 전용)
                         if "circulation_ratio" in ui_b:
                             it = self.current_item()
                             ratio = it.distribution_ratio if it and it.distribution_ratio > 0 else 0
                             ui_b["circulation_ratio"].setText(str(ratio) if ratio > 0 else "")
                         institution_b = pg.institution_holdings_b if pg.institution_holdings_b > 0 else ""
-                        ui_b["institution_holdings"].setText(str(institution_b) if institution_b else "")
+                        # 콤마 포맷팅하여 표시
+                        if institution_b:
+                            ui_b["institution_holdings"].setText(f"{institution_b:,}")
+                        else:
+                            ui_b["institution_holdings"].setText("")
                         foreign_b = pg.foreign_holdings_b if pg.foreign_holdings_b > 0 else ""
-                        ui_b["foreign_holdings"].setText(str(foreign_b) if foreign_b else "")
+                        # 콤마 포맷팅하여 표시
+                        if foreign_b:
+                            ui_b["foreign_holdings"].setText(f"{foreign_b:,}")
+                        else:
+                            ui_b["foreign_holdings"].setText("")
                         individual_b = pg.individual_holdings_b if pg.individual_holdings_b > 0 else ""
-                        ui_b["individual_holdings"].setText(str(individual_b) if individual_b else "")
+                        # 콤마 포맷팅하여 표시
+                        if individual_b:
+                            ui_b["individual_holdings"].setText(f"{individual_b:,}")
+                        else:
+                            ui_b["individual_holdings"].setText("")
                     # 상태 수동 업데이트
                     QTimer.singleShot(0, lambda: self._update_trading_status_for_pane("B"))
 
@@ -5245,7 +5348,9 @@ class MainWindow(QMainWindow):
             individual_holdings_a = ui_a.get("individual_holdings")
             if circulation_stock_a:
                 try:
-                    new_circulation_a = int(circulation_stock_a.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = circulation_stock_a.text().strip().replace(',', '') or "0"
+                    new_circulation_a = int(text)
                 except (ValueError, AttributeError):
                     new_circulation_a = 0
                 if pg.circulation_stock_a != new_circulation_a:
@@ -5253,21 +5358,27 @@ class MainWindow(QMainWindow):
             # 유통비율은 Item의 distribution_ratio 값이므로 저장하지 않음
             if institution_holdings_a:
                 try:
-                    new_institution_a = int(institution_holdings_a.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = institution_holdings_a.text().strip().replace(',', '') or "0"
+                    new_institution_a = int(text)
                 except (ValueError, AttributeError):
                     new_institution_a = 0
                 if pg.institution_holdings_a != new_institution_a:
                     pg.institution_holdings_a = new_institution_a; changed = True
             if foreign_holdings_a:
                 try:
-                    new_foreign_a = int(foreign_holdings_a.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = foreign_holdings_a.text().strip().replace(',', '') or "0"
+                    new_foreign_a = int(text)
                 except (ValueError, AttributeError):
                     new_foreign_a = 0
                 if pg.foreign_holdings_a != new_foreign_a:
                     pg.foreign_holdings_a = new_foreign_a; changed = True
             if individual_holdings_a:
                 try:
-                    new_individual_a = int(individual_holdings_a.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = individual_holdings_a.text().strip().replace(',', '') or "0"
+                    new_individual_a = int(text)
                 except (ValueError, AttributeError):
                     new_individual_a = 0
                 if pg.individual_holdings_a != new_individual_a:
@@ -5308,7 +5419,9 @@ class MainWindow(QMainWindow):
             individual_holdings_b = ui_b.get("individual_holdings")
             if circulation_stock_b:
                 try:
-                    new_circulation_b = int(circulation_stock_b.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = circulation_stock_b.text().strip().replace(',', '') or "0"
+                    new_circulation_b = int(text)
                 except (ValueError, AttributeError):
                     new_circulation_b = 0
                 if pg.circulation_stock_b != new_circulation_b:
@@ -5316,21 +5429,27 @@ class MainWindow(QMainWindow):
             # 유통비율은 Item의 distribution_ratio 값이므로 저장하지 않음
             if institution_holdings_b:
                 try:
-                    new_institution_b = int(institution_holdings_b.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = institution_holdings_b.text().strip().replace(',', '') or "0"
+                    new_institution_b = int(text)
                 except (ValueError, AttributeError):
                     new_institution_b = 0
                 if pg.institution_holdings_b != new_institution_b:
                     pg.institution_holdings_b = new_institution_b; changed = True
             if foreign_holdings_b:
                 try:
-                    new_foreign_b = int(foreign_holdings_b.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = foreign_holdings_b.text().strip().replace(',', '') or "0"
+                    new_foreign_b = int(text)
                 except (ValueError, AttributeError):
                     new_foreign_b = 0
                 if pg.foreign_holdings_b != new_foreign_b:
                     pg.foreign_holdings_b = new_foreign_b; changed = True
             if individual_holdings_b:
                 try:
-                    new_individual_b = int(individual_holdings_b.text().strip() or "0")
+                    # 콤마 제거 후 숫자 추출
+                    text = individual_holdings_b.text().strip().replace(',', '') or "0"
+                    new_individual_b = int(text)
                 except (ValueError, AttributeError):
                     new_individual_b = 0
                 if pg.individual_holdings_b != new_individual_b:
