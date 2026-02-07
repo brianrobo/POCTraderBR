@@ -2,7 +2,20 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.15  (2026-01-21)
+Version: 0.10.16  (2026-02-07)
+
+v0.10.16 변경 사항:
+- 매매 체크리스트 기능 추가
+  AS-IS: 매매 시 확인해야 할 사항들을 별도로 관리할 방법 없음
+  TO-BE:
+    - 앱 상단에 체크리스트 패널 추가 (View > Trading Checklist 메뉴로 토글)
+    - 최대 10개 항목까지 추가 가능
+    - 각 항목은 굵은 글씨로 표시되며, 빨간색/파란색/검정색 중 색상 선택 가능
+    - 각 항목에 참고 차트 이미지 추가 및 표시 기능
+    - 항목 추가/편집/삭제 기능
+    - 이미지는 assets/checklist_images/ 폴더에 저장
+    - 체크리스트 패널 표시 상태 자동 저장/로드
+    - 메인 스플리터 상단에 배치되어 항상 접근 가능
 
 v0.10.15 변경 사항:
 - 주식 보유 정보 입력 필드에 숫자 콤마 포맷팅 기능 추가
@@ -15,17 +28,6 @@ v0.10.15 변경 사항:
     - 로드 시 숫자에 콤마 포맷팅하여 표시
     - 보유 비율 계산 시 콤마 포함 텍스트에서도 정상 동작
     - 커서 위치 보정으로 입력 중 자연스러운 동작
-
-v0.10.14 변경 사항:
-- Chart 화면 보유량 위젯에 유통비율 표시 기능 추가
-  AS-IS: Item의 유통비율(distribution_ratio)을 Chart 화면에서 확인할 방법 없음
-  TO-BE:
-    - 유통 주식수 입력란 우측에 유통비율 표시 추가
-    - Item의 distribution_ratio 값을 읽기 전용으로 표시
-    - Edit Business Info에서 설정한 유통비율이 자동으로 반영됨
-    - 유통비율 표시는 숫자와 %만 표시하여 간소화
-    - 유통 주식수 단위 위치를 기관/외인/개인과 동일하게 정렬
-    - 유통비율 숫자 폭 최적화
 """
 
 import json
@@ -56,13 +58,14 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.15)"
+APP_TITLE = "Trader Chart Note (v0.10.16)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
 MAX_IDEAS_BACKUPS = 20  # Global Ideas 최대 백업 파일 개수
 MAX_DATA_SIZE_MB = 50  # 최대 데이터 크기 (MB)
 ASSETS_DIR = "assets"
+CHECKLIST_IMAGES_DIR = os.path.join(ASSETS_DIR, "checklist_images")
 ROOT_CATEGORY_ID = "__ROOT__"  # ROOT 폴더 고정 ID (삭제 불가)
 
 DEFAULT_CHECK_QUESTIONS = [
@@ -831,6 +834,7 @@ class NoteDB:
         self.ui_state: Dict[str, Any] = {}
         self.global_ideas: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 10개
         self.global_interests: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 5개
+        self.trading_checklist: List[Dict[str, str]] = []  # [{"id": str, "text": str, "image_path": str}, ...] 최대 10개
         self.load()
 
     @staticmethod
@@ -895,6 +899,7 @@ class NoteDB:
             },
             "global_ideas": [],
             "global_interests": [],
+            "trading_checklist": [],
         }
 
     def load(self) -> None:
@@ -967,6 +972,26 @@ class NoteDB:
             self.global_interests = []
         else:
             self.global_interests = []
+        
+        # trading_checklist 로드
+        checklist_raw = self.data.get("trading_checklist", [])
+        if isinstance(checklist_raw, list):
+            # 최대 10개로 제한하고 유효한 항목만 필터링
+            self.trading_checklist = []
+            for item in checklist_raw[:10]:  # 최대 10개
+                if isinstance(item, dict) and "id" in item and "text" in item:
+                    color = str(item.get("color", COLOR_DEFAULT)).strip()
+                    # 유효한 색상인지 확인 (빨강, 파랑, 검정만 허용)
+                    if color not in [COLOR_DEFAULT, COLOR_RED, COLOR_BLUE]:
+                        color = COLOR_DEFAULT
+                    self.trading_checklist.append({
+                        "id": str(item.get("id", _uuid())),
+                        "text": str(item.get("text", "")).strip(),
+                        "image_path": str(item.get("image_path", "")).strip(),
+                        "color": color
+                    })
+        else:
+            self.trading_checklist = []
     
     def _initialize_db(self) -> None:
         """DB를 기본 데이터로 초기화"""
@@ -1046,6 +1071,7 @@ class NoteDB:
         self.data["ui_state"] = self.ui_state.copy() if isinstance(self.ui_state, dict) else {}
         self.data["global_ideas"] = self.global_ideas.copy() if isinstance(self.global_ideas, list) else []
         self.data["global_interests"] = self.global_interests.copy() if isinstance(self.global_interests, list) else []
+        self.data["trading_checklist"] = self.trading_checklist.copy() if isinstance(self.trading_checklist, list) else []
         self.data["root_category_ids"] = list(self.root_category_ids)
         print(f"[DEBUG] 기본 데이터 설정 완료 - root_category_ids: {self.data['root_category_ids']}")
         
@@ -1260,6 +1286,7 @@ class NoteDB:
             "ui_state": old_data.get("ui_state", {}),
             "global_ideas": old_data.get("global_ideas", []),
             "global_interests": old_data.get("global_interests", []),
+            "trading_checklist": old_data.get("trading_checklist", []),
         }
         
         def extract_categories(cat_obj: Dict[str, Any], parent_id: Optional[str] = None) -> None:
@@ -2765,6 +2792,11 @@ class MainWindow(QMainWindow):
         save_action.setShortcut(QKeySequence("Ctrl+S"))
         save_action.triggered.connect(self.force_save)
         
+        # View 메뉴 추가 (체크리스트 패널 생성 후 연결)
+        view_menu = menubar.addMenu("View")
+        self.checklist_menu_action = view_menu.addAction("Trading Checklist")
+        self.checklist_menu_action.setCheckable(True)
+        
         root = QWidget(self)
         self.setCentralWidget(root)
 
@@ -3592,9 +3624,465 @@ class MainWindow(QMainWindow):
         main_splitter.setStretchFactor(1, 1)
         main_splitter.setSizes([420, 1040])
 
+        # 체크리스트 패널 생성
+        self.checklist_panel = self._build_checklist_panel()
+        checklist_visible = bool(self.db.ui_state.get("checklist_visible", False))
+        self.checklist_panel.setVisible(checklist_visible)
+        # 메뉴 액션 상태 동기화 및 연결
+        if hasattr(self, 'checklist_menu_action'):
+            self.checklist_menu_action.setChecked(checklist_visible)
+            self.checklist_menu_action.triggered.connect(self._toggle_checklist_panel)
+
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(main_splitter)
+        layout.addWidget(self.checklist_panel, 0)  # 체크리스트 패널 (고정 크기)
+        layout.addWidget(main_splitter, 1)  # 메인 스플리터 (확장 가능)
+
+    def _build_checklist_panel(self) -> QWidget:
+        """체크리스트 패널 위젯 생성"""
+        panel = QWidget()
+        panel.setMaximumHeight(200)  # 최대 높이 제한
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(8, 8, 8, 8)
+        panel_layout.setSpacing(6)
+        
+        # 헤더 (제목 + 접기/펼치기 + 추가 버튼)
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+        
+        title_label = QLabel("📋 매매 체크리스트")
+        title_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
+        header_layout.addWidget(title_label)
+        
+        header_layout.addStretch()
+        
+        btn_add = QPushButton("+ 추가")
+        btn_add.setFixedHeight(24)
+        btn_add.setStyleSheet("""
+            QPushButton {
+                background-color: #5A8DFF;
+                color: white;
+                border: 1px solid #4A7DEF;
+                border-radius: 4px;
+                font-weight: 600;
+                padding: 2px 8px;
+            }
+            QPushButton:hover {
+                background-color: #6A9DFF;
+            }
+            QPushButton:pressed {
+                background-color: #4A7DEF;
+            }
+        """)
+        btn_add.clicked.connect(self._on_add_checklist_item)
+        header_layout.addWidget(btn_add)
+        
+        panel_layout.addWidget(header)
+        
+        # 스크롤 가능한 리스트 영역
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid #CCCCCC;
+                border-radius: 4px;
+                background-color: #FFFFFF;
+            }
+        """)
+        
+        list_widget = QWidget()
+        self.checklist_list_layout = QVBoxLayout(list_widget)
+        self.checklist_list_layout.setContentsMargins(8, 8, 8, 8)
+        self.checklist_list_layout.setSpacing(6)
+        self.checklist_list_layout.addStretch()  # 하단 여백
+        
+        scroll_area.setWidget(list_widget)
+        panel_layout.addWidget(scroll_area, 1)
+        
+        # 스타일 설정
+        panel.setStyleSheet("""
+            QWidget {
+                background-color: #F5F5F5;
+            }
+        """)
+        
+        # 체크리스트 항목 UI 리스트 (메서드에서 사용)
+        self.checklist_item_widgets: List[Dict[str, Any]] = []
+        
+        # 기존 데이터 로드하여 UI에 표시
+        self._refresh_checklist_ui()
+        
+        return panel
+
+    def _refresh_checklist_ui(self) -> None:
+        """체크리스트 UI 새로고침"""
+        # 기존 위젯 제거
+        for item_data in self.checklist_item_widgets:
+            if "widget" in item_data:
+                item_data["widget"].setParent(None)
+        self.checklist_item_widgets.clear()
+        
+        # 스트레치 제거 (나중에 다시 추가)
+        while self.checklist_list_layout.count() > 0:
+            item = self.checklist_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+        
+        # 데이터에서 항목 로드하여 UI 생성
+        for item_data in self.db.trading_checklist:
+            self._add_checklist_item_ui(
+                item_id=item_data.get("id", _uuid()),
+                text=item_data.get("text", ""),
+                image_path=item_data.get("image_path", ""),
+                color=item_data.get("color", COLOR_DEFAULT)
+            )
+        
+        # 하단 여백 추가
+        self.checklist_list_layout.addStretch()
+
+    def _add_checklist_item_ui(self, item_id: str, text: str, image_path: str, color: str = COLOR_DEFAULT) -> None:
+        """체크리스트 항목 UI 추가"""
+        item_widget = QWidget()
+        item_layout = QHBoxLayout(item_widget)
+        item_layout.setContentsMargins(8, 6, 8, 6)
+        item_layout.setSpacing(8)
+        
+        # 텍스트 라벨 (굵은 글씨, 색상 적용)
+        text_label = QLabel(text)
+        text_label.setStyleSheet(f"font-weight: bold; font-size: 13px; color: {color};")
+        text_label.setWordWrap(True)
+        item_layout.addWidget(text_label, 1)
+        
+        # 이미지 아이콘 버튼
+        btn_image = QToolButton()
+        btn_image.setFixedSize(24, 24)
+        if image_path and os.path.exists(image_path):
+            btn_image.setText("🖼️")
+            btn_image.setToolTip("차트 이미지 보기")
+            btn_image.setStyleSheet("""
+                QToolButton {
+                    background-color: #E8E8E8;
+                    border: 1px solid #CCCCCC;
+                    border-radius: 4px;
+                    font-size: 14px;
+                }
+                QToolButton:hover {
+                    background-color: #D0D0D0;
+                }
+            """)
+            btn_image.clicked.connect(lambda checked, path=image_path: self._show_checklist_image(path))
+        else:
+            btn_image.setText("📷")
+            btn_image.setToolTip("이미지 추가")
+            btn_image.setStyleSheet("""
+                QToolButton {
+                    background-color: #F0F0F0;
+                    border: 1px solid #DDDDDD;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    color: #999;
+                }
+                QToolButton:hover {
+                    background-color: #E0E0E0;
+                }
+            """)
+            btn_image.clicked.connect(lambda checked, iid=item_id: self._on_add_checklist_image(iid))
+        item_layout.addWidget(btn_image)
+        
+        # 색상 선택 버튼
+        btn_color = QToolButton()
+        btn_color.setFixedSize(24, 24)
+        btn_color.setToolTip("색상 선택")
+        # 현재 색상에 따라 아이콘 표시
+        if color == COLOR_RED:
+            btn_color.setText("🔴")
+        elif color == COLOR_BLUE:
+            btn_color.setText("🔵")
+        else:
+            btn_color.setText("⚫")
+        btn_color.setStyleSheet("""
+            QToolButton {
+                background-color: #F0F0F0;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            QToolButton:hover {
+                background-color: #E0E0E0;
+            }
+        """)
+        # 색상 선택 메뉴 생성
+        color_menu = QMenu(self)
+        action_black = color_menu.addAction("⚫ 검정색")
+        action_red = color_menu.addAction("🔴 빨간색")
+        action_blue = color_menu.addAction("🔵 파란색")
+        action_black.triggered.connect(lambda checked, iid=item_id: self._on_change_checklist_color(iid, COLOR_DEFAULT))
+        action_red.triggered.connect(lambda checked, iid=item_id: self._on_change_checklist_color(iid, COLOR_RED))
+        action_blue.triggered.connect(lambda checked, iid=item_id: self._on_change_checklist_color(iid, COLOR_BLUE))
+        btn_color.setMenu(color_menu)
+        btn_color.setPopupMode(QToolButton.InstantPopup)
+        item_layout.addWidget(btn_color)
+        
+        # 편집 버튼
+        btn_edit = QToolButton()
+        btn_edit.setText("✏️")
+        btn_edit.setFixedSize(24, 24)
+        btn_edit.setToolTip("편집")
+        btn_edit.setStyleSheet("""
+            QToolButton {
+                background-color: #F0F0F0;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QToolButton:hover {
+                background-color: #E0E0E0;
+            }
+        """)
+        btn_edit.clicked.connect(lambda checked, iid=item_id: self._on_edit_checklist_item(iid))
+        item_layout.addWidget(btn_edit)
+        
+        # 삭제 버튼
+        btn_delete = QToolButton()
+        btn_delete.setText("🗑️")
+        btn_delete.setFixedSize(24, 24)
+        btn_delete.setToolTip("삭제")
+        btn_delete.setStyleSheet("""
+            QToolButton {
+                background-color: #F0F0F0;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QToolButton:hover {
+                background-color: #FFE0E0;
+            }
+        """)
+        btn_delete.clicked.connect(lambda checked, iid=item_id: self._on_delete_checklist_item(iid))
+        item_layout.addWidget(btn_delete)
+        
+        # 항목 위젯 스타일
+        item_widget.setStyleSheet("""
+            QWidget {
+                background-color: #FFFFFF;
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+            }
+        """)
+        
+        # 레이아웃에 추가 (스트레치 전에)
+        count = self.checklist_list_layout.count()
+        if count > 0:
+            self.checklist_list_layout.insertWidget(count - 1, item_widget)  # 스트레치 전에 삽입
+        else:
+            self.checklist_list_layout.addWidget(item_widget)
+        
+        # 위젯 데이터 저장
+        self.checklist_item_widgets.append({
+            "id": item_id,
+            "widget": item_widget,
+            "text_label": text_label,
+            "image_btn": btn_image,
+            "color_btn": btn_color,
+            "image_path": image_path,
+            "color": color
+        })
+
+    def _toggle_checklist_panel(self, checked: bool) -> None:
+        """체크리스트 패널 표시/숨김 토글"""
+        if hasattr(self, 'checklist_panel'):
+            self.checklist_panel.setVisible(checked)
+            self.db.ui_state["checklist_visible"] = checked
+            self._save_db_with_warning()
+
+    def _on_add_checklist_item(self) -> None:
+        """체크리스트 항목 추가"""
+        if len(self.db.trading_checklist) >= 10:
+            QMessageBox.warning(self, "최대 개수 초과", "체크리스트 항목은 최대 10개까지 추가할 수 있습니다.")
+            return
+        
+        text, ok = QInputDialog.getText(self, "체크리스트 항목 추가", "항목 내용을 입력하세요:")
+        if ok and text.strip():
+            item_id = _uuid()
+            new_item = {
+                "id": item_id,
+                "text": text.strip(),
+                "image_path": "",
+                "color": COLOR_DEFAULT
+            }
+            self.db.trading_checklist.append(new_item)
+            self._add_checklist_item_ui(item_id, text.strip(), "", COLOR_DEFAULT)
+            self._save_db_with_warning()
+
+    def _on_edit_checklist_item(self, item_id: str) -> None:
+        """체크리스트 항목 편집"""
+        item = next((x for x in self.db.trading_checklist if x.get("id") == item_id), None)
+        if not item:
+            return
+        
+        current_text = item.get("text", "")
+        text, ok = QInputDialog.getText(self, "체크리스트 항목 편집", "항목 내용을 수정하세요:", text=current_text)
+        if ok and text.strip():
+            item["text"] = text.strip()
+            # UI 업데이트
+            widget_data = next((x for x in self.checklist_item_widgets if x.get("id") == item_id), None)
+            if widget_data and "text_label" in widget_data:
+                current_color = item.get("color", COLOR_DEFAULT)
+                widget_data["text_label"].setText(text.strip())
+                widget_data["text_label"].setStyleSheet(f"font-weight: bold; font-size: 13px; color: {current_color};")
+            self._save_db_with_warning()
+
+    def _on_delete_checklist_item(self, item_id: str) -> None:
+        """체크리스트 항목 삭제"""
+        reply = QMessageBox.question(self, "항목 삭제", "이 항목을 삭제하시겠습니까?", 
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            # 삭제 전에 이미지 경로 확인
+            item = next((x for x in self.db.trading_checklist if x.get("id") == item_id), None)
+            image_path = ""
+            if item:
+                image_path = item.get("image_path", "")
+            
+            # 데이터에서 제거
+            self.db.trading_checklist = [x for x in self.db.trading_checklist if x.get("id") != item_id]
+            
+            # 이미지 파일 삭제
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except Exception:
+                    pass
+            
+            # UI 새로고침
+            self._refresh_checklist_ui()
+            self._save_db_with_warning()
+
+    def _on_add_checklist_image(self, item_id: str) -> None:
+        """체크리스트 항목에 이미지 추가"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "이미지 선택", "", "Image Files (*.png *.jpg *.jpeg *.bmp *.gif)")
+        if not file_path:
+            return
+        
+        # 체크리스트 이미지 디렉토리 생성
+        os.makedirs(CHECKLIST_IMAGES_DIR, exist_ok=True)
+        
+        # 파일 확장자 추출
+        _, ext = os.path.splitext(file_path)
+        
+        # 새 파일명 생성 (item_id 사용)
+        new_filename = f"{item_id}{ext}"
+        new_file_path = os.path.join(CHECKLIST_IMAGES_DIR, new_filename)
+        
+        # 파일 복사
+        try:
+            shutil.copy2(file_path, new_file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"이미지 복사 실패: {str(e)}")
+            return
+        
+        # 데이터 업데이트
+        item = next((x for x in self.db.trading_checklist if x.get("id") == item_id), None)
+        if item:
+            # 기존 이미지 삭제
+            old_image_path = item.get("image_path", "")
+            if old_image_path and os.path.exists(old_image_path) and old_image_path != new_file_path:
+                try:
+                    os.remove(old_image_path)
+                except Exception:
+                    pass
+            
+            item["image_path"] = new_file_path
+            
+            # UI 업데이트
+            widget_data = next((x for x in self.checklist_item_widgets if x.get("id") == item_id), None)
+            if widget_data and "image_btn" in widget_data:
+                btn = widget_data["image_btn"]
+                btn.setText("🖼️")
+                btn.setToolTip("차트 이미지 보기")
+                btn.setStyleSheet("""
+                    QToolButton {
+                        background-color: #E8E8E8;
+                        border: 1px solid #CCCCCC;
+                        border-radius: 4px;
+                        font-size: 14px;
+                    }
+                    QToolButton:hover {
+                        background-color: #D0D0D0;
+                    }
+                """)
+                # 시그널 재연결
+                btn.clicked.disconnect()
+                btn.clicked.connect(lambda checked, path=new_file_path: self._show_checklist_image(path))
+                widget_data["image_path"] = new_file_path
+            
+            self._save_db_with_warning()
+
+    def _on_change_checklist_color(self, item_id: str, color: str) -> None:
+        """체크리스트 항목 색상 변경"""
+        item = next((x for x in self.db.trading_checklist if x.get("id") == item_id), None)
+        if not item:
+            return
+        
+        item["color"] = color
+        
+        # UI 업데이트
+        widget_data = next((x for x in self.checklist_item_widgets if x.get("id") == item_id), None)
+        if widget_data:
+            # 텍스트 라벨 색상 업데이트
+            if "text_label" in widget_data:
+                widget_data["text_label"].setStyleSheet(f"font-weight: bold; font-size: 13px; color: {color};")
+            
+            # 색상 버튼 아이콘 업데이트
+            if "color_btn" in widget_data:
+                btn = widget_data["color_btn"]
+                if color == COLOR_RED:
+                    btn.setText("🔴")
+                elif color == COLOR_BLUE:
+                    btn.setText("🔵")
+                else:
+                    btn.setText("⚫")
+            
+            widget_data["color"] = color
+        
+        self._save_db_with_warning()
+
+    def _show_checklist_image(self, image_path: str) -> None:
+        """체크리스트 이미지 표시 다이얼로그"""
+        if not image_path or not os.path.exists(image_path):
+            QMessageBox.warning(self, "오류", "이미지 파일을 찾을 수 없습니다.")
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("차트 이미지")
+        dialog.setMinimumSize(800, 600)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+        
+        # 이미지 라벨
+        image_label = QLabel()
+        pixmap = QPixmap(image_path)
+        if not pixmap.isNull():
+            # 다이얼로그 크기에 맞게 스케일링
+            scaled_pixmap = pixmap.scaled(800, 600, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            image_label.setPixmap(scaled_pixmap)
+            image_label.setAlignment(Qt.AlignCenter)
+        else:
+            image_label.setText("이미지를 불러올 수 없습니다.")
+            image_label.setAlignment(Qt.AlignCenter)
+        
+        layout.addWidget(image_label)
+        
+        # 닫기 버튼
+        btn_close = QPushButton("닫기")
+        btn_close.clicked.connect(dialog.close)
+        layout.addWidget(btn_close)
+        
+        dialog.exec_()
 
     # ---- 이하 기능 메서드들은 기존대로 동작 (선택 변경 시 placeholder 전환 포함) ----
     # NOTE: 아래 메서드들은 길어서 생략하면 실행이 불가하므로, 완전 통합본을 유지합니다.
@@ -4700,6 +5188,8 @@ class MainWindow(QMainWindow):
         self.db.ui_state["global_ideas_visible"] = bool(self.ideas_panel.isVisible())
         self.db.ui_state["global_interests_visible"] = bool(self.interests_panel.isVisible())
         self.db.ui_state["trace_visible"] = bool(self._trace_visible)
+        if hasattr(self, 'checklist_panel'):
+            self.db.ui_state["checklist_visible"] = bool(self.checklist_panel.isVisible())
         # URL 입력창 내용 저장
         if hasattr(self, 'url_input'):
             self.db.ui_state["url_input_text"] = self.url_input.text().strip()
