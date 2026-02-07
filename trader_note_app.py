@@ -4837,13 +4837,13 @@ class MainWindow(QMainWindow):
             
             # 폴더 이름 표시: 조회 횟수와 URL 링크 표시
             display_name = c.name
-            # 조회 횟수가 0보다 크면 표시
+            # 조회 횟수가 0보다 크면 표시 [# 숫자] 형식
             if c.view_count > 0:
-                display_name = f"{c.name} ({c.view_count})"
+                display_name = f"{c.name} [# {c.view_count}]"
             # URL이 있으면 링크 표시 추가
             if c.url and c.url.strip():
                 if c.view_count > 0:
-                    display_name = f"{c.name} ({c.view_count}) 🔗"
+                    display_name = f"{c.name} [# {c.view_count}] 🔗"
                 else:
                     display_name = f"{c.name} 🔗"
             
