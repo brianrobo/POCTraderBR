@@ -2,7 +2,15 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.16  (2026-02-07)
+Version: 0.10.17  (2026-02-15)
+
+v0.10.17 변경 사항:
+- 매매 체크리스트 패널 수직 영역 확장
+  AS-IS: 상단 체크리스트가 최대 2개만 보이고 나머지는 스크롤 필요
+  TO-BE:
+    - 체크리스트 패널 최대 높이 200px → 380px로 확장
+    - CHECKLIST_PANEL_MAX_HEIGHT 상수로 관리하여 필요 시 조정 가능
+    - 약 4~5개 항목이 한 화면에 표시됨
 
 v0.10.16 변경 사항:
 - 매매 체크리스트 기능 추가
@@ -58,7 +66,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.16)"
+APP_TITLE = "Trader Chart Note (v0.10.17)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -66,6 +74,7 @@ MAX_IDEAS_BACKUPS = 20  # Global Ideas 최대 백업 파일 개수
 MAX_DATA_SIZE_MB = 50  # 최대 데이터 크기 (MB)
 ASSETS_DIR = "assets"
 CHECKLIST_IMAGES_DIR = os.path.join(ASSETS_DIR, "checklist_images")
+CHECKLIST_PANEL_MAX_HEIGHT = 380  # 매매 체크리스트 패널 최대 높이 (기본 200 → 380)
 ROOT_CATEGORY_ID = "__ROOT__"  # ROOT 폴더 고정 ID (삭제 불가)
 
 DEFAULT_CHECK_QUESTIONS = [
@@ -3641,7 +3650,7 @@ class MainWindow(QMainWindow):
     def _build_checklist_panel(self) -> QWidget:
         """체크리스트 패널 위젯 생성"""
         panel = QWidget()
-        panel.setMaximumHeight(200)  # 최대 높이 제한
+        panel.setMaximumHeight(CHECKLIST_PANEL_MAX_HEIGHT)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(8, 8, 8, 8)
         panel_layout.setSpacing(6)
