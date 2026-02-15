@@ -2,7 +2,20 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.17  (2026-02-15)
+Version: 0.10.18  (2026-02-15)
+
+v0.10.18 변경 사항:
+- Import 시 Global Ideas/Interests 데이터 손실 버그 수정
+  AS-IS: Import(덮어쓰기) 후 global_ideas, global_interests가 메모리에 반영되지 않아 저장 시 덮어써짐
+  TO-BE:
+    - Import 후 _reload_global_state_from_data() 호출하여 global_ideas, global_interests, ui_state, trading_checklist 재로드
+    - Import 성공 시 _load_global_interests_to_ui() 호출 추가 (Ideas와 함께 Interests UI도 갱신)
+- Global Interests 백업 기능 추가
+  AS-IS: Global Ideas만 별도 백업됨, Global Interests는 notes_db 백업에만 포함
+  TO-BE:
+    - Global Interests 변경 시 global_interests_backup_{timestamp}.json 자동 생성
+    - MAX_INTERESTS_BACKUPS(20개) 초과 시 오래된 백업 자동 정리
+    - Ideas와 동일한 패턴으로 복구 가능
 
 v0.10.17 변경 사항:
 - 매매 체크리스트 패널 수직 영역 확장
@@ -66,11 +79,12 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.17)"
+APP_TITLE = "Trader Chart Note (v0.10.18)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
 MAX_IDEAS_BACKUPS = 20  # Global Ideas 최대 백업 파일 개수
+MAX_INTERESTS_BACKUPS = 20  # Global Interests 최대 백업 파일 개수
 MAX_DATA_SIZE_MB = 50  # 최대 데이터 크기 (MB)
 ASSETS_DIR = "assets"
 CHECKLIST_IMAGES_DIR = os.path.join(ASSETS_DIR, "checklist_images")
@@ -219,6 +233,33 @@ def _backup_global_ideas(ideas_data: List[Dict[str, str]]) -> Optional[str]:
         return None
 
 
+def _backup_global_interests(interests_data: List[Dict[str, str]]) -> Optional[str]:
+    """Global Interests 백업 생성"""
+    if not interests_data:
+        return None
+    
+    try:
+        _ensure_dir(BACKUP_DIR)
+        timestamp = _now_epoch()
+        backup_filename = f"global_interests_backup_{timestamp}.json"
+        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        
+        backup_data = {
+            "timestamp": timestamp,
+            "global_interests": interests_data.copy()
+        }
+        
+        with open(backup_path, "w", encoding="utf-8") as f:
+            json.dump(backup_data, f, ensure_ascii=False, indent=2)
+        
+        _cleanup_old_interests_backups()
+        
+        return backup_path
+    except Exception as e:
+        print(f"[DEBUG] Global Interests 백업 실패: {str(e)}")
+        return None
+
+
 def _cleanup_old_ideas_backups() -> None:
     """오래된 Global Ideas 백업 파일 정리 (최근 MAX_IDEAS_BACKUPS개만 유지)"""
     try:
@@ -240,6 +281,33 @@ def _cleanup_old_ideas_backups() -> None:
         
         # MAX_IDEAS_BACKUPS개 초과 시 오래된 것 삭제
         for mtime, filepath in backup_files[MAX_IDEAS_BACKUPS:]:
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _cleanup_old_interests_backups() -> None:
+    """오래된 Global Interests 백업 파일 정리 (최근 MAX_INTERESTS_BACKUPS개만 유지)"""
+    try:
+        if not os.path.exists(BACKUP_DIR):
+            return
+        
+        backup_files = []
+        for filename in os.listdir(BACKUP_DIR):
+            if filename.startswith("global_interests_backup_") and filename.endswith(".json"):
+                filepath = os.path.join(BACKUP_DIR, filename)
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    backup_files.append((mtime, filepath))
+                except Exception:
+                    continue
+        
+        backup_files.sort(reverse=True)
+        
+        for mtime, filepath in backup_files[MAX_INTERESTS_BACKUPS:]:
             try:
                 os.remove(filepath)
             except Exception:
@@ -991,6 +1059,38 @@ class NoteDB:
                 if isinstance(item, dict) and "id" in item and "text" in item:
                     color = str(item.get("color", COLOR_DEFAULT)).strip()
                     # 유효한 색상인지 확인 (빨강, 파랑, 검정만 허용)
+                    if color not in [COLOR_DEFAULT, COLOR_RED, COLOR_BLUE]:
+                        color = COLOR_DEFAULT
+                    self.trading_checklist.append({
+                        "id": str(item.get("id", _uuid())),
+                        "text": str(item.get("text", "")).strip(),
+                        "image_path": str(item.get("image_path", "")).strip(),
+                        "color": color
+                    })
+        else:
+            self.trading_checklist = []
+    
+    def _reload_global_state_from_data(self) -> None:
+        """self.data에서 global_ideas, global_interests, ui_state, trading_checklist 재로드 (Import 후 호출)"""
+        self.ui_state = self.data.get("ui_state", {})
+        if not isinstance(self.ui_state, dict):
+            self.ui_state = {}
+        ideas_raw = self.data.get("global_ideas", [])
+        if isinstance(ideas_raw, list):
+            self.global_ideas = ideas_raw
+        else:
+            self.global_ideas = []
+        interests_raw = self.data.get("global_interests", [])
+        if isinstance(interests_raw, list):
+            self.global_interests = interests_raw
+        else:
+            self.global_interests = []
+        checklist_raw = self.data.get("trading_checklist", [])
+        if isinstance(checklist_raw, list):
+            self.trading_checklist = []
+            for item in checklist_raw[:10]:
+                if isinstance(item, dict) and "id" in item and "text" in item:
+                    color = str(item.get("color", COLOR_DEFAULT)).strip()
                     if color not in [COLOR_DEFAULT, COLOR_RED, COLOR_BLUE]:
                         color = COLOR_DEFAULT
                     self.trading_checklist.append({
@@ -1906,6 +2006,9 @@ class NoteDB:
                 # 덮어쓰기 모드: 기존 데이터 완전 교체
                 self.data = imported_data
                 self._parse_categories_items(self.data)
+            
+            # 4.5. global_ideas, global_interests, ui_state, trading_checklist 재로드 (Import 후 반드시 필요)
+            self._reload_global_state_from_data()
             
             # 5. 무결성 검증
             self._ensure_integrity()
@@ -5763,6 +5866,7 @@ class MainWindow(QMainWindow):
                 
                 new_global_interests = self._collect_interests_tabs_from_ui()
                 if self.db.global_interests != new_global_interests:
+                    _backup_global_interests(self.db.global_interests)
                     self.db.global_interests = new_global_interests
                 
                 if self.db.global_ideas != new_global_ideas or self.db.global_interests != new_global_interests:
@@ -5799,6 +5903,7 @@ class MainWindow(QMainWindow):
         # Interests 탭들 수집
         new_global_interests = self._collect_interests_tabs_from_ui()
         if self.db.global_interests != new_global_interests:
+            _backup_global_interests(self.db.global_interests)
             self.db.global_interests = new_global_interests
             changed = True
 
@@ -6623,6 +6728,7 @@ class MainWindow(QMainWindow):
             self._show_placeholder(True)
             self._load_current_item_page_to_ui(clear_only=True)
             self._load_global_ideas_to_ui()
+            self._load_global_interests_to_ui()
             
             # 저장
             self._save_db_with_warning()
