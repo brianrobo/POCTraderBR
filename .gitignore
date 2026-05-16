@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# 사용자 데이터 (로컬 전용)
+data/
+assets/
+
+# 테스트/개발용
+test_env.py
+tests/
+
+# IDE
+.vscode/
+.idea/
+
+# 기타
+*.log
