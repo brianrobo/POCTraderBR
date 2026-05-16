@@ -2,7 +2,19 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.18  (2026-02-15)
+Version: 0.10.19  (2026-05-16)
+
+v0.10.19 변경 사항:
+- 옵션 만기일 표시 기능 추가
+  AS-IS: 옵션 만기일 정보를 앱 내에서 확인할 수 없음
+  TO-BE:
+    - 앱 상단에 옵션 만기일 바 추가 (항상 표시)
+    - 사용자가 직접 만기일 날짜 입력/관리 (YYYY-MM-DD 형식)
+    - 가장 가까운 다음 만기일 + 남은 일수(D-N) 표시
+    - 30일 이하: 주황색, 7일 이하: 빨간색, D-DAY: 강한 빨간색 배경
+    - 편집 버튼으로 날짜 추가/삭제 다이얼로그 제공
+    - 과거 날짜 자동 제외 (표시 시)
+    - 만기일 데이터는 notes_db.json에 저장
 
 v0.10.18 변경 사항:
 - Import 시 Global Ideas/Interests 데이터 손실 버그 수정
@@ -79,7 +91,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.18)"
+APP_TITLE = "Trader Chart Note (v0.10.19)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -912,6 +924,7 @@ class NoteDB:
         self.global_ideas: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 10개
         self.global_interests: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 5개
         self.trading_checklist: List[Dict[str, str]] = []  # [{"id": str, "text": str, "image_path": str}, ...] 최대 10개
+        self.option_expiry_dates: List[str] = []  # ["YYYY-MM-DD", ...] 옵션 만기일 목록
         self.load()
 
     @staticmethod
@@ -977,6 +990,7 @@ class NoteDB:
             "global_ideas": [],
             "global_interests": [],
             "trading_checklist": [],
+            "option_expiry_dates": [],
         }
 
     def load(self) -> None:
@@ -1069,7 +1083,17 @@ class NoteDB:
                     })
         else:
             self.trading_checklist = []
-    
+
+        # option_expiry_dates 로드
+        expiry_raw = self.data.get("option_expiry_dates", [])
+        if isinstance(expiry_raw, list):
+            self.option_expiry_dates = [
+                str(d).strip() for d in expiry_raw
+                if isinstance(d, str) and re.match(r'^\d{4}-\d{2}-\d{2}$', str(d).strip())
+            ]
+        else:
+            self.option_expiry_dates = []
+
     def _reload_global_state_from_data(self) -> None:
         """self.data에서 global_ideas, global_interests, ui_state, trading_checklist 재로드 (Import 후 호출)"""
         self.ui_state = self.data.get("ui_state", {})
@@ -1101,7 +1125,16 @@ class NoteDB:
                     })
         else:
             self.trading_checklist = []
-    
+
+        expiry_raw = self.data.get("option_expiry_dates", [])
+        if isinstance(expiry_raw, list):
+            self.option_expiry_dates = [
+                str(d).strip() for d in expiry_raw
+                if isinstance(d, str) and re.match(r'^\d{4}-\d{2}-\d{2}$', str(d).strip())
+            ]
+        else:
+            self.option_expiry_dates = []
+
     def _initialize_db(self) -> None:
         """DB를 기본 데이터로 초기화"""
         print(f"[DEBUG] DB 초기화 시작")
@@ -1181,6 +1214,7 @@ class NoteDB:
         self.data["global_ideas"] = self.global_ideas.copy() if isinstance(self.global_ideas, list) else []
         self.data["global_interests"] = self.global_interests.copy() if isinstance(self.global_interests, list) else []
         self.data["trading_checklist"] = self.trading_checklist.copy() if isinstance(self.trading_checklist, list) else []
+        self.data["option_expiry_dates"] = list(self.option_expiry_dates) if isinstance(self.option_expiry_dates, list) else []
         self.data["root_category_ids"] = list(self.root_category_ids)
         print(f"[DEBUG] 기본 데이터 설정 완료 - root_category_ids: {self.data['root_category_ids']}")
         
@@ -2674,6 +2708,12 @@ class MainWindow(QMainWindow):
         self._load_global_ideas_to_ui()
         self._load_global_interests_to_ui()
         self._update_recent_items_list()  # 최근 작업 리스트 초기화
+        self._refresh_option_expiry_ui()  # 옵션 만기일 바 초기화
+
+        # 매 시간마다 만기일 D-N 갱신 (자정 지나면 자동 갱신)
+        self._expiry_refresh_timer = QTimer(self)
+        self._expiry_refresh_timer.timeout.connect(self._refresh_option_expiry_ui)
+        self._expiry_refresh_timer.start(3600 * 1000)  # 1시간
 
         ideas_vis = bool(self.db.ui_state.get("global_ideas_visible", False))
         self._set_global_ideas_visible(ideas_vis, persist=False)
@@ -3745,10 +3785,13 @@ class MainWindow(QMainWindow):
             self.checklist_menu_action.setChecked(checklist_visible)
             self.checklist_menu_action.triggered.connect(self._toggle_checklist_panel)
 
+        self.option_expiry_bar = self._build_option_expiry_bar()
+
         layout = QVBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.checklist_panel, 0)  # 체크리스트 패널 (고정 크기)
-        layout.addWidget(main_splitter, 1)  # 메인 스플리터 (확장 가능)
+        layout.addWidget(self.option_expiry_bar, 0)   # 옵션 만기일 바 (항상 표시)
+        layout.addWidget(self.checklist_panel, 0)     # 체크리스트 패널 (고정 크기)
+        layout.addWidget(main_splitter, 1)            # 메인 스플리터 (확장 가능)
 
     def _build_checklist_panel(self) -> QWidget:
         """체크리스트 패널 위젯 생성"""
@@ -4199,6 +4242,180 @@ class MainWindow(QMainWindow):
     # ---- 이하 기능 메서드들은 기존대로 동작 (선택 변경 시 placeholder 전환 포함) ----
     # NOTE: 아래 메서드들은 길어서 생략하면 실행이 불가하므로, 완전 통합본을 유지합니다.
     # (이하 코드는 이전 통합본과 동일하며, Folder 선택 시 _show_placeholder(True)를 강제하는 로직이 포함됩니다.)
+
+    # ---------------- 옵션 만기일 바 ----------------
+
+    def _build_option_expiry_bar(self) -> QWidget:
+        """옵션 만기일 표시 바 위젯 생성"""
+        bar = QWidget()
+        bar.setFixedHeight(30)
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(12, 0, 8, 0)
+        bar_layout.setSpacing(8)
+
+        self.lbl_option_expiry = QLabel("📅 다음 옵션 만기일: 없음")
+        self.lbl_option_expiry.setStyleSheet("font-size: 12px; font-weight: 600; color: #555;")
+        bar_layout.addWidget(self.lbl_option_expiry)
+        bar_layout.addStretch()
+
+        btn_edit = QToolButton()
+        btn_edit.setText("편집")
+        btn_edit.setFixedHeight(22)
+        btn_edit.setToolTip("옵션 만기일 추가/삭제")
+        btn_edit.clicked.connect(self._on_edit_option_expiry_dates)
+        bar_layout.addWidget(btn_edit)
+
+        return bar
+
+    def _refresh_option_expiry_ui(self) -> None:
+        """옵션 만기일 바 UI 갱신"""
+        if not hasattr(self, 'lbl_option_expiry') or not hasattr(self, 'option_expiry_bar'):
+            return
+
+        today = datetime.now().date()
+        weekday_names = ["월", "화", "수", "목", "금", "토", "일"]
+
+        upcoming = []
+        for d_str in self.db.option_expiry_dates:
+            try:
+                d = datetime.strptime(d_str, "%Y-%m-%d").date()
+                if d >= today:
+                    upcoming.append(d)
+            except ValueError:
+                pass
+        upcoming.sort()
+
+        if not upcoming:
+            self.lbl_option_expiry.setText("📅 다음 옵션 만기일: 없음")
+            self.lbl_option_expiry.setStyleSheet("font-size: 12px; font-weight: 600; color: #555;")
+            self.option_expiry_bar.setStyleSheet("")
+            return
+
+        next_date = upcoming[0]
+        days_left = (next_date - today).days
+        weekday = weekday_names[next_date.weekday()]
+        date_str = next_date.strftime("%Y-%m-%d")
+
+        if days_left == 0:
+            text = f"📅 옵션 만기일: {date_str} ({weekday})  ·  D-DAY"
+            bar_bg = "#FF3C3C"
+            lbl_style = "font-size: 12px; font-weight: bold; color: white;"
+        elif days_left <= 7:
+            text = f"📅 다음 옵션 만기일: {date_str} ({weekday})  ·  D-{days_left}"
+            bar_bg = "#FFE0E0"
+            lbl_style = "font-size: 12px; font-weight: bold; color: #CC0000;"
+        elif days_left <= 30:
+            text = f"📅 다음 옵션 만기일: {date_str} ({weekday})  ·  D-{days_left}"
+            bar_bg = "#FFF3CD"
+            lbl_style = "font-size: 12px; font-weight: 600; color: #CC7700;"
+        else:
+            text = f"📅 다음 옵션 만기일: {date_str} ({weekday})  ·  D-{days_left}"
+            bar_bg = ""
+            lbl_style = "font-size: 12px; font-weight: 600; color: #333;"
+
+        self.lbl_option_expiry.setText(text)
+        self.lbl_option_expiry.setStyleSheet(lbl_style)
+        if bar_bg:
+            self.option_expiry_bar.setStyleSheet(f"background: {bar_bg};")
+        else:
+            self.option_expiry_bar.setStyleSheet("")
+
+    def _on_edit_option_expiry_dates(self) -> None:
+        """옵션 만기일 추가/삭제 다이얼로그"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("옵션 만기일 관리")
+        dialog.setMinimumWidth(320)
+        dialog.setMinimumHeight(300)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        # 목록
+        lbl_list = QLabel("등록된 만기일 목록 (클릭하여 선택)")
+        lbl_list.setStyleSheet("font-weight: 600;")
+        layout.addWidget(lbl_list)
+
+        date_list = QListWidget()
+        date_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        for d in sorted(self.db.option_expiry_dates):
+            date_list.addItem(d)
+        layout.addWidget(date_list)
+
+        # 선택 삭제 버튼
+        btn_delete = QPushButton("선택 삭제")
+        btn_delete.setStyleSheet("color: #CC0000;")
+
+        def on_delete():
+            selected = date_list.currentItem()
+            if not selected:
+                return
+            date_str = selected.text()
+            if date_str in self.db.option_expiry_dates:
+                self.db.option_expiry_dates.remove(date_str)
+            date_list.takeItem(date_list.row(selected))
+            self._refresh_option_expiry_ui()
+            self.db.save()
+
+        btn_delete.clicked.connect(on_delete)
+        layout.addWidget(btn_delete)
+
+        # 구분선
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep)
+
+        # 날짜 추가
+        lbl_add = QLabel("날짜 추가 (YYYY-MM-DD)")
+        lbl_add.setStyleSheet("font-weight: 600;")
+        layout.addWidget(lbl_add)
+
+        add_row = QWidget()
+        add_row_layout = QHBoxLayout(add_row)
+        add_row_layout.setContentsMargins(0, 0, 0, 0)
+        add_row_layout.setSpacing(6)
+
+        edit_date = QLineEdit()
+        edit_date.setPlaceholderText("예: 2026-06-11")
+        edit_date.setMaxLength(10)
+        add_row_layout.addWidget(edit_date)
+
+        btn_add = QPushButton("추가")
+
+        def on_add():
+            raw = edit_date.text().strip()
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', raw):
+                QMessageBox.warning(dialog, "형식 오류", "날짜는 YYYY-MM-DD 형식으로 입력해주세요.\n예: 2026-06-11")
+                return
+            try:
+                datetime.strptime(raw, "%Y-%m-%d")
+            except ValueError:
+                QMessageBox.warning(dialog, "날짜 오류", "유효하지 않은 날짜입니다.")
+                return
+            if raw in self.db.option_expiry_dates:
+                QMessageBox.information(dialog, "중복", "이미 등록된 날짜입니다.")
+                return
+            self.db.option_expiry_dates.append(raw)
+            self.db.option_expiry_dates.sort()
+            date_list.clear()
+            for d in sorted(self.db.option_expiry_dates):
+                date_list.addItem(d)
+            edit_date.clear()
+            self._refresh_option_expiry_ui()
+            self.db.save()
+
+        btn_add.clicked.connect(on_add)
+        edit_date.returnPressed.connect(on_add)
+        add_row_layout.addWidget(btn_add)
+        layout.addWidget(add_row)
+
+        # 닫기
+        btn_close = QPushButton("닫기")
+        btn_close.clicked.connect(dialog.accept)
+        layout.addWidget(btn_close)
+
+        dialog.exec_()
 
     # ---------------- overlays for pane A/B ----------------
     def _build_pane_overlays(self) -> None:
