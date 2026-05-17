@@ -2,7 +2,17 @@
 """
 Trader Chart Note App (PyQt5) - Folder(Item) Navigator
 
-Version: 0.10.19  (2026-05-16)
+Version: 0.10.20  (2026-05-17)
+
+v0.10.20 변경 사항:
+- 메모 영역 템플릿 기능 추가
+  AS-IS: 새 아이템/페이지 생성 시 메모 영역이 항상 빈 상태
+  TO-BE:
+    - 메모 영역 상단 [템플릿] 버튼 클릭으로 기본 템플릿 편집
+    - 새 아이템 생성 시 템플릿이 메모 영역에 자동 입력
+    - 새 페이지 추가 시에도 동일하게 템플릿 적용
+    - 템플릿은 서식(Bold/Color 등) 포함 가능 (Rich Text)
+    - 템플릿 데이터는 notes_db.json에 저장
 
 v0.10.19 변경 사항:
 - 옵션 만기일 표시 기능 추가
@@ -91,7 +101,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIntValidator
 
-APP_TITLE = "Trader Chart Note (v0.10.19)"
+APP_TITLE = "Trader Chart Note (v0.10.20)"
 DEFAULT_DB_PATH = os.path.join("data", "notes_db.json")
 BACKUP_DIR = os.path.join("data", "backups")
 MAX_BACKUPS = 10  # 최대 백업 파일 개수
@@ -925,6 +935,7 @@ class NoteDB:
         self.global_interests: List[Dict[str, str]] = []  # [{"name": str, "content": str}, ...] 최대 5개
         self.trading_checklist: List[Dict[str, str]] = []  # [{"id": str, "text": str, "image_path": str}, ...] 최대 10개
         self.option_expiry_dates: List[str] = []  # ["YYYY-MM-DD", ...] 옵션 만기일 목록
+        self.note_template: str = ""  # 새 아이템/페이지 생성 시 메모 영역 기본 템플릿 (HTML)
         self.load()
 
     @staticmethod
@@ -991,6 +1002,7 @@ class NoteDB:
             "global_interests": [],
             "trading_checklist": [],
             "option_expiry_dates": [],
+            "note_template": "",
         }
 
     def load(self) -> None:
@@ -1094,6 +1106,10 @@ class NoteDB:
         else:
             self.option_expiry_dates = []
 
+        # note_template 로드
+        tmpl_raw = self.data.get("note_template", "")
+        self.note_template = str(tmpl_raw) if isinstance(tmpl_raw, str) else ""
+
     def _reload_global_state_from_data(self) -> None:
         """self.data에서 global_ideas, global_interests, ui_state, trading_checklist 재로드 (Import 후 호출)"""
         self.ui_state = self.data.get("ui_state", {})
@@ -1134,6 +1150,9 @@ class NoteDB:
             ]
         else:
             self.option_expiry_dates = []
+
+        tmpl_raw = self.data.get("note_template", "")
+        self.note_template = str(tmpl_raw) if isinstance(tmpl_raw, str) else ""
 
     def _initialize_db(self) -> None:
         """DB를 기본 데이터로 초기화"""
@@ -1215,6 +1234,7 @@ class NoteDB:
         self.data["global_interests"] = self.global_interests.copy() if isinstance(self.global_interests, list) else []
         self.data["trading_checklist"] = self.trading_checklist.copy() if isinstance(self.trading_checklist, list) else []
         self.data["option_expiry_dates"] = list(self.option_expiry_dates) if isinstance(self.option_expiry_dates, list) else []
+        self.data["note_template"] = self.note_template if isinstance(self.note_template, str) else ""
         self.data["root_category_ids"] = list(self.root_category_ids)
         print(f"[DEBUG] 기본 데이터 설정 완료 - root_category_ids: {self.data['root_category_ids']}")
         
@@ -1841,7 +1861,13 @@ class NoteDB:
             category_id = self.root_category_ids[0] if self.root_category_ids else ""
         iid = _uuid()
         # 링크된 Item이면 pages는 빈 리스트로 생성 (원본 Item의 pages 사용)
-        pages = [] if linked_item_id else [self.new_page()]
+        if linked_item_id:
+            pages = []
+        else:
+            pg = self.new_page()
+            if self.note_template:
+                pg.note_text = self.note_template
+            pages = [pg]
         it = Item(id=iid, name=name, category_id=category_id, pages=pages, last_page_index=0, linked_item_id=linked_item_id)
         self.items[iid] = it
         if category_id and category_id in self.categories:
@@ -3559,7 +3585,24 @@ class MainWindow(QMainWindow):
         self.text_edit.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
         self.text_edit.setTabChangesFocus(False)
 
+        # 메모 헤더 (템플릿 편집 버튼)
+        memo_header = QWidget()
+        memo_header_l = QHBoxLayout(memo_header)
+        memo_header_l.setContentsMargins(0, 0, 0, 0)
+        memo_header_l.setSpacing(4)
+        lbl_memo = QLabel("메모")
+        lbl_memo.setStyleSheet("font-size: 11px; color: #999;")
+        memo_header_l.addWidget(lbl_memo)
+        memo_header_l.addStretch()
+        self.btn_note_template = QToolButton()
+        self.btn_note_template.setText("템플릿")
+        self.btn_note_template.setFixedHeight(20)
+        self.btn_note_template.setToolTip("새 아이템/페이지 생성 시 메모 기본값 편집")
+        self.btn_note_template.clicked.connect(self._on_edit_note_template)
+        memo_header_l.addWidget(self.btn_note_template)
+
         notes_left_l.addWidget(self.chk_tabs)
+        notes_left_l.addWidget(memo_header)
         notes_left_l.addWidget(self.text_edit, 1)
 
         self.ideas_panel = QFrame()
@@ -4416,6 +4459,68 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_close)
 
         dialog.exec_()
+
+    # ---------------- 메모 템플릿 ----------------
+
+    def _on_edit_note_template(self) -> None:
+        """메모 영역 기본 템플릿 편집 다이얼로그"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("메모 템플릿 편집")
+        dialog.setMinimumWidth(480)
+        dialog.setMinimumHeight(340)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        lbl = QLabel("새 아이템/페이지 생성 시 메모 영역에 자동으로 입력될 템플릿입니다.\n서식(Bold, 색상 등)을 포함할 수 있습니다.")
+        lbl.setStyleSheet("color: #555; font-size: 11px;")
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        editor = QTextEdit()
+        editor.setPlaceholderText("템플릿 내용을 입력하세요...")
+        editor.installEventFilter(self)
+        editor.cursorPositionChanged.connect(self._on_any_rich_cursor_changed)
+        if self.db.note_template:
+            editor.setHtml(self.db.note_template)
+        layout.addWidget(editor, 1)
+
+        btn_row = QWidget()
+        btn_row_l = QHBoxLayout(btn_row)
+        btn_row_l.setContentsMargins(0, 0, 0, 0)
+        btn_row_l.setSpacing(8)
+
+        btn_clear = QPushButton("초기화")
+        btn_clear.setStyleSheet("color: #CC0000;")
+        btn_save = QPushButton("저장")
+        btn_save.setStyleSheet("font-weight: 600;")
+        btn_cancel = QPushButton("취소")
+
+        def on_clear():
+            editor.clear()
+
+        def on_save():
+            html = editor.toHtml()
+            plain = editor.toPlainText().strip()
+            self.db.note_template = html if plain else ""
+            self.db.save()
+            dialog.accept()
+
+        btn_clear.clicked.connect(on_clear)
+        btn_save.clicked.connect(on_save)
+        btn_cancel.clicked.connect(dialog.reject)
+
+        btn_row_l.addWidget(btn_clear)
+        btn_row_l.addStretch()
+        btn_row_l.addWidget(btn_cancel)
+        btn_row_l.addWidget(btn_save)
+        layout.addWidget(btn_row)
+
+        dialog.exec_()
+        # 다이얼로그 닫힌 후 active rich edit 복원
+        if hasattr(self, 'text_edit'):
+            self._set_active_rich_edit(self.text_edit)
 
     # ---------------- overlays for pane A/B ----------------
     def _build_pane_overlays(self) -> None:
@@ -6722,7 +6827,10 @@ class MainWindow(QMainWindow):
             return
         self._flush_page_fields_to_model_and_save()
         insert_at = self.current_page_index + 1
-        it.pages.insert(insert_at, self.db.new_page())
+        new_pg = self.db.new_page()
+        if self.db.note_template:
+            new_pg.note_text = self.db.note_template
+        it.pages.insert(insert_at, new_pg)
         self.current_page_index = insert_at
         it.last_page_index = self.current_page_index
         self._save_ui_state()
